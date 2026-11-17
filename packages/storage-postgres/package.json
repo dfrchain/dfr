@@ -1,0 +1,30 @@
+{
+  "name": "@dfr/storage-postgres",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DFR M1 PostgreSQL store implementations (implements @dfr/transaction ports)",
+  "type": "module",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "files": ["src", "migrations"],
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "migrate": "node --experimental-strip-types --experimental-transform-types --import ../../scripts/ts-runtime/register.mjs src/migrate-cli.ts",
+    "prepare:test-integration-db": "node --experimental-strip-types --experimental-transform-types --import ../../scripts/ts-runtime/register.mjs src/integration-test-db-preflight.ts"
+  },
+  "dependencies": {
+    "@dfr/errors": "workspace:*",
+    "@dfr/transaction": "workspace:*",
+    "@dfr/types": "workspace:*",
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "@types/pg": "^8.23.1"
+  }
+}

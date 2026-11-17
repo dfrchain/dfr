@@ -1,0 +1,8 @@
+# DFR monorepo workspaces（见 docs/adr/ADR-001-monorepo.md）
+packages:
+  - "packages/*"
+  - "adapters/*"
+  - "apps/*"
+  - "sdk/*"
+  - "services/*"
+  - "tests"

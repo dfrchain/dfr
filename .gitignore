@@ -1,0 +1,62 @@
+# ---- Dependencies ----
+node_modules/
+.pnpm-store/
+
+# ---- Build output ----
+dist/
+apps/docs/public-dist/
+build/
+out/
+# 生成的 SBOM 属构建产物（可由 scripts/image-supply-chain.sh 复现），不入库。
+infrastructure/docker/sbom/
+*.tsbuildinfo
+coverage/
+# 探针产物（log-volume / read-latency 等）：可由对应 `pnpm probe:*` 复现，不入库。
+artifacts/
+
+# ---- Secrets (SECURITY CRITICAL) ----
+# 任何形式的密钥文件都不得进入版本库（见 docs/adr/ADR-007-signing-model.md）
+.env
+.env.*
+!.env.example
+*.env
+*.key
+*.pem
+*.p12
+*.pfx
+*.keystore
+*.jks
+id_rsa*
+id_ed25519*
+id_ecdsa*
+secrets/
+.secrets/
+
+# ---- Local / editor ----
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+*.swo
+
+# ---- Logs / temp ----
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-error.log*
+logs/
+tmp/
+.tmp/
+.cache/
+
+# ---- Test / tooling caches ----
+.vitest/
+.eslintcache
+.turbo/
+
+# ---- Local registry overrides ----
+# 本地 Provider 凭证只存在于 .env（600），绝不入库
+packages/registry/config/local.*.yaml
+coverage-check-verify/

@@ -1,0 +1,224 @@
+# DFR M1 告警规则（observability-spec 第 8 章）
+#
+# 设计原则：
+#   1. 每条规则都注明**它依赖哪个指标**，且指标名必须与代码一致 ——
+#      `tests/contract/monitoring-config.test.ts` 会校验"配置里引用的指标在代码中都存在"，
+#      防止看板/告警与实现漂移（指标改名后静默失效是监控最常见的死法）。
+#   2. `for:` 一律显式给出，避免瞬时抖动触发告警。
+#   3. 阈值分两类：**可判定**（如"增量 > 0"，本身就是异常）与**需标定**（如延迟阈值
+#      依赖链特征）。后者在注释里明确写"需标定"，不假装它是权威值。
+
+groups:
+  - name: dfr-api
+    rules:
+      # spec §8：API 错误率 5 分钟 > 2%
+      - alert: DfrApiErrorRateHigh
+        expr: |
+          (
+            sum(rate(dfr_gateway_requests_total{status_code=~"5.."}[5m]))
+            /
+            sum(rate(dfr_gateway_requests_total[5m]))
+          ) > 0.02
+        for: 5m
+        labels:
+          severity: high
+        annotations:
+          summary: "Gateway 5xx 比例超过 2%"
+          description: "最近 5 分钟 5xx 占比 {{ $value | humanizePercentage }}；先看 dfr_gateway_requests_total 的 route 维度定位。"
+
+      # spec §8：API 延迟 P95 > 2s 持续 10 分钟（阈值需按部署标定）
+      - alert: DfrApiLatencyDegraded
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(dfr_gateway_request_duration_seconds_bucket[5m]))
+          ) > 2
+        for: 10m
+        labels:
+          severity: medium
+        annotations:
+          summary: "Gateway P95 延迟超过 2s"
+          description: "阈值 2s 是初始值，需按实际链路标定；用 route 维度区分是上游还是本机。"
+
+      # 鉴权失败突增：可能是 Key 轮换失误，也可能是暴力枚举（spec 第 6 章安全默认值）
+      - alert: DfrAuthFailureSpike
+        expr: increase(dfr_gateway_auth_failures_total[10m]) > 50
+        for: 0m
+        labels:
+          severity: medium
+        annotations:
+          summary: "10 分钟内鉴权失败超过 50 次"
+          description: "按 reason_code 区分：mismatch 多为凭证错误或枚举，missing 多为客户端配置问题。"
+
+      # 限流频繁触发说明容量或调用方行为异常（不是故障，但需要知道）
+      - alert: DfrRateLimitedFrequent
+        expr: increase(dfr_gateway_rate_limited_total[15m]) > 100
+        for: 0m
+        labels:
+          severity: low
+        annotations:
+          summary: "15 分钟内限流超过 100 次"
+          description: "按 route_class 看是哪一类被限流；read 频繁限流通常意味着调用方需要退避。"
+
+      # 幂等冲突：调用方复用同一 Idempotency-Key 传了不同请求体（客户端 bug）
+      - alert: DfrIdempotencyConflictSpike
+        expr: increase(dfr_gateway_idempotency_hits_total{outcome="conflict"}[15m]) > 10
+        for: 0m
+        labels:
+          severity: medium
+        annotations:
+          summary: "15 分钟内幂等冲突超过 10 次"
+          description: "通常意味着客户端在复用幂等键却改变了请求体；检查 SDK 是否每次生成新键。"
+
+      # 事务存储不可用时 Gateway 会主动拒绝业务流量；这是发布级依赖故障，不应混在通用 5xx 中。
+      - alert: DfrDependencyRejectingTraffic
+        expr: increase(dfr_gateway_dependency_rejected_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Gateway 因依赖不可用正在拒绝业务流量"
+          description: "按 route_class 查看受影响流量；检查 PostgreSQL/事务存储连通性，恢复后 Gateway 会自动放行。"
+
+  - name: dfr-provider
+    rules:
+      # spec §8：某链可用 Provider 数 = 0（紧急）
+      #
+      # 口径说明：这里用"该链**所有** Provider 的读熔断器都打开"来表达"全部不可用"。
+      # 之所以不直接用 availability_ratio == 0：健康窗口无样本时 availability 记为 1
+      # （见 ProviderMetrics 的注释），因此刚注册的 Provider 不会误报；
+      # 而熔断全开是"我们主动停用全部候选"的确定信号 —— 宁可漏报冷启动窗口，
+      # 也不要每天误报新链。
+      - alert: DfrProviderAllUnavailable
+        expr: |
+          min by (chain) (dfr_provider_circuit_state{state="open"}) == 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "链 {{ $labels.chain }} 的全部 Provider 读熔断器均打开"
+          description: "所有候选都被熔断，请求会 fail-closed 为 DFR_CHAIN_UNAVAILABLE。检查上游与凭证。"
+
+      # spec §8：Provider 降级（可用率 < 0.5 持续 5 分钟）
+      - alert: DfrProviderDegraded
+        expr: dfr_provider_availability_ratio < 0.5
+        for: 5m
+        labels:
+          severity: medium
+        annotations:
+          summary: "Provider {{ $labels.provider_id }} 可用率 {{ $value | humanizePercentage }}"
+          description: "低于 50% 持续 5 分钟；结合 dfr_provider_error_ratio 与熔断状态判断是自身还是上游。"
+
+      # spec §8：熔断持续打开
+      - alert: DfrProviderCircuitOpen
+        expr: dfr_provider_circuit_state{state="open"} == 1
+        for: 5m
+        labels:
+          severity: medium
+        annotations:
+          summary: "Provider {{ $labels.provider_id }} 熔断打开超过 5 分钟"
+          description: "如果这是该链最后一个可用 Provider，会同时触发 DfrProviderAllUnavailable。"
+
+      # E5：日配额接近上限。耗尽后 Provider 会被剔除，属于可用性事件；
+      # 在 80% 提前告警，给运维留出切换/扩容/联系上游的时间。
+      - alert: DfrProviderQuotaNearLimit
+        expr: dfr_provider_quota_used_ratio > 0.8
+        for: 5m
+        labels:
+          severity: high
+        annotations:
+          summary: "Provider {{ $labels.provider_id }} 日配额已用 {{ $value | humanizePercentage }}"
+          description: "超过 80% 持续 5 分钟；结合 dfr_provider_quota_used_ratio 与配额策略，准备切换备用 Provider 或提升额度。"
+
+      # Provider 切换/重试：写路径重试必须恒为 0，因此 method_class="write" 出现重试是**严重异常**
+      - alert: DfrWritePathRetryDetected
+        expr: increase(dfr_provider_retries_total{reason="write"}[10m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "检测到写路径重试（应为 0）"
+          description: "广播是 non-idempotent-write，Provider 层自动重试必须严格为 0；非 0 说明有代码路径绕过该约束，属资金安全级问题。"
+
+  - name: dfr-adapter-core
+    rules:
+      # spec §8：registry ⊄ adapter —— 说明启动校验被绕过，紧急
+      - alert: DfrAdapterRegistryMismatch
+        expr: increase(dfr_adapter_registry_mismatch_total[10m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "链 {{ $labels.chain }} 出现 registry/adapter 不一致"
+          description: "Registry 声明了 Adapter 未实现的能力。正常应恒为 0；非 0 说明校验被绕过，需立即排查配置。"
+
+      # Core 层能力不支持：同上，属配置/契约问题
+      - alert: DfrCoreCapabilityUnsupported
+        expr: increase(dfr_core_capability_unsupported_total[10m]) > 0
+        for: 0m
+        labels:
+          severity: high
+        annotations:
+          summary: "链 {{ $labels.chain }} 收到未声明能力 {{ $labels.capability }} 的调用"
+          description: "调用方请求了该链未启用的能力；正常应恒为 0。"
+
+      # Adapter 错误率（按 adapter/chain/error_code 维度）
+      - alert: DfrAdapterErrorSpike
+        expr: sum by (adapter, chain, error_code) (increase(dfr_adapter_errors_total[10m])) > 20
+        for: 0m
+        labels:
+          severity: medium
+        annotations:
+          summary: "Adapter {{ $labels.adapter }} 在 {{ $labels.chain }} 上错误突增（{{ $labels.error_code }}）"
+          description: "结合 Provider 指标判断根因在上游还是编解码层。"
+
+  - name: dfr-transaction
+    rules:
+      # spec §8：发生链重组（增量 > 0 即告警）
+      - alert: DfrChainReorgObserved
+        expr: increase(dfr_transaction_reorg_total[10m]) > 0
+        for: 0m
+        labels:
+          severity: high
+        annotations:
+          summary: "链 {{ $labels.chain }} 观测到交易重组（深度桶 {{ $labels.depth_bucket }}）"
+          description: "被重组掉的 included 交易已按 ADR-021 回退为 pending 并清空区块锚点；确认下游是否受影响。"
+
+      # spec §8：确认等待偏慢（阈值需标定 —— 它测的是"单次 confirm 请求等待目标 finality 的时长"，
+      # 不是创建→最终性的端到端延迟；见 observability-spec §5.5 的语义说明）
+      - alert: DfrFinalityWaitSlow
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le, chain) (rate(dfr_transaction_finality_wait_seconds_bucket[15m]))
+          ) > 120
+        for: 10m
+        labels:
+          severity: medium
+        annotations:
+          summary: "链 {{ $labels.chain }} 的 confirm 等待 P95 超过 120s"
+          description: "120s 是初始值，需按该链的 FinalityPolicy 标定（例如 confirmations 数 × 出块时间）。"
+
+      # 阶段失败率：用 finalize 之外的状态判断写路径健康（stage_total 是计数器，按 status 分）
+      - alert: DfrTransactionStageErrors
+        expr: |
+          sum by (chain, stage, error_code) (
+            increase(dfr_transaction_stage_total{status="error"}[15m])
+          ) > 5
+        for: 0m
+        labels:
+          severity: medium
+        annotations:
+          summary: "链 {{ $labels.chain }} 的 {{ $labels.stage }} 阶段错误增加（{{ $labels.error_code }}）"
+          description: "按 stage 定位是 build / simulate / broadcast / confirm 哪一段；结合 error_code 分类。"
+
+      # tracker 租约长时间被别人持有：多实例下可能有实例卡住，或单笔交易观测很慢
+      - alert: DfrTrackerLeaseContention
+        expr: |
+          sum by (chain) (increase(dfr_transaction_tracker_lease_total{outcome="held_by_other"}[15m])) > 20
+        for: 0m
+        labels:
+          severity: low
+        annotations:
+          summary: "链 {{ $labels.chain }} 的 tracker 租约竞争偏多"
+          description: "多实例部署下属正常竞争；单实例下持续非 0 说明有租约未被释放，检查 owner token 与过期逻辑。"

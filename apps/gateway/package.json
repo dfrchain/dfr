@@ -1,0 +1,38 @@
+{
+  "name": "@dfr/gateway",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DFR API Gateway (M0 read-only)",
+  "type": "module",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "start": "node --experimental-strip-types --experimental-transform-types --import ../../scripts/ts-runtime/register.mjs src/main.ts"
+  },
+  "dependencies": {
+    "@dfr/adapter-evm": "workspace:*",
+    "@dfr/adapter-solana": "workspace:*",
+    "@dfr/core": "workspace:*",
+    "@dfr/errors": "workspace:*",
+    "@dfr/events": "workspace:*",
+    "@dfr/metrics": "workspace:*",
+    "@dfr/registry": "workspace:*",
+    "@dfr/storage-postgres": "workspace:*",
+    "@dfr/transaction": "workspace:*",
+    "@dfr/types": "workspace:*",
+    "@dfr/telemetry": "workspace:*"
+  },
+  "devDependencies": {
+    "@dfr/provider": "workspace:*",
+    "@types/node": "^26.6.4"
+  }
+}

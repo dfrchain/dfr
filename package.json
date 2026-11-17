@@ -1,0 +1,48 @@
+{
+  "name": "dfr",
+  "version": "0.0.0",
+  "private": true,
+  "description": "DFR — Universal Blockchain Infrastructure",
+  "license": "Apache-2.0",
+  "type": "module",
+  "packageManager": "pnpm@9.4.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "check:dependency-lock": "node scripts/check-dependency-lock.mjs",
+    "check:secrets": "./scripts/check-secrets.sh",
+    "e03:preflight": "./scripts/e03-preflight.sh",
+    "lint": "eslint .",
+    "lint:openapi": "./scripts/lint-openapi.sh",
+    "migrate:db": "pnpm --filter @dfr/storage-postgres migrate",
+    "start:gateway": "pnpm --filter @dfr/gateway start",
+    "supply-chain": "./scripts/image-supply-chain.sh",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:db": "./scripts/db-test.sh",
+    "probe:read-latency": "node --experimental-strip-types --experimental-transform-types --import ./scripts/ts-runtime/register.mjs tests/tools/m4-read-latency-probe.ts",
+    "test:watch": "vitest",
+    "typecheck": "pnpm -r --if-present typecheck && tsc -p tests/tsconfig.json",
+    "verify": "pnpm check:dependency-lock && pnpm typecheck && pnpm lint && pnpm lint:openapi && pnpm test:coverage && pnpm check:secrets",
+    "probe:log-volume": "node --experimental-strip-types --experimental-transform-types --import ./scripts/ts-runtime/register.mjs tests/tools/log-volume-probe.ts",
+    "test:staging-fault-drill": "vitest run apps/gateway/test/readiness-wiring.test.ts apps/gateway/test/readiness-active-probe.test.ts",
+    "test:resilience": "vitest run apps/gateway/test/readiness-wiring.test.ts apps/gateway/test/readiness-active-probe.test.ts apps/gateway/test/gateway-metrics.test.ts packages/provider/test/provider.test.ts",
+    "test:staging-fault-drill-real": "./scripts/staging-fault-drill.sh",
+    "test:db-backup-restore": "./scripts/db-backup-restore-drill.sh",
+    "staging:preflight": "./scripts/staging-preflight.sh"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@redocly/cli": "2.57.0",
+    "@types/node": "^26.6.4",
+    "@vitest/coverage-v8": "^5.0.3",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
+    "eslint": "^10.12.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.71.0",
+    "vitest": "^5.0.3",
+    "yaml": "^2.9.1"
+  }
+}

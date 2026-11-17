@@ -1,0 +1,50 @@
+# DFR M1 本地测试用 PostgreSQL（见 docs/architecture/m1-storage-model.md 与 ADR-015）
+#
+# 用途：M1-A 的 Store 集成测试与迁移验证。**不是生产部署文件**。
+#
+# 安全默认值：
+#   - 只监听 127.0.0.1，且使用非默认端口 55432，避免与本机其它 PostgreSQL 冲突；
+#   - 口令全部来自环境变量，compose 与镜像内不写任何真实凭证；
+#   - 两个业务角色分离：dfr_migrator（可 DDL）与 dfr_runtime（仅 DML），
+#     与 infrastructure/README.md 的"migration 身份与 runtime 身份分离"一致。
+#
+# 用法：
+#   cd infrastructure/docker
+#   cp .env.example .env      # 填入随机口令（.env 已被 .gitignore 排除）
+#   docker compose -f docker-compose.test.yml up -d --wait
+#   docker compose -f docker-compose.test.yml down          # 保留数据卷
+#   docker compose -f docker-compose.test.yml down -v       # 连同数据卷删除
+name: ${DFR_DB_TEST_PROJECT:-dfr-m1-test}
+
+services:
+  postgres:
+    # 固定主版本：避免 minor 漂移导致本地与 CI 行为不一致。
+    image: postgres:17-alpine
+    container_name: ${DFR_DB_TEST_CONTAINER:-dfr-m1-postgres-test}
+    restart: 'no'
+    ports:
+      - '127.0.0.1:${DFR_DB_TEST_PORT:-55432}:5432'
+    environment:
+      POSTGRES_DB: dfr_m1_test
+      POSTGRES_USER: dfr_bootstrap
+      POSTGRES_PASSWORD: ${DFR_POSTGRES_BOOTSTRAP_PASSWORD:?请在 .env 设置 DFR_POSTGRES_BOOTSTRAP_PASSWORD}
+      DFR_MIGRATOR_PASSWORD: ${DFR_POSTGRES_MIGRATOR_PASSWORD:?请在 .env 设置 DFR_POSTGRES_MIGRATOR_PASSWORD}
+      DFR_RUNTIME_PASSWORD: ${DFR_POSTGRES_RUNTIME_PASSWORD:?请在 .env 设置 DFR_POSTGRES_RUNTIME_PASSWORD}
+    volumes:
+      - dfr-m1-pgdata:/var/lib/postgresql/data
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    # 资源上限：本地测试环境不应无界占用宿主资源。
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+
+volumes:
+  dfr-m1-pgdata:

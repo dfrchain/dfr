@@ -1,0 +1,14 @@
+# Grafana 看板自动加载：把挂载目录里的 JSON 全部导入。
+# `allowUiUpdates: false` —— 生产看板以仓库为准，避免"在 UI 上改好后丢失"。
+apiVersion: 1
+
+providers:
+  - name: dfr
+    orgId: 1
+    folder: DFR
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards

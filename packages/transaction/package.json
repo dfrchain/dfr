@@ -1,0 +1,28 @@
+{
+  "name": "@dfr/transaction",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DFR transaction engine: state machine, idempotency, nonce and confirmation coordination",
+  "type": "module",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@dfr/errors": "workspace:*",
+    "@dfr/metrics": "workspace:*",
+    "@dfr/types": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4"
+  }
+}

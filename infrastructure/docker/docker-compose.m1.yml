@@ -1,0 +1,130 @@
+# DFR M1 本地一体化样例：PostgreSQL + Gateway（DFR-M1-E02）。
+#
+# **不是生产部署文件**：镜像以源码方式运行 TS，且只暴露本机端口。用途是让
+# "从干净环境把 M1 跑起来"可执行、可复现，并演示迁移身份与运行时身份分离。
+#
+# 与 `docker-compose.test.yml` 的关系：
+#   - 复用同一份 `.env` 变量与 `initdb/01-roles.sh`（角色与口令的唯一来源）；
+#   - 但**不复用容器**：测试 compose 固定了 container_name 与 55432 端口，直接
+#     `include` 会与正在运行的测试库冲突。样例因此不暴露数据库端口（网关走 compose 网络），
+#     也不固定 container_name，两者可同时运行。
+#   - 两者都以 `initdb/01-roles.sh` 为角色定义来源；修改角色必须同步该脚本，而不是改本文件。
+#
+# 用法：
+#   cd infrastructure/docker
+#   cp .env.example .env        # 填入随机口令（.env 已被 .gitignore 排除）
+#   # 按需追加：DFR_M0_API_KEY_ID / DFR_M0_API_KEY_HASH / DFR_PROVIDER_ETHEREUM_SEPOLIA_*_URL
+#   docker compose -f docker-compose.m1.yml up -d --build --wait postgres
+#   docker compose -f docker-compose.m1.yml --profile tools run --rm migrate
+#   docker compose -f docker-compose.m1.yml up -d gateway
+#   curl -s localhost:8787/readyz
+#   docker compose -f docker-compose.m1.yml down -v
+name: dfr-m1-sample
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: 'no'
+    environment:
+      POSTGRES_DB: dfr_m1_test
+      POSTGRES_USER: dfr_bootstrap
+      POSTGRES_PASSWORD: ${DFR_POSTGRES_BOOTSTRAP_PASSWORD:?请在 .env 设置 DFR_POSTGRES_BOOTSTRAP_PASSWORD}
+      DFR_MIGRATOR_PASSWORD: ${DFR_POSTGRES_MIGRATOR_PASSWORD:?请在 .env 设置 DFR_POSTGRES_MIGRATOR_PASSWORD}
+      DFR_RUNTIME_PASSWORD: ${DFR_POSTGRES_RUNTIME_PASSWORD:?请在 .env 设置 DFR_POSTGRES_RUNTIME_PASSWORD}
+    volumes:
+      - dfr-m1-sample-pgdata:/var/lib/postgresql/data
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    security_opt: ['no-new-privileges:true']
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+
+  # 一次性迁移任务：使用**迁移身份**（可 DDL），与应用容器的运行时身份分离。
+  migrate:
+    image: dfr-gateway:m1
+    build:
+      context: ../..
+      dockerfile: infrastructure/docker/gateway.Dockerfile
+    profiles: ['tools']
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DFR_TRANSACTION_MIGRATION_DATABASE_URL: >-
+        postgres://dfr_migrator:${DFR_POSTGRES_MIGRATOR_PASSWORD:?请在 .env 设置 DFR_POSTGRES_MIGRATOR_PASSWORD}@postgres:5432/dfr_m1_test
+    command:
+      - node
+      - --experimental-strip-types
+      - --experimental-transform-types
+      - --import
+      - ./scripts/ts-runtime/register.mjs
+      - packages/storage-postgres/src/migrate-cli.ts
+    restart: 'no'
+    read_only: true
+    tmpfs: ['/tmp']
+    security_opt: ['no-new-privileges:true']
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '5'
+
+  gateway:
+    image: dfr-gateway:m1
+    build:
+      context: ../..
+      dockerfile: infrastructure/docker/gateway.Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      # 主机端口可覆盖：默认 18787，避免与本机其它服务（例如常见调试端口）冲突。
+      # 容器内始终是 8787，与镜像 EXPOSE / 健康检查一致。
+      - '127.0.0.1:${DFR_GATEWAY_HOST_PORT:-18787}:8787'
+    environment:
+      DFR_GATEWAY_PORT: '8787'
+      DFR_M0_API_KEY_ID: ${DFR_M0_API_KEY_ID:?请在 .env 设置 DFR_M0_API_KEY_ID}
+      DFR_M0_API_KEY_HASH: ${DFR_M0_API_KEY_HASH:?请在 .env 设置 DFR_M0_API_KEY_HASH}
+      DFR_M0_API_KEY_PEPPER: ${DFR_M0_API_KEY_PEPPER:-}
+      DFR_M0_PROJECT_ID: ${DFR_M0_PROJECT_ID:-default}
+      # 写路径显式开关；三道前置缺一即被拒绝（403 / 422）。
+      DFR_M1_ALLOW_WRITE: ${DFR_M1_ALLOW_WRITE:-false}
+      # ADR-038：运行时里程碑（M0..M7）。缺省时保持历史行为（写开关决定 M0/M1）；
+      # BEX 的 M4 双链部署必须显式设为 M4，否则 arbitrum-sepolia 会被里程碑门禁过滤。
+      DFR_DEPLOY_MILESTONE: ${DFR_DEPLOY_MILESTONE:-}
+      # 运行时身份：仅 DML。应用容器**不**持有迁移身份凭证。
+      DFR_TRANSACTION_DATABASE_URL: >-
+        postgres://dfr_runtime:${DFR_POSTGRES_RUNTIME_PASSWORD:?请在 .env 设置 DFR_POSTGRES_RUNTIME_PASSWORD}@postgres:5432/dfr_m1_test
+      DFR_PROVIDER_ETHEREUM_SEPOLIA_PRIMARY_URL: ${DFR_PROVIDER_ETHEREUM_SEPOLIA_PRIMARY_URL:?请在 .env 设置主 Provider URL}
+      DFR_PROVIDER_ETHEREUM_SEPOLIA_PRIMARY_KEY: ${DFR_PROVIDER_ETHEREUM_SEPOLIA_PRIMARY_KEY:-}
+      DFR_PROVIDER_ETHEREUM_SEPOLIA_SECONDARY_URL: ${DFR_PROVIDER_ETHEREUM_SEPOLIA_SECONDARY_URL:?请在 .env 设置备用 Provider URL}
+      DFR_PROVIDER_ETHEREUM_SEPOLIA_SECONDARY_KEY: ${DFR_PROVIDER_ETHEREUM_SEPOLIA_SECONDARY_KEY:-}
+      # M4 两腿（base-sepolia / arbitrum-sepolia）：注册表在 M4 启用这两条链，
+      # 容器里必须同时注入它们的 Provider 变量，否则链信息/日志/合约读取会
+      # 报 DFR_CONFIGURATION_ERROR（2026-10-06 实测发现）。默认留空表示不启用该链。
+      DFR_PROVIDER_BASE_SEPOLIA_PRIMARY_URL: ${DFR_PROVIDER_BASE_SEPOLIA_PRIMARY_URL:-}
+      DFR_PROVIDER_BASE_SEPOLIA_PRIMARY_KEY: ${DFR_PROVIDER_BASE_SEPOLIA_PRIMARY_KEY:-}
+      DFR_PROVIDER_ARBITRUM_SEPOLIA_PRIMARY_URL: ${DFR_PROVIDER_ARBITRUM_SEPOLIA_PRIMARY_URL:-}
+      DFR_PROVIDER_ARBITRUM_SEPOLIA_PRIMARY_KEY: ${DFR_PROVIDER_ARBITRUM_SEPOLIA_PRIMARY_KEY:-}
+    read_only: true
+    tmpfs: ['/tmp']
+    security_opt: ['no-new-privileges:true']
+    restart: unless-stopped
+    # 日志轮转：应用只写 stdout/stderr（JSON Lines），轮转由容器运行时负责。
+    # 若交给单机 compose，必须显式设上限，否则 json-file 驱动会无界增长撑满磁盘。
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '5'
+
+volumes:
+  dfr-m1-sample-pgdata:

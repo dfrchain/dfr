@@ -1,0 +1,28 @@
+{
+  "name": "@dfr/core",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DFR Core: capability routing, query engine, per-chain adapter/provider wiring",
+  "type": "module",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "files": ["src"],
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@dfr/errors": "workspace:*",
+    "@dfr/provider": "workspace:*",
+    "@dfr/registry": "workspace:*",
+    "@dfr/transaction": "workspace:*",
+    "@dfr/types": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4"
+  }
+}

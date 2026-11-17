@@ -1,0 +1,27 @@
+{
+  "name": "@dfr/adapter-solana",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DFR Solana Adapter (M2 read-only)",
+  "type": "module",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@dfr/errors": "workspace:*",
+    "@dfr/types": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4"
+  }
+}

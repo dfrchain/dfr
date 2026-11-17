@@ -1,0 +1,33 @@
+# 隔离 staging 故障演练（不触碰任何共享 M4 容器）。
+#
+# 专用容器名、端口、卷，避免与 docker-compose.test.yml / docker-compose.m1.yml 冲突。
+# 口令由 scripts/staging-fault-drill.sh 在运行时生成，仅通过环境变量注入，
+# 不写入仓库、不回显。
+name: dfr-staging-fault-drill
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: dfr-staging-drill-postgres
+    restart: 'no'
+    ports:
+      - '127.0.0.1:55433:5432'
+    environment:
+      POSTGRES_DB: dfr_staging_drill
+      POSTGRES_USER: dfr_bootstrap
+      POSTGRES_PASSWORD: ${DFR_DRILL_BOOTSTRAP_PASSWORD:?missing}
+      DFR_MIGRATOR_PASSWORD: ${DFR_DRILL_MIGRATOR_PASSWORD:?missing}
+      DFR_RUNTIME_PASSWORD: ${DFR_DRILL_RUNTIME_PASSWORD:?missing}
+    volumes:
+      - dfr-staging-drill-data:/var/lib/postgresql/data
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+
+volumes:
+  dfr-staging-drill-data:
+

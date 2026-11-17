@@ -1,0 +1,28 @@
+{
+  "name": "@dfr/registry",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DFR Chain Registry: schema validation and chain/provider projection",
+  "type": "module",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "files": ["src", "config"],
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@dfr/errors": "workspace:*",
+    "@dfr/types": "workspace:*",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
+    "yaml": "^2.9.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4"
+  }
+}

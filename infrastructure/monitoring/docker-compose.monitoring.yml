@@ -1,0 +1,67 @@
+# DFR M1 监控样例：Prometheus（抓取 + 告警规则）+ Grafana（自动加载看板）
+#
+# **不是生产部署文件**：单机样例，用于"把已有的指标真正看见"。
+# 生产环境应接入既有 Prometheus/Grafana 或托管服务，本文件提供可复制的配置形状。
+#
+# 前置：
+#   1. Gateway 正在运行且 /metrics 可用（例如 docker-compose.m1.yml 起的实例，
+#      默认映射到宿主机 18787）；
+#   2. 导出 `DFR_METRICS_API_KEY`（形如 dfr_<8位 keyId>_<secret>），
+#      **不要**写进任何文件或提交。
+#
+# 用法：
+#   export DFR_METRICS_API_KEY="dfr_XXXXXXXX_<secret>"
+#   docker compose -f infrastructure/monitoring/docker-compose.monitoring.yml up -d
+#   open http://127.0.0.1:3000        # Grafana，默认 admin/admin（首次登录会要求改）
+#   open http://127.0.0.1:9090        # Prometheus
+#   docker compose -f infrastructure/monitoring/docker-compose.monitoring.yml down
+name: dfr-monitoring
+
+services:
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    restart: unless-stopped
+    # 运行时生成 scrape 配置（含 x-dfr-key），仓库里不存凭证。
+    entrypoint: ['/bin/sh', '/etc/prometheus/entrypoint.sh']
+    environment:
+      DFR_METRICS_API_KEY: ${DFR_METRICS_API_KEY:?请先导出 DFR_METRICS_API_KEY（形如 dfr_<keyId>_<secret>）}
+      # 默认抓取宿主机上 m1 样例 Gateway 的映射端口；改成服务名需加入同一网络。
+      DFR_METRICS_TARGET: ${DFR_METRICS_TARGET:-host.docker.internal:18787}
+    extra_hosts:
+      # Linux 上 host.docker.internal 需要显式声明（macOS/Windows 自带）。
+      - 'host.docker.internal:host-gateway'
+    ports:
+      - '127.0.0.1:9090:9090'
+    volumes:
+      - ./prometheus/entrypoint.sh:/etc/prometheus/entrypoint.sh:ro
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - dfr-prometheus-data:/prometheus
+    command: []
+    security_opt: ['no-new-privileges:true']
+
+  grafana:
+    image: grafana/grafana:11.5.1
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    ports:
+      - '127.0.0.1:3000:3000'
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${DFR_GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+      GF_ANALYTICS_REPORTING_ENABLED: 'false'
+      GF_ANALYTICS_CHECK_FOR_UPDATES: 'false'
+    volumes:
+      # 只挂载用到的两个子目录，而不是整个 /etc/grafana/provisioning：
+      # bind mount 会整体覆盖目录，遮蔽镜像自带的 plugins/alerting/notifiers/
+      # access-control，Grafana 每次启动都会打一条 level=error
+      # （"Failed to read ... no such file or directory"），把真实错误淹没。
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - dfr-grafana-data:/var/lib/grafana
+    security_opt: ['no-new-privileges:true']
+
+volumes:
+  dfr-prometheus-data:
+  dfr-grafana-data:

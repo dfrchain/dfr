@@ -1,0 +1,26 @@
+{
+  "name": "@dfr/tests",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DFR contract / integration / e2e test suites",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@dfr/adapter-evm": "workspace:*",
+    "@dfr/adapter-solana": "workspace:*",
+    "@dfr/core": "workspace:*",
+    "@dfr/errors": "workspace:*",
+    "@dfr/events": "workspace:*",
+    "@dfr/gateway": "workspace:*",
+    "@dfr/provider": "workspace:*",
+    "@dfr/registry": "workspace:*",
+    "@dfr/sdk-typescript": "workspace:*",
+    "@dfr/transaction": "workspace:*",
+    "@dfr/types": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4"
+  }
+}
