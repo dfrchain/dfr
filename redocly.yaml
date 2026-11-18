@@ -1,0 +1,44 @@
+# DFR OpenAPI 语义门禁配置（DFR-M1-A03）
+#
+# 规范来源：docs/architecture/m1-api-contract.md 第 7 节。
+# 入口脚本：scripts/lint-openapi.sh（由 pnpm verify 与 CI 调用）。
+#
+# 设计原则：
+#   1. 规则强度在此**显式声明**，不依赖工具的隐式默认值。@redocly/cli 已在
+#      package.json 固定为精确版本，但显式列出可让"门禁强度变化"在评审中可见，
+#      而不是随工具升级静默漂移。
+#   2. error 级规则是门禁的实质强度：语义无效即阻断。
+#   3. 已知、已记录的告警保持 `warn`，不静默关闭，避免"看不见的问题"。
+#      当前告警清单与处置见 docs/development/deliveries/DFR-M1-A03.md。
+extends:
+  - recommended
+
+rules:
+  # ---------------------------------------------------------------------------
+  # 语义正确性：error —— 这些一旦违反，HTTP 契约即不可实现或不可路由
+  # ---------------------------------------------------------------------------
+  struct: error
+  no-unresolved-refs: error
+  operation-operationId: error
+  operation-operationId-unique: error
+  operation-parameters-unique: error
+  path-parameters-defined: error
+  no-identical-paths: error
+  no-ambiguous-paths: error
+  security-defined: error
+  no-invalid-parameter-examples: error
+  no-invalid-media-type-examples: error
+
+  # ---------------------------------------------------------------------------
+  # 已知告警（保持 warn，不关闭）
+  # ---------------------------------------------------------------------------
+  # DFR 是专有内部 API，没有可填写的 license URL / SPDX 标识。
+  # 保留 warn 而不是 off：如果将来 license 字段被删除，本规则仍会提示。
+  info-license-strict: warn
+
+  # 内联 oneOf + discriminator 的互操作提示：**已修复**（TODO-005，2026-10-05）。
+  # 12 个分支（AssetRef×2 / BlockRef×4 / TransactionRef×2 / FinalityPolicy×4）已提为
+  # 命名 schema，联合统一用 $ref 引用。
+  # 规则保持 warn 而不是 off：若将来有人把分支重新内联，仍会提示；
+  # 同时 `tests/contract/spec-consistency.test.ts` 有一条断言把它升级为**强制**。
+  no-illogical-composition-keywords: warn

@@ -3,9 +3,10 @@
 `openapi.yaml` 是 HTTP 机器契约的单一事实来源。实现顺序固定为：契约测试先失败 → 更新 OpenAPI/types → Gateway → SDK → E2E。
 
 Connecting to an **already deployed** DFR: start with the
-[quickstart: connect to an existing deployment](../runbooks/connect-to-existing-deployment.md);
-for the key authorization model (why a chain-supported call still returns 403), see
-[API keys and scopes](api-keys-and-scopes.md).
+quickstart “connect to an existing deployment” (not included in this
+public snapshot); for the key authorization model (why a chain-supported
+call still returns 403), see “API keys and scopes” (not included in this
+public snapshot).
 
 当前已实现的端点（与 `openapi.yaml` 的 `paths` 一一对应）：
 
@@ -135,8 +136,7 @@ curl -s -X POST "$DFR_BASE/v1/transactions/<txHash>/confirm" \
 
 Signing and broadcast are not part of this example set (signing happens
 outside DFR). For the full flow, see §5 of the
-[quickstart](../runbooks/connect-to-existing-deployment.md#5-sign-externally-broadcast-confirm)
-and [m1-local §6](../runbooks/m1-local.md#6-走一遍写路径).
+quickstart §5 and m1-local §6 (both not included in this public snapshot).
 
 ## transactionId is a write-only handle
 
