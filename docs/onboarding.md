@@ -90,6 +90,8 @@ credentials never enter logs, errors, or snapshots.
 **Where do I get an API key?**
 From the operator of the DFR deployment you connect to. Keys use the
 `dfr_<keyId>_<secret>` format and are sent as the `x-dfr-key` header.
+Operators can issue one with `pnpm api-key:issue` (it prints the plaintext key
+once and the configuration hash); see `docs/api/quickstart.md`.
 
 **How do I report a secret that leaked into the repository?**
 Run `pnpm check:secrets` (read-only scan, `scripts/check-secrets.sh`) and

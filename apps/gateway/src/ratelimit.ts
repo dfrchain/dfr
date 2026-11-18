@@ -38,6 +38,15 @@ export class TokenBucketLimiter {
     private readonly now: () => number = () => Date.now(),
   ) {}
 
+  /** Effective bucket configuration, for the developer-facing `GET /v1/usage` limits block. */
+  limits(): Readonly<Record<RouteClass, BucketConfig>> {
+    return {
+      read: { ...this.configs.read },
+      write: { ...this.configs.write },
+      stream: { ...this.configs.stream },
+    };
+  }
+
   check(scope: string, routeClass: RouteClass): RateLimitDecision {
     const config = this.configs[routeClass];
     const key = `${scope}:${routeClass}`;

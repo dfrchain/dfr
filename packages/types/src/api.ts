@@ -9,6 +9,7 @@
  */
 import type { ChainId, Cursor, DecimalUint, Iso8601, RequestId, TransactionId } from './primitives.js';
 import type { Chain } from './chain.js';
+import type { CapabilityId } from './capability.js';
 import type { Balance } from './asset.js';
 import type { Block, FinalityLevel } from './block.js';
 import type {
@@ -186,4 +187,55 @@ export interface DfrErrorEnvelope {
   error: DfrError;
   status: number;
   instance?: string;
+}
+
+/* ------------------------------ Usage ------------------------------ */
+
+/** Rate-limit / usage buckets. Mirrors the Gateway's route classes. */
+export type UsageRouteClass = 'read' | 'write' | 'stream';
+
+export interface UsageRateLimit {
+  /** Bucket capacity (burst). */
+  readonly capacity: number;
+  readonly refillPerSecond: number;
+}
+
+export interface UsageLimits {
+  /** The effective token buckets of this deployment. */
+  readonly rateLimits: Readonly<Record<UsageRouteClass, UsageRateLimit>>;
+  /** The authenticated Key's scope (never includes secret material). */
+  readonly scope: {
+    readonly chains: readonly ChainId[] | '*';
+    readonly capabilities: readonly CapabilityId[] | '*';
+    readonly allowWrite: boolean;
+  };
+}
+
+/**
+ * Response of `GET /v1/usage` (developer-product task 03).
+ *
+ * Semantics that are deliberately explicit:
+ * - Counts are **per Gateway process** and reset on restart; this is not a billing ledger;
+ * - Only authenticated, route-matched API calls are counted;
+ * - The `/v1/usage` call itself is excluded, so polling does not inflate the numbers;
+ * - Operational endpoints (`/healthz`, `/readyz`, `/metrics`) are never counted.
+ */
+export interface UsageResponse {
+  readonly projectId: string;
+  readonly period: { readonly start: Iso8601; readonly end: Iso8601 };
+  readonly requests: {
+    readonly total: number;
+    readonly byRouteClass: Partial<Record<UsageRouteClass, number>>;
+    readonly byStatusClass: Partial<Record<'success' | 'clientError' | 'serverError', number>>;
+    /** Bounded route handler ids, never raw paths. */
+    readonly byRoute: Readonly<Record<string, number>>;
+    /** Chains observed; labels collapse to `other` past the meter's bound. */
+    readonly byChain: Readonly<Record<string, number>>;
+    readonly byCapability: Readonly<Record<string, number>>;
+    readonly byErrorCode: Readonly<Record<string, number>>;
+  };
+  /** Last authenticated API call, absent when the project has no traffic yet. */
+  readonly lastRequestAt?: Iso8601;
+  readonly limits: UsageLimits;
+  readonly requestId: RequestId;
 }

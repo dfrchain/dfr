@@ -30,6 +30,7 @@ import type {
   TransactionRef,
 } from '@dfr/types';
 import { scopeAllows, type ApiKeyScope, type StaticApiKeyConfig, verifyApiKey } from './auth.js';
+import { UsageMeter } from './usage.js';
 import { readJsonBody } from './body.js';
 import {
   handleBuildTransaction,
@@ -117,6 +118,14 @@ export interface GatewayOptions {
     * In-process event bus (M2-C01). When not assembled, `/v1/events/subscribe` returns 404 (this deployment has no event stream).
    */
   eventBus?: EventBus;
+  /**
+    * Developer usage meter behind `GET /v1/usage` (developer-product task 03).
+    *
+    * Always assembled (an in-process default is created when omitted) because "view usage" is part of the
+    * commercial acceptance bar; injecting one lets tests and multi-Gateway setups share/observe counters.
+    * It counts authenticated, route-matched API calls only; it is not a billing ledger.
+   */
+  usageMeter?: UsageMeter;
   /** Max simultaneous SSE streams per Gateway process; defaults to 100. */
   maxSseConnections?: number;
   /**
@@ -153,6 +162,13 @@ const BLOCK_REF_RE = /^(number:[0-9]+|hash:0x[0-9a-fA-F]+|slot:[0-9]+|tag:(lates
 export function createGatewayServer(options: GatewayOptions): Server {
   const limiter = options.limiter ?? new TokenBucketLimiter();
   const logger = options.logger ?? silentLogger();
+  // Resolve the usage meter once: the endpoint and the request path must share the same instance.
+  const resolved: GatewayOptions = {
+    ...options,
+    limiter,
+    ...(options.usageMeter === undefined ? { usageMeter: new UsageMeter() } : {}),
+  };
+  const usage = resolved.usageMeter as UsageMeter;
   const maxStreams = options.maxSseConnections ?? 100;
   if (!Number.isSafeInteger(maxStreams) || maxStreams < 1) {
     throw new Error('maxSseConnections must be a positive safe integer');
@@ -174,7 +190,7 @@ export function createGatewayServer(options: GatewayOptions): Server {
   const sseConnections = new SseConnectionRegistry(SSE_MAX_CONNECTIONS_PER_KEY, maxStreams);
 
   return createServer((req, res) => {
-    void handle(req, res, options, limiter, logger, reserveStream, sseConnections);
+    void handle(req, res, resolved, limiter, logger, reserveStream, sseConnections, usage);
   });
 }
 
@@ -186,6 +202,7 @@ async function handle(
   logger: GatewayLogger,
   reserveStream: () => (() => void) | undefined,
   sseConnections: SseConnectionRegistry,
+  usage: UsageMeter,
 ): Promise<void> {
   const started = Date.now();
   const url = new URL(req.url ?? '/', 'http://gateway.local');
@@ -210,7 +227,13 @@ async function handle(
   let routeLabel = 'unmatched';
   let routeClassLabel: GatewayRouteClass | undefined;
   let chainLabel: string | undefined;
+  let capabilityLabel: string | undefined;
   let inflightEntered = false;
+   // Usage is attributed only after authentication succeeds; anonymous traffic is not a project's usage.
+  let usageProjectId: string | undefined;
+   // `GET /v1/usage` excludes itself so a client can poll the endpoint without inflating its own numbers.
+  let usageExcluded = false;
+  let errorCodeLabel: string | undefined;
 
   try {
      // 1. Operations health check (not part of the public API; no auth required, and it does not enter the rate-limit bucket).
@@ -260,7 +283,7 @@ async function handle(
      // `?ticket=` ticket authentication. The ticket is itself a single-use credential; the standard auth path would require
      // `X-DFR-Key`, excluding the browser scenario. Ticket consumption logic completes here.
     if (req.method === 'GET' && path === '/v1/events/subscribe') {
-      await handleSubscribe(req, res, url, options, limiter, requestId, reserveStream, sseConnections);
+      await handleSubscribe(req, res, url, options, limiter, requestId, reserveStream, sseConnections, usage);
       return;
     }
 
@@ -277,6 +300,7 @@ async function handle(
              : 'Invalid API Key',
       });
     }
+    usageProjectId = auth.projectId;
 
      // ApiKeyScope's IP constraint must run before any authenticated business endpoint. X-Forwarded-For
      // shares clientIp with the SSE ticket binding for its trust boundary: it is only trusted when the direct peer is a configured trusted proxy.
@@ -327,6 +351,8 @@ async function handle(
        throw createDfrError('DFR_NOT_FOUND', { requestId, message: `Unknown route ${path}` });
     }
     routeLabel = route.handler;
+    capabilityLabel = route.capability;
+    usageExcluded = route.handler === 'getUsage';
 
      // When an M1 deployment has durable dependencies, /readyz=503 must not be just an observability signal:
      // when a dependency is already unreachable, reject new business requests to avoid unrecoverable half-states during a Store outage.
@@ -477,6 +503,15 @@ async function handle(
   } catch (err) {
     const error = isDfrError(err) ? err : toDfrError(err, { requestId });
     status = error.httpStatus;
+    errorCodeLabel = error.code;
+     // RFC 9110: a 429 SHOULD send Retry-After so generic HTTP retry middleware (and our SDK
+     // retry policy) can back off by the real refill time instead of guessing.
+    if (error.code === 'DFR_RATE_LIMITED') {
+      const retryAfterMs = error.details?.['retryAfterMs'];
+      if (typeof retryAfterMs === 'number' && Number.isFinite(retryAfterMs) && retryAfterMs >= 0) {
+        res.setHeader('Retry-After', String(Math.max(1, Math.ceil(retryAfterMs / 1000))));
+      }
+    }
      // Idempotency conflicts are only observable on the error path; `replayed` is reported by the write handler through the same outlet.
     if (error.code === 'DFR_IDEMPOTENCY_CONFLICT') {
       options.gatewayMetrics?.recordIdempotencyOutcome('conflict');
@@ -487,6 +522,17 @@ async function handle(
      // Metrics before logs: logs may block on I/O, and metrics should not be dragged down by them.
     if (inflightEntered && routeClassLabel !== undefined) {
       options.gatewayMetrics?.changeInflight(routeClassLabel, -1);
+    }
+    if (usageProjectId !== undefined && routeClassLabel !== undefined && !usageExcluded) {
+      usage.record({
+        projectId: usageProjectId,
+        route: routeLabel,
+        routeClass: routeClassLabel,
+        statusCode: status,
+        ...(chainLabel !== undefined ? { chain: chainLabel } : {}),
+        ...(capabilityLabel !== undefined ? { capability: capabilityLabel } : {}),
+        ...(errorCodeLabel !== undefined ? { errorCode: errorCodeLabel } : {}),
+      });
     }
     options.gatewayMetrics?.recordRequest({
       route: routeLabel,
@@ -526,6 +572,7 @@ async function handleSubscribe(
   requestId: RequestId,
   reserveStream: () => (() => void) | undefined,
   sseConnections: SseConnectionRegistry,
+  usage: UsageMeter,
 ): Promise<void> {
   const bus = options.eventBus;
   if (bus === undefined) {
@@ -642,6 +689,15 @@ async function handleSubscribe(
     });
   }
   // Establish long-lived SSE only after all auth/limiting gates succeeded.
+   // Stream usage is counted once the subscription is admitted (long-lived connections are not
+   // recorded per event). The route never reaches `dispatch`, so it records here explicitly.
+  usage.record({
+    projectId: options.auth.projectId,
+    route: 'subscribeEvents',
+    routeClass: 'stream',
+    statusCode: 200,
+    ...(filter.chain !== undefined ? { chain: filter.chain } : {}),
+  });
   res.once('close', releaseStream);
   res.once('error', releaseStream);
   res.once('close', releaseKeySlot);
@@ -735,6 +791,35 @@ async function dispatch(
   switch (route.handler) {
     case 'listChains':
       return { status: 200, body: { items: core.listChains(), requestId } };
+
+    case 'getUsage': {
+      const meter = options.usageMeter;
+      const limiter = options.limiter;
+      if (meter === undefined || limiter === undefined) {
+        // createGatewayServer always resolves both; this guards a hand-built GatewayOptions.
+        throw createDfrError('DFR_INTERNAL_ERROR', {
+          requestId,
+          message: 'Usage metering is not assembled on this Gateway',
+        });
+      }
+      const snapshot = meter.snapshot(projectId);
+      const scope = options.auth.scope;
+      return {
+        status: 200,
+        body: {
+          ...snapshot,
+          limits: {
+            rateLimits: limiter.limits(),
+            scope: {
+              chains: scope.chains,
+              capabilities: scope.capabilities,
+              allowWrite: scope.allowWrite,
+            },
+          },
+          requestId,
+        },
+      };
+    }
 
     case 'subscribeEvents':
        // SSE is handled in handleSubscribe (a long-lived connection, not via dispatch). Reaching here means the route dispatch has a bug.

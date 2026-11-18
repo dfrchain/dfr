@@ -28,6 +28,7 @@ import type {
   SimulateTransactionResponse,
   Transaction,
   TransactionRequest,
+  UsageResponse,
 } from '@dfr/types';
 
 export interface DfrClientOptions {
@@ -36,6 +37,30 @@ export interface DfrClientOptions {
   baseUrl?: string;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
+  /**
+   * Opt-in retry policy. When omitted the SDK makes exactly one attempt (no behavior change
+   * for existing callers). Retries only happen for errors the server marks both `retryable`
+   * and `safe_to_retry`; `build`/`broadcast` are never retried because the server marks them unsafe.
+   */
+  retry?: RetryPolicy;
+}
+
+export interface RetryPolicy {
+  /** Retries after the first attempt. Default 2. */
+  maxRetries?: number;
+  /** Exponential backoff base in ms. Default 250. */
+  baseDelayMs?: number;
+  /** Backoff ceiling in ms. Default 5000. */
+  maxDelayMs?: number;
+  /** Add up to `baseDelayMs` of random jitter. Default true. */
+  jitter?: boolean;
+  /**
+   * Extra predicate, called after the built-in `retryable && safe_to_retry` check.
+   * Return false to stop retrying (e.g. to exclude 429 on a latency-sensitive path).
+   */
+  retryOn?: (error: DfrApiError, completedAttempts: number) => boolean;
+  /** Injectable delay, for deterministic tests/embedders. Defaults to a real timer. */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 /** Client-side error matching docs/architecture/error-spec-v0.1.md. */
@@ -48,6 +73,10 @@ export class DfrApiError extends Error {
   readonly requestId: string;
   readonly details?: Record<string, unknown>;
   readonly chainError?: { code?: string; message?: string };
+  /** Server `Retry-After`, in ms, when present (used by the retry policy instead of backoff). */
+  readonly retryAfterMs?: number;
+  /** Number of attempts the SDK made for this logical operation (1 when not retried). */
+  readonly attempts?: number;
 
   constructor(init: {
     code: string;
@@ -58,6 +87,8 @@ export class DfrApiError extends Error {
     requestId: string;
     details?: Record<string, unknown>;
     chainError?: { code?: string; message?: string };
+    retryAfterMs?: number;
+    attempts?: number;
   }) {
     super(init.message);
     this.code = init.code;
@@ -67,6 +98,8 @@ export class DfrApiError extends Error {
     this.requestId = init.requestId;
     if (init.details !== undefined) this.details = init.details;
     if (init.chainError !== undefined) this.chainError = init.chainError;
+    if (init.retryAfterMs !== undefined) this.retryAfterMs = init.retryAfterMs;
+    if (init.attempts !== undefined) this.attempts = init.attempts;
   }
 }
 
@@ -110,6 +143,24 @@ export interface ConfirmTransactionParams extends ConfirmTransactionRequest {
   txHash: string;
 }
 
+export interface GetLogsPagedParams {
+  chain: string;
+  /** Decimal block-number string. */
+  fromBlock: string;
+  /** Decimal block-number string. */
+  toBlock: string;
+  address?: string;
+  topics?: readonly (string | readonly string[] | null)[];
+  /** Blocks per request; default 2000 (the EVM adapter's default `maxBlockRange`). */
+  windowBlocks?: number;
+}
+
+export interface GetLogsPagedResult {
+  logs: readonly ChainLog[];
+  /** Number of HTTP requests made. */
+  pages: number;
+}
+
 /**
  * Generate a `req_<ULID>` in the same format as `@dfr/errors`' `newRequestId()`.
  *
@@ -142,6 +193,7 @@ export class DFR {
   private readonly baseUrl: string;
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
+  private readonly retry: Required<Omit<RetryPolicy, 'retryOn'>> & Pick<RetryPolicy, 'retryOn'> | undefined;
 
   constructor(options: DfrClientOptions) {
     if (options.apiKey === undefined || options.apiKey === '') {
@@ -151,6 +203,7 @@ export class DFR {
     this.baseUrl = (options.baseUrl ?? 'http://localhost:8787').replace(/\/+$/, '');
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch;
     this.timeoutMs = options.timeoutMs ?? 30_000;
+    this.retry = options.retry === undefined ? undefined : resolveRetryPolicy(options.retry);
   }
 
   async listChains(): Promise<readonly Chain[]> {
@@ -351,6 +404,45 @@ export class DFR {
   }
 
   /**
+   * Query logs across a wide block range by splitting it into adapter-safe windows
+   * (`getLogsPaged`, developer-product task 03).
+   *
+   * Why this exists: the HTTP API has no opaque-cursor pagination for logs, and the Gateway
+   * rejects a range wider than the chain's `maxBlockRange`. This helper keeps every request
+   * inside `windowBlocks` (default 2000, the EVM adapter default), concatenating the disjoint
+   * results. It deliberately does not pass `limit`, so a window is never silently truncated.
+   * If a single window still contains more logs than the server returns, treat it as a gap and
+   * narrow `windowBlocks`.
+   */
+  async getLogsPaged(params: GetLogsPagedParams): Promise<GetLogsPagedResult> {
+    const from = parseBlockNumber(params.fromBlock, 'fromBlock');
+    const to = parseBlockNumber(params.toBlock, 'toBlock');
+    if (from > to) {
+      throw new TypeError('DFR: getLogsPaged requires fromBlock <= toBlock');
+    }
+    const windowBlocks = params.windowBlocks ?? 2000;
+    if (!Number.isSafeInteger(windowBlocks) || windowBlocks < 1) {
+      throw new TypeError('DFR: getLogsPaged windowBlocks must be a positive safe integer');
+    }
+    const window = BigInt(windowBlocks);
+    const logs: ChainLog[] = [];
+    let pages = 0;
+    for (let start = from; start <= to; start += window) {
+      const end = start + window - 1n > to ? to : start + window - 1n;
+      const page = await this.getLogs({
+        chain: params.chain,
+        fromBlock: start.toString(10),
+        toBlock: end.toString(10),
+        ...(params.address !== undefined ? { address: params.address } : {}),
+        ...(params.topics !== undefined ? { topics: params.topics } : {}),
+      });
+      logs.push(...page);
+      pages += 1;
+    }
+    return { logs, pages };
+  }
+
+  /**
    * Read-only contract call (ADR-035). Choose one of `data` or `abi+method`.
    */
   async readContract(params: {
@@ -368,6 +460,17 @@ export class DFR {
       { body, safeToRetryOnTimeout: true },
     );
     return result.result;
+  }
+
+  /**
+   * Per-project usage for the current Gateway process (`GET /v1/usage`, developer-product task 03).
+   *
+   * Returns the project's request counts by route/chain/error code plus the effective rate-limit
+   * buckets and Key scope. Counts are process-local and reset on restart — this is a usage view,
+   * not an invoice.
+   */
+  async getUsage(): Promise<UsageResponse> {
+    return this.get<UsageResponse>('/v1/usage');
   }
 
   /** Account existence / contract determination (ADR-036). */
@@ -560,6 +663,10 @@ export class DFR {
    *    so timeouts can still provide a correlatable requestId (the Gateway writes back the same value);
    * 3. **Transport failure** → `DFR_PROVIDER_UNAVAILABLE`(503); the error message carries only method+path,
    *    never the baseUrl (the endpoint may be sensitive), and never the Key.
+   *
+   * Retry (opt-in, developer-product task 03): the same `X-Request-Id` and the same `Idempotency-Key`
+   * are reused across attempts, so a retried read is still one logical operation. Retrying is only
+   * possible when the server says `retryable && safe_to_retry`; a caller cancellation is never retried.
    */
   private async request<T>(
     method: 'GET' | 'POST',
@@ -572,8 +679,43 @@ export class DFR {
       safeToRetryOnTimeout: boolean;
     },
   ): Promise<T> {
-    // Generated only for error correlation; never enters URLs or logs.
+    // Generated only for error correlation; never enters URLs or logs; stable across retries.
     const requestId = newRequestId();
+    const policy = this.retry;
+    const maxRetries = policy?.maxRetries ?? 0;
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await this.requestOnce<T>(method, path, options, requestId, attempt + 1);
+      } catch (error) {
+        if (policy === undefined || attempt >= maxRetries || !isDfrApiError(error)) throw error;
+        if (isAborted(options.signal)) throw options.signal?.reason ?? error;
+        const allowed =
+          error.retryable &&
+          error.safeToRetry &&
+          (policy.retryOn === undefined || policy.retryOn(error, attempt + 1));
+        if (!allowed) throw error;
+        const backoff = Math.min(policy.maxDelayMs, policy.baseDelayMs * 2 ** attempt);
+        const jitter = policy.jitter ? Math.floor(Math.random() * policy.baseDelayMs) : 0;
+        await policy.sleep(error.retryAfterMs ?? backoff + jitter);
+        if (isAborted(options.signal)) throw options.signal?.reason;
+      }
+    }
+  }
+
+  /** One HTTP attempt; `attempt` is 1-based and only used for error reporting. */
+  private async requestOnce<T>(
+    method: 'GET' | 'POST',
+    path: string,
+    options: {
+      body?: unknown;
+      idempotencyKey?: string;
+      signal?: AbortSignal;
+      timeoutMs?: number;
+      safeToRetryOnTimeout: boolean;
+    },
+    requestId: string,
+    attempt: number,
+  ): Promise<T> {
     const timeoutController = new AbortController();
     const timer = setTimeout(
       () => timeoutController.abort(new Error('sdk-timeout')),
@@ -615,6 +757,7 @@ export class DFR {
           retryable: true,
           safeToRetry: options.safeToRetryOnTimeout,
           requestId,
+          attempts: attempt,
         });
       }
       throw new DfrApiError({
@@ -624,6 +767,7 @@ export class DFR {
         retryable: true,
         safeToRetry: options.safeToRetryOnTimeout,
         requestId,
+        attempts: attempt,
       });
     } finally {
       clearTimeout(timer);
@@ -642,6 +786,7 @@ export class DFR {
     }
 
     if (!response.ok) {
+      const retryAfterMs = retryAfterMsOf(response.headers.get('retry-after'));
       const problem = (parsable ? parsed : {}) as {
         dfr_code?: string;
         detail?: string;
@@ -661,6 +806,8 @@ export class DFR {
         requestId: problem.request_id ?? (response.headers.get('x-request-id') ?? requestId),
         ...(problem.details !== undefined ? { details: problem.details } : {}),
         ...(problem.chain_error !== undefined ? { chainError: problem.chain_error } : {}),
+        ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+        attempts: attempt,
       });
     }
 
@@ -672,6 +819,7 @@ export class DFR {
         retryable: true,
         safeToRetry: options.safeToRetryOnTimeout,
         requestId: response.headers.get('x-request-id') ?? requestId,
+        attempts: attempt,
       });
     }
 
@@ -703,6 +851,19 @@ function generateIdempotencyKey(): string {
 export const IDEMPOTENCY_KEY_MIN_LENGTH = 8;
 export const IDEMPOTENCY_KEY_MAX_LENGTH = 128;
 
+/** Caller cancellation is checked through a helper so TS does not over-narrow a property read. */
+function isAborted(signal: AbortSignal | undefined): boolean {
+  return signal !== undefined && signal.aborted;
+}
+
+/** Strict decimal block number; the HTTP contract never accepts hex or JSON numbers here. */
+function parseBlockNumber(value: string, field: string): bigint {
+  if (typeof value !== 'string' || !/^[0-9]+$/u.test(value)) {
+    throw new TypeError(`DFR: getLogsPaged ${field} must be a decimal block-number string`);
+  }
+  return BigInt(value);
+}
+
 function assertIdempotencyKey(value: string, method: string): string {
   if (value.length < IDEMPOTENCY_KEY_MIN_LENGTH || value.length > IDEMPOTENCY_KEY_MAX_LENGTH) {
     throw new TypeError(
@@ -711,6 +872,42 @@ function assertIdempotencyKey(value: string, method: string): string {
     );
   }
   return value;
+}
+
+/** Defaults for an explicitly provided retry policy; validates numeric bounds eagerly. */
+function resolveRetryPolicy(policy: RetryPolicy): Required<Omit<RetryPolicy, 'retryOn'>> & Pick<RetryPolicy, 'retryOn'> {
+  const resolved = {
+    maxRetries: policy.maxRetries ?? 2,
+    baseDelayMs: policy.baseDelayMs ?? 250,
+    maxDelayMs: policy.maxDelayMs ?? 5_000,
+    jitter: policy.jitter ?? true,
+    sleep:
+      policy.sleep ??
+      ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))),
+    ...(policy.retryOn !== undefined ? { retryOn: policy.retryOn } : {}),
+  };
+  if (!Number.isInteger(resolved.maxRetries) || resolved.maxRetries < 0 || resolved.maxRetries > 10) {
+    throw new RangeError('DFR: retry.maxRetries must be an integer in 0..10');
+  }
+  for (const [name, value] of [
+    ['baseDelayMs', resolved.baseDelayMs],
+    ['maxDelayMs', resolved.maxDelayMs],
+  ] as const) {
+    if (!Number.isFinite(value) || value < 0) {
+      throw new RangeError(`DFR: retry.${name} must be a non-negative finite number`);
+    }
+  }
+  return resolved;
+}
+
+/** `Retry-After` accepts delta-seconds or an HTTP date (RFC 9110). */
+function retryAfterMsOf(value: string | null): number | undefined {
+  if (value === null || value.trim() === '') return undefined;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.ceil(seconds * 1000);
+  const at = Date.parse(value);
+  if (Number.isNaN(at)) return undefined;
+  return Math.max(0, at - Date.now());
 }
 
 export type {
@@ -728,6 +925,7 @@ export type {
   Transaction,
   TransactionRequest,
   UnsignedTransaction,
+  UsageResponse,
 } from '@dfr/types';
 
 /**

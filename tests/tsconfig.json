@@ -3,5 +3,8 @@
   "compilerOptions": {
     "allowImportingTsExtensions": true
   },
-  "include": ["**/*.ts"]
+  "include": [
+    "**/*.ts",
+    "../scripts/issue-api-key.ts"
+  ]
 }

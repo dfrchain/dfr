@@ -32,6 +32,8 @@ tags:
     description: Transaction queries and lifecycle
   - name: events
     description: Event subscriptions
+  - name: usage
+    description: Per-project API usage and effective limits
 
 security:
   - ApiKeyAuth: []
@@ -515,6 +517,37 @@ paths:
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '422': { $ref: '#/components/responses/UnsupportedCapability' }
         '503': { $ref: '#/components/responses/ChainUnavailable' }
+
+  /v1/usage:
+    get:
+      tags: [usage]
+      operationId: getUsage
+      summary: Read this project's API usage (current Gateway process)
+      description: |
+        Developer-facing usage view (developer-product task 03): what this project has called,
+        how it went, and which effective limits apply.
+
+        Semantics, stated explicitly because they matter commercially:
+        - Counts are **per Gateway process** and reset on restart. This is a request meter,
+          **not** a billing ledger; invoices and durable cross-process aggregation are not
+          implemented yet (see docs/api/capability-matrix.md);
+        - Only authenticated, route-matched API calls are counted;
+        - This `/v1/usage` call itself is excluded, so polling it does not inflate the numbers;
+        - Operational endpoints (`/healthz`, `/readyz`, `/metrics`) are never counted;
+        - Labels are bounded (route ids, capabilities, error codes; chain labels collapse to `other`),
+          so no caller-controlled string can make the response unbounded.
+      x-dfr-milestone: M0
+      responses:
+        '200':
+          description: Usage snapshot for the authenticated project
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsageResponse'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '429':
+          $ref: '#/components/responses/RateLimited'
 
   /v1/logs:
     post:
@@ -1528,6 +1561,95 @@ components:
       required: [confirmation, requestId]
       properties:
         confirmation: { $ref: '#/components/schemas/ConfirmationResult' }
+        requestId: { type: string }
+
+    UsageRateLimit:
+      type: object
+      required: [capacity, refillPerSecond]
+      properties:
+        capacity:
+          type: integer
+          minimum: 1
+          description: Bucket capacity (burst).
+        refillPerSecond:
+          type: number
+          minimum: 0
+          description: Token refill rate.
+
+    UsageLimits:
+      type: object
+      required: [rateLimits, scope]
+      properties:
+        rateLimits:
+          type: object
+          required: [read, write, stream]
+          properties:
+            read: { $ref: '#/components/schemas/UsageRateLimit' }
+            write: { $ref: '#/components/schemas/UsageRateLimit' }
+            stream: { $ref: '#/components/schemas/UsageRateLimit' }
+        scope:
+          type: object
+          required: [chains, capabilities, allowWrite]
+          properties:
+            chains:
+              oneOf:
+                - type: string
+                  const: '*'
+                - type: array
+                  items: { $ref: '#/components/schemas/ChainId' }
+            capabilities:
+              oneOf:
+                - type: string
+                  const: '*'
+                - type: array
+                  items: { $ref: '#/components/schemas/CapabilityId' }
+            allowWrite: { type: boolean }
+
+    UsageRequests:
+      type: object
+      required: [total, byRouteClass, byStatusClass, byRoute, byChain, byCapability, byErrorCode]
+      properties:
+        total:
+          type: integer
+          minimum: 0
+        byRouteClass:
+          type: object
+          additionalProperties: { type: integer, minimum: 0 }
+        byStatusClass:
+          type: object
+          additionalProperties: { type: integer, minimum: 0 }
+        byRoute:
+          type: object
+          description: Bounded route handler ids, never raw paths.
+          additionalProperties: { type: integer, minimum: 0 }
+        byChain:
+          type: object
+          description: Chains observed; labels collapse to `other` past the Gateway's bound.
+          additionalProperties: { type: integer, minimum: 0 }
+        byCapability:
+          type: object
+          additionalProperties: { type: integer, minimum: 0 }
+        byErrorCode:
+          type: object
+          additionalProperties: { type: integer, minimum: 0 }
+
+    UsageResponse:
+      type: object
+      required: [projectId, period, requests, limits, requestId]
+      properties:
+        projectId: { type: string }
+        period:
+          type: object
+          required: [start, end]
+          properties:
+            start: { type: string, format: date-time }
+            end: { type: string, format: date-time }
+        requests: { $ref: '#/components/schemas/UsageRequests' }
+        lastRequestAt:
+          type: string
+          format: date-time
+          description: Absent when the project has no authenticated traffic yet.
+        limits: { $ref: '#/components/schemas/UsageLimits' }
         requestId: { type: string }
 
     ChainError:

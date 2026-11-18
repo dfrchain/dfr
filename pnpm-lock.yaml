@@ -71,22 +71,6 @@ importers:
         specifier: ^26.6.4
         version: 26.6.4
 
-  apps/console:
-    dependencies:
-      '@dfr/types':
-        specifier: workspace:*
-        version: link:../../packages/types
-    devDependencies:
-      '@types/node':
-        specifier: ^26.6.4
-        version: 26.6.4
-
-  apps/docs:
-    devDependencies:
-      '@types/node':
-        specifier: ^26.6.4
-        version: 26.6.4
-
   apps/gateway:
     dependencies:
       '@dfr/adapter-evm':
@@ -129,6 +113,12 @@ importers:
       '@types/node':
         specifier: ^26.6.4
         version: 26.6.4
+
+  examples/quickstart:
+    dependencies:
+      '@dfr/sdk-typescript':
+        specifier: workspace:*
+        version: link:../../sdk/typescript
 
   packages/core:
     dependencies:

@@ -2,7 +2,7 @@
   "name": "dfr",
   "version": "0.0.0",
   "private": false,
-  "description": "DFR — Universal Blockchain Infrastructure",
+  "description": "DFR \u2014 Universal Blockchain Infrastructure",
   "license": "Apache-2.0",
   "type": "module",
   "packageManager": "pnpm@9.4.0",
@@ -12,6 +12,7 @@
   "scripts": {
     "check:dependency-lock": "node scripts/check-dependency-lock.mjs",
     "check:secrets": "./scripts/check-secrets.sh",
+    "api-key:issue": "node --experimental-strip-types --experimental-transform-types --import ./scripts/ts-runtime/register.mjs scripts/issue-api-key.ts",
     "e03:preflight": "./scripts/e03-preflight.sh",
     "lint": "eslint .",
     "lint:openapi": "./scripts/lint-openapi.sh",
@@ -30,7 +31,14 @@
     "test:resilience": "vitest run apps/gateway/test/readiness-wiring.test.ts apps/gateway/test/readiness-active-probe.test.ts apps/gateway/test/gateway-metrics.test.ts packages/provider/test/provider.test.ts",
     "test:staging-fault-drill-real": "./scripts/staging-fault-drill.sh",
     "test:db-backup-restore": "./scripts/db-backup-restore-drill.sh",
-    "staging:preflight": "./scripts/staging-preflight.sh"
+    "staging:preflight": "./scripts/staging-preflight.sh",
+    "test:sdk-pack": "node scripts/sdk-pack-smoke.mjs",
+    "example:chains": "node --experimental-strip-types --experimental-transform-types --import ./scripts/ts-runtime/register.mjs examples/quickstart/01-chains.ts",
+    "example:balance": "node --experimental-strip-types --experimental-transform-types --import ./scripts/ts-runtime/register.mjs examples/quickstart/02-balance-and-tx.ts",
+    "example:errors": "node --experimental-strip-types --experimental-transform-types --import ./scripts/ts-runtime/register.mjs examples/quickstart/03-errors.ts",
+    "example:usage": "node --experimental-strip-types --experimental-transform-types --import ./scripts/ts-runtime/register.mjs examples/quickstart/04-usage.ts",
+    "example:events": "node --experimental-strip-types --experimental-transform-types --import ./scripts/ts-runtime/register.mjs examples/quickstart/05-events.ts",
+    "examples:quickstart": "node --experimental-strip-types --experimental-transform-types --import ./scripts/ts-runtime/register.mjs examples/quickstart/run-all.ts"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

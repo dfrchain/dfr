@@ -16,13 +16,38 @@ DFR TypeScript client, depending only on the public HTTP contract and `@dfr/type
 - `safeToRetry` after a timeout: `true` for reads and simulate, `false` for build;
 - Broadcast is never retried automatically.
 
+## Developer-product additions (task 03)
+
+- **Opt-in retry policy** (`new DFR({ retry })`): retries only when the server says
+  `retryable && safe_to_retry`; reuses the same `X-Request-Id` and `Idempotency-Key`; honors
+  `Retry-After` on 429; never retries caller cancellation or unsafe writes. Off by default.
+- **Usage**: `getUsage()` — request counts per route/chain/error code plus effective limits.
+  Counts are per Gateway process and reset on restart; not a billing ledger.
+- **Log pagination**: `getLogsPaged({ chain, fromBlock, toBlock, windowBlocks })` splits a wide
+  range into adapter-safe windows. There is no opaque-cursor pagination on the HTTP API.
+- **Installable build**: `pnpm --filter @dfr/sdk-typescript build` emits `dist/`; `pnpm pack`
+  applies `publishConfig` so a tarball install resolves `dist`, while workspace tests keep using
+  `src`. `pnpm test:sdk-pack` verifies build → pack → clean `node_modules` → runtime + `tsc`.
+
+Usage example:
+
+```ts
+const dfr = new DFR({ apiKey, retry: { maxRetries: 2 } });
+const usage = await dfr.getUsage();
+const { logs } = await dfr.getLogsPaged({ chain: 'base-sepolia', fromBlock: '0', toBlock: '4500' });
+```
+
 Every SDK method must have a Gateway E2E test, not only fetch-mock unit tests.
 
-Current status (2026-10-06):
+Current status (2026-11-19, developer-product branch):
 
 - Read methods: `test/read.test.ts` asserts the request contract item by item (path, query string, envelope unpacking,
   `getReceipt` returning `null` when the field is missing, error mapping);
 - Write methods: `test/write.test.ts` covers the request bodies for build/simulate/broadcast/confirm,
   default idempotency keys, timeout/cancel/transport-failure normalization, and the idempotency-key length contract;
+- Usage/retry/pagination: `test/usage.test.ts`, `test/retry.test.ts`, `test/logs-pagination.test.ts`;
+- Installability: `scripts/sdk-pack-smoke.mjs` (`pnpm test:sdk-pack`);
 - End to end: `tests/e2e/m1-write.e2e.test.ts` and others drive a real Gateway + Core + EVM Adapter
-  through the full chain; `chains.yaml` already declares build/simulate/broadcast for ethereum-sepolia.
+  through the full chain; `chains.yaml` already declares build/simulate/broadcast for ethereum-sepolia;
+- Developer quickstart examples: `examples/quickstart/`, verified by
+  `tests/e2e/developer-quickstart.e2e.test.ts`.

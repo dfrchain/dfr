@@ -4,11 +4,18 @@
 The implementation order is fixed: contract test fails first → update
 OpenAPI/types → Gateway → SDK → E2E.
 
-Connecting to an **already deployed** DFR: start with the
-quickstart “connect to an existing deployment” (not included in this
-public snapshot); for the key authorization model (why a chain-supported
-call still returns 403), see “API keys and scopes” (not included in this
-public snapshot).
+Connecting to an **already deployed** DFR: start with
+[the API quickstart](./quickstart.md), which covers getting a key, installing
+the SDK, the first call, error handling, usage, and events. For why a
+chain-supported call still returns 403, see the same document's
+[key scope and troubleshooting sections](./quickstart.md#3-first-call-curl).
+
+Developer-product documents in this directory:
+
+- [quickstart.md](./quickstart.md) — key → install → first call → errors → usage → events.
+- [bex-integration.md](./bex-integration.md) — how the upper-layer BEX product consumes DFR safely.
+- [capability-matrix.md](./capability-matrix.md) — sellable / caveated / not-sellable capabilities.
+- [developer-product-delivery.md](./developer-product-delivery.md) — delivery evidence and SHAs.
 
 Endpoints currently implemented (matching `openapi.yaml`'s `paths` one to
 one):
@@ -21,7 +28,8 @@ one):
   `POST /v1/transactions/{transactionId}/abandon` (void an unbroadcast transaction, ADR-037),
   `POST /v1/transactions/{txHash}/confirm`;
 - Contract read-only: `POST /v1/contracts/read` (ADR-035), `POST /v1/logs` (ADR-034);
-- Events: `POST /v1/events/tickets`, `GET /v1/events/subscribe` (SSE, M2).
+- Events: `POST /v1/events/tickets`, `GET /v1/events/subscribe` (SSE, M2);
+- Usage: `GET /v1/usage` (per-project request counts + effective limits).
 
 The M0 read-only endpoints, M1 write endpoints, M2 SSE, and M4 read-only
 capabilities are all implemented; a capability the registry has not enabled
@@ -139,8 +147,9 @@ curl -s -X POST "$DFR_BASE/v1/transactions/<txHash>/confirm" \
 ```
 
 Signing and broadcast are not part of this example set (signing happens
-outside DFR). For the full flow, see §5 of the
-quickstart §5 and m1-local §6 (both not included in this public snapshot).
+outside DFR). For the full flow, see the
+[quickstart](./quickstart.md#5-api-surface-at-a-glance) and the BEX
+[withdrawal flow](./bex-integration.md#5-withdrawal-submission-build--sign--broadcast-once).
 
 ## transactionId is a write-only handle
 

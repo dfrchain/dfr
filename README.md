@@ -102,6 +102,12 @@ authenticate with an `x-dfr-key: dfr_<keyId>_<secret>` header. DFR never holds
 user private keys: signing is done by an external signer, and the gateway
 broadcasts once without automatic retry.
 
+New to DFR: start with [docs/api/quickstart.md](docs/api/quickstart.md)
+(key → SDK install → first call → errors → usage). Runnable examples are in
+`examples/quickstart/` (`pnpm examples:quickstart`). What is and is not
+sellable is stated in
+[docs/api/capability-matrix.md](docs/api/capability-matrix.md).
+
 ## Links
 
 - Website: https://dfrchain.com

@@ -26,7 +26,8 @@ export type RouteHandlerId =
   | 'broadcastTransaction'
   | 'confirmTransaction'
   | 'createEventTicket'
-  | 'subscribeEvents';
+  | 'subscribeEvents'
+  | 'getUsage';
 
 export interface RouteMatch {
   readonly handler: RouteHandlerId;
@@ -69,6 +70,10 @@ export function matchRoute(method: string, path: string): RouteMatch | null {
     }
     if (path === '/v1/events/subscribe') {
       return { handler: 'subscribeEvents', routeClass: 'stream' };
+    }
+    // Developer-product task 03: per-project usage. Read-class: it changes no state and needs no write scope.
+    if (path === '/v1/usage') {
+      return { handler: 'getUsage', routeClass: 'read' };
     }
     if (path === '/v1/balances') {
       return { handler: 'getBalance', routeClass: 'read', capability: 'account.balance' };

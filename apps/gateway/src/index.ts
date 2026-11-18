@@ -3,6 +3,7 @@
  */
 export { createGatewayServer, parseBlockRef, type GatewayOptions, type GatewayLogger } from './server.js';
 export { matchRoute, ROUTE_CAPABILITIES, type RouteHandlerId, type RouteMatch } from './routes.js';
+export { UsageMeter, type UsageRecordInput, type UsageMeterOptions, type UsageSnapshot } from './usage.js';
 export { readJsonBody, type ReadJsonBodyOptions } from './body.js';
 export { createCoreTransactionChainPort } from './transaction-port.js';
 export {
@@ -11,6 +12,7 @@ export {
   fingerprintRequest,
   type GatewayIdempotencyCoordinatorOptions,
 } from './idempotency.js';
+export { issueApiKey, type IssueApiKeyOptions, type IssuedApiKey } from './api-key.js';
 export {
   hashSecret,
   constantTimeEqualHex,

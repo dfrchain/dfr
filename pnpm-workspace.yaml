@@ -4,5 +4,6 @@ packages:
   - "adapters/*"
   - "apps/*"
   - "sdk/*"
+  - "examples/*"
   - "services/*"
   - "tests"
