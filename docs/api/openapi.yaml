@@ -1,0 +1,1628 @@
+openapi: 3.1.0
+
+info:
+  title: DFR Universal Blockchain API
+  version: 0.1.0-draft
+  description: |
+    DFR Unified Blockchain Access API (Draft v0.1, spec freeze stage).
+
+    Conventions (see docs/adr/ADR-009-api-contract.md):
+    - Numbers and amounts are always decimal strings (`^[0-9]+$`); never JSON numbers;
+    - Timestamps are always ISO 8601 UTC;
+    - Error bodies follow RFC 9457 plus DFR extension fields;
+    - Write operations must carry `Idempotency-Key`;
+    - `x-dfr-milestone` marks the milestone an endpoint belongs to; M0 ships read-only endpoints only.
+  contact:
+    name: DFR
+  license:
+    name: Proprietary
+
+servers:
+  - url: https://api.dfr.local
+    description: Placeholder for local/dev environments; production domain TBD
+
+tags:
+  - name: chains
+    description: Chain info and capability queries
+  - name: accounts
+    description: Accounts and balances
+  - name: blocks
+    description: Block queries
+  - name: transactions
+    description: Transaction queries and lifecycle
+  - name: events
+    description: Event subscriptions
+
+security:
+  - ApiKeyAuth: []
+
+paths:
+  /v1/chains:
+    get:
+      tags: [chains]
+      operationId: listChains
+      summary: List available chains
+      description: Only returns chains visible to the current project and already enabled.
+      x-dfr-milestone: M0
+      responses:
+        '200':
+          description: Chain list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, requestId]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Chain'
+                  requestId:
+                    type: string
+                    description: "Audit fix A-16: list responses must also carry requestId."
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /v1/chains/{chainId}:
+    get:
+      tags: [chains]
+      operationId: getChain
+      summary: Get chain info
+      x-dfr-milestone: M0
+      parameters:
+        - $ref: '#/components/parameters/ChainIdPath'
+      responses:
+        '200':
+          description: Chain info
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChainInfo'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/ChainUnavailable'
+
+  /v1/balances:
+    get:
+      tags: [accounts]
+      operationId: getBalance
+      summary: Get balance
+      x-dfr-milestone: M0
+      parameters:
+        - $ref: '#/components/parameters/ChainQuery'
+        - name: account
+          in: query
+          required: true
+          description: Chain-native encoded address
+          schema:
+            type: string
+            minLength: 1
+        - name: assetId
+          in: query
+          required: false
+          description: Omit for the native asset; for EVM an ERC-20 address, for Solana an SPL mint
+          schema:
+            type: string
+        - name: consistency
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [best-effort, at-block, finalized]
+            default: best-effort
+        - $ref: '#/components/parameters/BlockRefTagged'
+      responses:
+        '200':
+          description: Balance
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BalanceResponse'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '422':
+          $ref: '#/components/responses/UnsupportedCapability'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ChainUnavailable'
+        '504':
+          $ref: '#/components/responses/ProviderTimeout'
+
+  /v1/blocks/{blockRef}:
+    get:
+      tags: [blocks]
+      operationId: getBlock
+      summary: Get block
+      description: blockRef accepts a height, a 0x block hash, or a latest/safe/finalized tag.
+      x-dfr-milestone: M0
+      parameters:
+        - $ref: '#/components/parameters/ChainQuery'
+        - name: blockRef
+          in: path
+          required: true
+          description: |
+            Tagged block-reference text syntax (review fix R-20):
+            `number:<uint>` | `hash:0x...` | `slot:<uint>` | `tag:latest|safe|finalized`
+          schema:
+            type: string
+            pattern: '^(number:[0-9]+|hash:0x[0-9a-fA-F]+|slot:[0-9]+|tag:(latest|safe|finalized))$'
+            examples: ['tag:finalized']
+        - name: includeTransactions
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: Block
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BlockResponse'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnsupportedCapability'
+        '503':
+          $ref: '#/components/responses/ChainUnavailable'
+
+  /v1/transactions/{txHash}:
+    get:
+      tags: [transactions]
+      operationId: getTransaction
+      summary: Get transaction
+      x-dfr-milestone: M0
+      parameters:
+        - $ref: '#/components/parameters/ChainQuery'
+        - name: txHash
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: includeReceipt
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: Transaction
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnsupportedCapability'
+        '503':
+          $ref: '#/components/responses/ChainUnavailable'
+
+  /v1/transactions/build:
+    post:
+      tags: [transactions]
+      operationId: buildTransaction
+      summary: Build an unsigned transaction
+      description: |
+        Build only: no signing, no broadcast, no access to private keys. Idempotency key optional.
+
+        **Note: build is NOT "side-effect free".** It **occupies an on-chain nonce** (writes a nonce lease) and creates a
+        transaction record in state `built`. So **do not call build repeatedly as a preflight check** — every call consumes a nonce,
+        and abandoned records leave permanent gaps on-chain (ADR-037). For preflight checks use `POST /v1/transactions/preflight`.
+      x-dfr-milestone: M1
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransactionRequest'
+            example:
+              chain: ethereum-sepolia
+              from: { chain: ethereum-sepolia, address: '0x1111111111111111111111111111111111111111' }
+              to: { chain: ethereum-sepolia, address: '0x2222222222222222222222222222222222222222' }
+              value: { asset: { kind: native, chain: ethereum-sepolia }, amount: '1000' }
+      responses:
+        '200':
+          description: Unsigned transaction
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BuildTransactionResponse'
+              example:
+                transactionId: txn_...
+                unsignedTransaction:
+                  schemaVersion: '1'
+                  chain: ethereum-sepolia
+                  payload: '0x...'
+                  meta: { requiresNonce: '42', chainIdForSigning: '11155111' }
+                requestId: req_...
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '422':
+          $ref: '#/components/responses/UnsupportedCapability'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /v1/transactions/{transactionId}/abandon:
+    post:
+      tags: [transactions]
+      operationId: abandonTransaction
+      summary: Abandon an unbroadcast transaction (releases the nonce hold)
+      description: |
+        ADR-037 option A. `build` immediately occupies an on-chain nonce; if the caller decides **not to submit** this transaction,
+        it must be explicitly abandoned, otherwise the nonce stays occupied forever and a permanent gap forms on-chain (background in ADR-037).
+
+        Only `built` / `simulated` are allowed. **Idempotent**: calling again on an already `abandoned` record returns 200 (`leaseReleased=false`).
+
+        `signed` and above -> `422 DFR_TRANSACTION_REJECTED` (`details.reason = "not_abandonable"`):
+        A signed/broadcast nonce is **never** reclaimed (funds-safety constraint from ADR-018/019).
+
+        The path parameter is a **DFR internal execution identifier** (`txn_<ULID>`), not an on-chain transaction hash.
+      x-dfr-milestone: M1
+      parameters:
+        - name: transactionId
+          in: path
+          required: true
+          description: DFR internal execution identifier (`txn_<...>`).
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Abandon result (idempotent replays also return 200)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AbandonTransactionResponse'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnsupportedCapability'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /v1/transactions/preflight:
+    post:
+      tags: [transactions]
+      operationId: preflightTransaction
+      summary: Read-only preflight (no nonce taken, nothing persisted)
+      description: |
+        ADR-037 option B. Answers "is this transaction likely to pass, and how much gas will it need?" with **no persistent side effects**:
+        No nonce reserved, no transaction record created, no idempotency table written. The request body is the same as `build`.
+
+        Why it exists: `simulate` requires a `transactionId`, and a `transactionId` is only produced by `build`;
+        so before preflight existed, the only way to "preflight" was `build`, which consumes an on-chain nonce on every call, and abandoned records
+        leave permanent gaps on-chain (the measured cause in ADR-037).
+
+        **A revert is not an HTTP error**: it returns 200 with `simulation.success=false`, so the caller reads the failure as information.
+        This deliberately differs from the 422 semantics of `simulate` — preflight has no record that could land in `reverted`.
+
+        The returned `unsignedTransaction` is **for preview only and must not be used for signing or broadcast**: it is built on a read-only
+        pending nonce with no lease protection. To actually submit, go through `build -> simulate -> sign -> broadcast`.
+      x-dfr-milestone: M1
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransactionRequest'
+            example:
+              chain: ethereum-sepolia
+              from: { chain: ethereum-sepolia, address: '0x1111111111111111111111111111111111111111' }
+              to: { chain: ethereum-sepolia, address: '0x2222222222222222222222222222222222222222' }
+              value: { asset: { kind: native, chain: ethereum-sepolia }, amount: '1000' }
+      responses:
+        '200':
+          description: Preflight result (both success and revert return 200)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PreflightTransactionResponse'
+              example:
+                unsignedTransaction:
+                  schemaVersion: '1'
+                  chain: ethereum-sepolia
+                  payload: '0x...'
+                  meta: { requiresNonce: '42', chainIdForSigning: '11155111' }
+                simulation: { success: true }
+                observedNonce: '42'
+                requestId: req_...
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '422':
+          $ref: '#/components/responses/UnsupportedCapability'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /v1/transactions/simulate:
+    post:
+      tags: [transactions]
+      operationId: simulateTransaction
+      summary: Simulate a transaction
+      description: Broadcast is forbidden when simulation fails. No side effects; idempotency key optional.
+      x-dfr-milestone: M1
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SimulateTransactionRequest'
+            example:
+              transactionId: txn_...
+              unsignedTransaction:
+                schemaVersion: '1'
+                chain: ethereum-sepolia
+                payload: '0x...'
+                meta: { requiresNonce: '42', chainIdForSigning: '11155111' }
+      responses:
+        '200':
+          description: Simulation result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulateTransactionResponse'
+              example:
+                transactionId: txn_...
+                simulation: { success: true }
+                requestId: req_...
+        '422':
+          $ref: '#/components/responses/UnsupportedCapability'
+        '503':
+          $ref: '#/components/responses/ChainUnavailable'
+
+  /v1/transactions/broadcast:
+    post:
+      tags: [transactions]
+      operationId: broadcastTransaction
+      summary: Broadcast a signed transaction
+      description: |
+        Broadcast is a non-idempotent write and **will not auto-retry**.
+        Resubmitting the same transaction hash counts as an idempotent success.
+      x-dfr-milestone: M1
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BroadcastTransactionRequest'
+      responses:
+        '202':
+          description: Broadcast accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BroadcastTransactionResponse'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/TransactionRejected'
+        '503':
+          $ref: '#/components/responses/ChainUnavailable'
+
+  /v1/transactions/{txHash}/confirm:
+    post:
+      tags: [transactions]
+      operationId: confirmTransaction
+      summary: Wait for confirmation and finality
+      x-dfr-milestone: M1
+      parameters:
+        - name: txHash
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfirmTransactionRequest'
+            example: { chain: ethereum-sepolia, minFinality: finalized, timeoutMs: 60000 }
+      responses:
+        '200':
+          description: Confirmation result; reached=false when the requirement is not met
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfirmTransactionResponse'
+              example:
+                confirmation:
+                  ref: { kind: hash, hash: '0x...' }
+                  status: included
+                  finality: included
+                  requiredFinality: finalized
+                  confirmations: '234'
+                  reached: false
+                requestId: req_...
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/ChainUnavailable'
+
+  /v1/contracts/read:
+    post:
+      tags: [contracts]
+      operationId: readContract
+      summary: Read-only contract call (eth_call)
+      description: |
+        ADR-035. `data` and `abi+method` are alternatives (providing both is a 400):
+        - `data`: pre-encoded calldata (0x...), returns raw hex;
+        - `abi` + `method` (+ `args`): the Adapter encodes with viem and decodes per outputs (bigint -> decimal string).
+      x-dfr-milestone: M4
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContractReadQuery'
+      parameters:
+        - $ref: '#/components/parameters/ChainQuery'
+      responses:
+        '200':
+          description: Call result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractReadResponse'
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '422': { $ref: '#/components/responses/UnsupportedCapability' }
+        '503': { $ref: '#/components/responses/ChainUnavailable' }
+
+  /v1/accounts/{address}:
+    get:
+      tags: [accounts]
+      operationId: getAccount
+      summary: Account existence / contract check (eth_getCode)
+      description: ADR-036. `exists` is heuristic (non-empty code, or balance > 0, or nonce > 0).
+      x-dfr-milestone: M4
+      parameters:
+        - $ref: '#/components/parameters/ChainQuery'
+        - name: address
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountResponse'
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '422': { $ref: '#/components/responses/UnsupportedCapability' }
+        '503': { $ref: '#/components/responses/ChainUnavailable' }
+
+  /v1/logs:
+    post:
+      tags: [logs]
+      operationId: getLogs
+      summary: Query event logs by block range
+      description: |
+        ADR-034: event log queries (`eth_getLogs` semantics), for callers such as BEX to reconcile against on-chain data.
+
+        Constraints:
+        - `fromBlock`/`toBlock` are **required** and must be decimal block-number strings (`tag`/`hash` not accepted);
+        - If the range exceeds the chain's declared `maxBlockRange`, **422** (no silent truncation);
+        - Omitting `address` means any contract; `topics` align with `eth_getLogs` (null is a wildcard, arrays are OR).
+      x-dfr-milestone: M4
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogsQuery'
+      parameters:
+        - $ref: '#/components/parameters/ChainQuery'
+      responses:
+        '200':
+          description: Log list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogsResponse'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '422':
+          $ref: '#/components/responses/UnsupportedCapability'
+        '503':
+          $ref: '#/components/responses/ChainUnavailable'
+
+  /v1/events/tickets:
+    post:
+      tags: [events]
+      operationId: createEventTicket
+      summary: Issue a one-time SSE ticket
+      description: |
+        The browser-native `EventSource` cannot set custom headers, so short-lived one-time tickets are provided
+        for SSE authentication (review fix R-21 / ADR-029).
+
+        Constraints:
+        - TTL defaults to 30s, capped at 60s (exceeding it is rejected, not silently truncated);
+        - **Single use**; under concurrency only one consumer wins;
+        - Bound to the apiKeyId, client IP, and filter digest at issuance (cannot widen the subscription scope);
+        - Tickets are never persisted to a database or disk, and never written to logs; they are reclaimed on expiry;
+        - Reuse, expiry, a different key, or a different IP all yield `DFR_INVALID_TICKET` (no reason is distinguished, to avoid enumeration).
+      x-dfr-milestone: M2
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EventTicketRequest'
+      responses:
+        '201':
+          description: Ticket issued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventTicketResponse'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+
+  /v1/events/subscribe:
+    get:
+      tags: [events]
+      operationId: subscribeEvents
+      summary: Subscribe to events (SSE)
+      description: |
+        At-least-once delivery; consumers must deduplicate by eventId.
+
+        Note (review fix R-18): in M0/M1 the bus is in-process, so `cursor` is only valid within the process lifetime;
+        the "replayable across restarts" promise takes effect once M6 introduces a persistent event log.
+
+        Authentication (review fix R-21): short-lived tickets via `?ticket=` (usable from browser EventSource)
+        or the `X-DFR-Key` header (usable from server/desktop clients).
+      x-dfr-milestone: M2
+      security:
+        - SseTicket: []
+        - ApiKeyAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ChainQuery'
+        - name: types
+          in: query
+          required: false
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/EventType'
+          style: form
+          explode: false
+        - name: afterCursor
+          in: query
+          required: false
+          description: Resume cursor; in M0/M1 the in-process bus is only valid within the current process lifetime
+          schema:
+            type: string
+      responses:
+        '200':
+          description: SSE event stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '422':
+          $ref: '#/components/responses/UnsupportedCapability'
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-DFR-Key
+      description: API keys are stored only as hashes plus metadata; the server never stores plaintext.
+    SseTicket:
+      type: apiKey
+      in: query
+      name: ticket
+      description: |
+        Short-lived one-time ticket, for SSE only (review fix R-21).
+        Browser-native EventSource cannot set custom headers, so SSE must support ticket authentication.
+        Requirements: TTL <= 60s, single use, bound to the issuer IP and the subscription filter;
+        Long-lived API keys must not be passed as query parameters (they would land in access logs and Referer).
+
+  parameters:
+    ChainQuery:
+      name: chain
+      in: query
+      required: true
+      schema:
+        $ref: '#/components/schemas/ChainId'
+    ChainIdPath:
+      name: chainId
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/ChainId'
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: |
+        Required for write operations that **have side effects** (currently broadcast only); the same key with a different body returns 409.
+        Review fix R-19: build does not require an idempotency key — but the reason is **not** "no side effects"
+        (build occupies a nonce, see the notes on `POST /v1/transactions/build`),
+        but that "even an idempotency key cannot save an already-consumed nonce".
+      schema:
+        type: string
+        minLength: 8
+        maxLength: 128
+
+    IdempotencyKeyOptional:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: Optional; used to link build/simulate to the same audit trail
+      schema:
+        type: string
+        minLength: 8
+        maxLength: 128
+
+    BlockRefTagged:
+      name: blockRef
+      in: query
+      required: false
+      description: |
+        Tagged block-reference text syntax (review fix R-20). In the domain model BlockRef is a discriminated union,
+        and downgrading it to a bare string would lose the "is this a height or a hash?" information, so a prefix is mandatory:
+          number:<uint>      by height, e.g. number:12345678
+          hash:<0x...>       by block hash
+          slot:<uint>        Solana slot
+          tag:<latest|safe|finalized>
+      schema:
+        type: string
+        pattern: '^(number:[0-9]+|hash:0x[0-9a-fA-F]+|slot:[0-9]+|tag:(latest|safe|finalized))$'
+        examples: ['tag:finalized', 'number:12345678']
+
+  responses:
+    ValidationFailed:
+      description: Request validation failed
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/DfrErrorResponse'
+    Unauthenticated:
+      description: Unauthenticated or invalid credentials
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/DfrErrorResponse'
+    NotFound:
+      description: Resource not found
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/DfrErrorResponse'
+    UnsupportedCapability:
+      description: This chain does not support the requested capability
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/DfrErrorResponse'
+    TransactionRejected:
+      description: Transaction rejected by the node
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/DfrErrorResponse'
+    Conflict:
+      description: State conflict (idempotency conflict, nonce conflict, reorg, etc.)
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/DfrErrorResponse'
+    RateLimited:
+      description: Rate limit triggered
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/DfrErrorResponse'
+    ProviderTimeout:
+      description: Provider timeout
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/DfrErrorResponse'
+    ChainUnavailable:
+      description: All providers unavailable
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/DfrErrorResponse'
+    InternalError:
+      description: Internal error
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/DfrErrorResponse'
+
+  schemas:
+    ChainId:
+      type: string
+      pattern: '^[a-z0-9]+(-[a-z0-9]+)*$'
+      examples: [ethereum-sepolia, base-sepolia, solana-devnet]
+
+    NetworkId:
+      type: string
+      enum: [mainnet, testnet, devnet, custom]
+      description: |
+        Network category. Audit fix A-07/A-08: the duplicate networkKind has been merged; the network is fully determined by the chain,
+        so this field only appears as a descriptive attribute of a chain, never in request parameters or request bodies.
+
+    DecimalUint:
+      type: string
+      pattern: '^[0-9]+$'
+      description: Decimal unsigned integer string; used for amounts, nonces, heights, and slots alike
+      examples: ['0', '1000000000000000000']
+
+    Iso8601:
+      type: string
+      format: date-time
+      examples: ['2026-10-03T10:00:00Z']
+
+    CapabilityId:
+      type: string
+      description: |
+        Capability identifier. Note (review fixes R-01 / R-02):
+        - No `chain.info`: chainInfo is a mandatory ChainAdapter method, not an optional capability;
+        - No `transaction.confirm`: confirmation is derived from transaction.read plus the Registry's FinalityPolicy;
+        - `transaction.confirm.native` is only for chains that offer native confirmation subscriptions.
+      enum:
+        - account.balance
+        - account.code
+        - block.read
+        - transaction.read
+        - transaction.build
+        - transaction.simulate
+        - transaction.broadcast
+        - event.subscribe
+        - contract.read
+        - contract.logs
+        - transaction.confirm.native
+
+    # Branches of a discriminated union must be **named schemas**: inline branches cannot be selected by `discriminator`
+    # (tooling interop requirement, see TODO-005). Semantics are word-for-word identical to the original inline definitions.
+    FinalityPolicy:
+      oneOf:
+        - $ref: '#/components/schemas/FinalityPolicyNone'
+        - $ref: '#/components/schemas/FinalityPolicyConfirmations'
+        - $ref: '#/components/schemas/FinalityPolicyCheckpoint'
+        - $ref: '#/components/schemas/FinalityPolicyCommitment'
+      discriminator:
+        propertyName: kind
+
+    FinalityPolicyNone:
+      type: object
+      required: [kind]
+      properties:
+        kind: { const: none }
+
+    FinalityPolicyConfirmations:
+      type: object
+      required: [kind, confirmations]
+      properties:
+        kind: { const: confirmations }
+        confirmations: { type: integer, minimum: 1 }
+
+    FinalityPolicyCheckpoint:
+      type: object
+      required: [kind, finalizedTag]
+      properties:
+        kind: { const: checkpoint }
+        finalizedTag: { const: true }
+
+    FinalityPolicyCommitment:
+      type: object
+      required: [kind, levels]
+      properties:
+        kind: { const: commitment }
+        levels:
+          type: array
+          items: { type: string, enum: [processed, confirmed, finalized] }
+
+    FinalityState:
+      type: string
+      enum: [submitted, included, confirmed, finalized, orphaned, unknown]
+      description: Observed finality state, including abnormal values; must not be used as a "minimum requirement" parameter.
+
+    FinalityLevel:
+      type: string
+      enum: [submitted, included, confirmed, finalized]
+      description: |
+        Ordered finality target levels (weak -> strong). Audit fix A-10: used for minFinality / waitForFinality,
+        deliberately excluding orphaned / unknown so callers cannot treat an abnormal state as a target.
+
+    FinalityStatus:
+      type: string
+      enum: [unverified, verified]
+      description: Whether this chain's FinalityPolicy has been verified against a real RPC (audit fix A-01).
+
+    TransactionStatus:
+      type: string
+      enum:
+        - built
+        - simulated
+        - signed
+        - broadcast
+        - pending
+        - included
+        - confirmed
+        - finalized
+        - failed
+        - reverted
+        - dropped
+        - replaced
+        - unknown
+        # ADR-037: explicitly abandoned (reachable only from built/simulated; signed and above never enter)
+        - abandoned
+
+    EventFilter:
+      type: object
+      description: "Subscription filter (ADR-029: tickets bind to its digest, and the connection is constrained by it)."
+      properties:
+        chain:
+          $ref: '#/components/schemas/ChainId'
+        types:
+          type: array
+          items:
+            $ref: '#/components/schemas/EventType'
+        addresses:
+          type: array
+          items:
+            type: string
+        afterCursor:
+          type: string
+          description: Resume cursor; valid only within the current process lifetime.
+
+    LogsQuery:
+      type: object
+      required: [fromBlock, toBlock]
+      properties:
+        fromBlock:
+          type: string
+          pattern: '^[0-9]+$'
+          description: Decimal block number (tag/hash not accepted).
+        toBlock:
+          type: string
+          pattern: '^[0-9]+$'
+        address:
+          type: string
+          description: Contract address; omit for any contract.
+        topics:
+          type: array
+          items:
+            oneOf:
+              - type: string
+              - type: array
+                items: { type: string }
+              - type: 'null'
+          description: Aligned with eth_getLogs topics.
+        limit:
+          type: integer
+          minimum: 1
+
+    LogsResponse:
+      type: object
+      required: [logs, requestId]
+      properties:
+        logs:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChainLog'
+        requestId: { type: string }
+
+    ContractReadQuery:
+      type: object
+      required: [contract]
+      properties:
+        contract: { type: string }
+        data: { type: string, description: Pre-encoded calldata (0x...); either this or abi/method }
+        abi:
+          type: array
+          items: {}
+          description: human-readable string or JSON fragment
+        method: { type: string }
+        args:
+          type: array
+          items: {}
+        blockRef:
+          $ref: '#/components/schemas/BlockRef'
+
+    ContractReadResponse:
+      type: object
+      required: [result, requestId]
+      properties:
+        result:
+          type: object
+          required: [data]
+          properties:
+            data: { type: string }
+            decoded: {}
+        requestId: { type: string }
+
+    AccountResponse:
+      type: object
+      required: [account, requestId]
+      properties:
+        account:
+          type: object
+          required: [ref, kind, exists]
+          properties:
+            ref: { $ref: '#/components/schemas/AccountRef' }
+            kind: { type: string, enum: [externally-owned, contract, program, unknown] }
+            exists: { type: boolean }
+            nonce: { $ref: '#/components/schemas/DecimalUint' }
+            dataLength: { $ref: '#/components/schemas/DecimalUint' }
+        requestId: { type: string }
+
+    EventTicketRequest:
+      type: object
+      required: [filter]
+      properties:
+        filter:
+          $ref: '#/components/schemas/EventFilter'
+        ttlMs:
+          type: integer
+          minimum: 1
+          maximum: 60000
+          description: Optional; default 30000, maximum 60000.
+
+    EventTicketResponse:
+      type: object
+      required: [ticket, expiresAt, requestId]
+      properties:
+        ticket:
+          type: string
+          description: One-time ticket; contains no credentials, held in memory only.
+        expiresAt:
+          $ref: '#/components/schemas/Iso8601'
+        requestId: { type: string }
+
+    EventType:
+      type: string
+      enum:
+        - block.new
+        - tx.built
+        - tx.simulated
+        - tx.signed
+        - tx.broadcast
+        - tx.pending
+        - tx.included
+        - tx.confirmed
+        - tx.finalized
+        - tx.failed
+        - tx.reverted
+        - tx.dropped
+        - tx.replaced
+        - contract.event
+        - provider.down
+        - provider.recovered
+        - chain.reorg
+
+    ChainAdapterRef:
+      type: object
+      required: [id, version]
+      properties:
+        id: { type: string, examples: [evm, solana] }
+        version: { type: string, examples: ['^0.1.0'] }
+
+    Chain:
+      type: object
+      required:
+        [id, displayName, family, network, adapter, finality, finalityStatus, capabilities]
+      properties:
+        id: { $ref: '#/components/schemas/ChainId' }
+        displayName: { type: string }
+        family: { type: string, enum: [evm, solana, bitcoin, tron, cosmos] }
+        network:
+          allOf:
+            - $ref: '#/components/schemas/NetworkId'
+          description: Descriptive attribute fully determined by id, not an independent parameter (audit fix A-07/A-08).
+        finalityStatus: { $ref: '#/components/schemas/FinalityStatus' }
+        externalChainId: { type: string, examples: ['11155111'] }
+        adapter: { $ref: '#/components/schemas/ChainAdapterRef' }
+        finality: { $ref: '#/components/schemas/FinalityPolicy' }
+        capabilities:
+          type: array
+          items: { $ref: '#/components/schemas/CapabilityId' }
+        explorerUrl: { type: string, format: uri }
+
+    ChainInfo:
+      type: object
+      required: [chain, network, family, observedAt]
+      properties:
+        chain: { $ref: '#/components/schemas/ChainId' }
+        network: { $ref: '#/components/schemas/NetworkId' }
+        family: { type: string, enum: [evm, solana, bitcoin, tron, cosmos] }
+        height: { $ref: '#/components/schemas/DecimalUint' }
+        slot: { $ref: '#/components/schemas/DecimalUint' }
+        latestBlockHash: { type: string }
+        nodeVersion: { type: string }
+        baseFeePerGas: { $ref: '#/components/schemas/DecimalUint' }
+        degraded: { type: boolean }
+        observedAt: { $ref: '#/components/schemas/Iso8601' }
+
+    AccountRef:
+      type: object
+      required: [chain, address]
+      properties:
+        chain: { $ref: '#/components/schemas/ChainId' }
+        address: { type: string, minLength: 1 }
+        memo: { type: string }
+
+    AssetRef:
+      oneOf:
+        - $ref: '#/components/schemas/AssetRefNative'
+        - $ref: '#/components/schemas/AssetRefToken'
+      discriminator:
+        propertyName: kind
+
+    AssetRefNative:
+      type: object
+      required: [kind, chain]
+      properties:
+        kind: { const: native }
+        chain: { $ref: '#/components/schemas/ChainId' }
+
+    AssetRefToken:
+      type: object
+      required: [kind, chain, assetId]
+      properties:
+        kind: { const: token }
+        chain: { $ref: '#/components/schemas/ChainId' }
+        assetId: { type: string }
+        standard: { type: string, examples: [erc20, spl-token] }
+
+    BlockRef:
+      oneOf:
+        - $ref: '#/components/schemas/BlockRefNumber'
+        - $ref: '#/components/schemas/BlockRefHash'
+        - $ref: '#/components/schemas/BlockRefSlot'
+        - $ref: '#/components/schemas/BlockRefTag'
+      discriminator:
+        propertyName: kind
+
+    BlockRefNumber:
+      type: object
+      required: [kind, number]
+      properties:
+        kind: { const: number }
+        number: { $ref: '#/components/schemas/DecimalUint' }
+
+    BlockRefHash:
+      type: object
+      required: [kind, hash]
+      properties:
+        kind: { const: hash }
+        hash: { type: string }
+
+    BlockRefSlot:
+      type: object
+      required: [kind, slot]
+      properties:
+        kind: { const: slot }
+        slot: { $ref: '#/components/schemas/DecimalUint' }
+
+    BlockRefTag:
+      type: object
+      required: [kind, tag]
+      properties:
+        kind: { const: tag }
+        tag: { type: string, enum: [latest, safe, finalized] }
+        commitment: { type: string, enum: [processed, confirmed, finalized] }
+
+    Balance:
+      type: object
+      required: [account, asset, amount, decimals]
+      properties:
+        account: { type: string }
+        asset: { $ref: '#/components/schemas/AssetRef' }
+        amount: { $ref: '#/components/schemas/DecimalUint' }
+        decimals: { type: integer, minimum: 0, maximum: 36 }
+        blockRef: { $ref: '#/components/schemas/BlockRef' }
+
+    BalanceResponse:
+      type: object
+      required: [balance, requestId, observedAt]
+      properties:
+        balance: { $ref: '#/components/schemas/Balance' }
+        requestId: { type: string }
+        observedAt: { $ref: '#/components/schemas/Iso8601' }
+
+    Block:
+      type: object
+      required: [chain, hash, observedAt]
+      properties:
+        chain: { $ref: '#/components/schemas/ChainId' }
+        number: { $ref: '#/components/schemas/DecimalUint' }
+        slot: { $ref: '#/components/schemas/DecimalUint' }
+        hash: { type: string }
+        parentHash: { type: string }
+        timestamp: { $ref: '#/components/schemas/DecimalUint' }
+        transactionCount: { type: integer, minimum: 0 }
+        baseFeePerGas: { $ref: '#/components/schemas/DecimalUint' }
+        finality: { $ref: '#/components/schemas/FinalityState' }
+        observedAt: { $ref: '#/components/schemas/Iso8601' }
+
+    BlockResponse:
+      type: object
+      required: [block, requestId]
+      properties:
+        block: { $ref: '#/components/schemas/Block' }
+        requestId: { type: string }
+
+    Amount:
+      type: object
+      required: [asset, amount]
+      properties:
+        asset: { $ref: '#/components/schemas/AssetRef' }
+        amount: { $ref: '#/components/schemas/DecimalUint' }
+
+    TransactionRef:
+      oneOf:
+        - $ref: '#/components/schemas/TransactionRefHash'
+        - $ref: '#/components/schemas/TransactionRefId'
+      discriminator:
+        propertyName: kind
+
+    TransactionRefHash:
+      type: object
+      required: [kind, hash]
+      properties:
+        kind: { const: hash }
+        hash: { type: string }
+
+    TransactionRefId:
+      type: object
+      required: [kind, id]
+      properties:
+        kind: { const: id }
+        id: { type: string }
+
+    Transaction:
+      type: object
+      required: [schemaVersion, ref, chain, status]
+      properties:
+        schemaVersion: { const: '1' }
+        ref: { $ref: '#/components/schemas/TransactionRef' }
+        chain: { $ref: '#/components/schemas/ChainId' }
+        status:
+          allOf:
+            - $ref: '#/components/schemas/TransactionStatus'
+          description: |
+            The single source of truth for lifecycle state. Audit fix A-09: the duplicate finality field was removed;
+            in the old version both status and finality contained included/confirmed/finalized with no precedence rule.
+        blockRef: { $ref: '#/components/schemas/BlockRef' }
+        from: { $ref: '#/components/schemas/AccountRef' }
+        to: { $ref: '#/components/schemas/AccountRef' }
+        value: { $ref: '#/components/schemas/Amount' }
+        fee: { $ref: '#/components/schemas/Amount' }
+        nonce: { $ref: '#/components/schemas/DecimalUint' }
+        confirmations: { $ref: '#/components/schemas/DecimalUint' }
+        error: { $ref: '#/components/schemas/DfrError' }
+        observedAt: { $ref: '#/components/schemas/Iso8601' }
+
+    TransactionResponse:
+      type: object
+      required: [transaction, requestId]
+      properties:
+        transaction: { $ref: '#/components/schemas/Transaction' }
+        receipt:
+          allOf:
+            - $ref: '#/components/schemas/Receipt'
+          description: |
+            Audit fix A-25: returned only when includeReceipt=true and the transaction is on-chain.
+            The old contract declared the includeReceipt parameter but the response had no receipt field.
+        requestId: { type: string }
+
+    Receipt:
+      type: object
+      required: [ref, chain, success]
+      properties:
+        ref: { $ref: '#/components/schemas/TransactionRef' }
+        chain: { $ref: '#/components/schemas/ChainId' }
+        success: { type: boolean }
+        blockRef: { $ref: '#/components/schemas/BlockRef' }
+        gasUsed: { $ref: '#/components/schemas/DecimalUint' }
+        effectiveFee:
+          allOf:
+            - $ref: '#/components/schemas/Amount'
+          description: |
+            Audit fix A-21: switched to Amount to carry the pricing asset. The old version was a bare DecimalUint,
+            so consumers could not tell which currency the fee was in.
+        logs:
+          type: array
+          items: { $ref: '#/components/schemas/ChainLog' }
+        revertReason: { type: string, description: Redacted }
+
+    ChainLog:
+      type: object
+      properties:
+        index: { $ref: '#/components/schemas/DecimalUint' }
+        address: { type: string }
+        topics:
+          type: array
+          items: { type: string }
+        data: { type: string }
+        decoded:
+          type: object
+          additionalProperties: true
+        # ADR-034: location fields returned by log queries.
+        txHash: { type: string }
+        txIndex: { $ref: '#/components/schemas/DecimalUint' }
+        removed: { type: boolean }
+        blockRef:
+          $ref: '#/components/schemas/BlockRef'
+
+    TransactionRequest:
+      type: object
+      required: [chain, from]
+      properties:
+        chain: { $ref: '#/components/schemas/ChainId' }
+        from: { $ref: '#/components/schemas/AccountRef' }
+        to: { $ref: '#/components/schemas/AccountRef' }
+        value: { $ref: '#/components/schemas/Amount' }
+        data: { type: string, description: "Hex or base64, interpreted per chain" }
+        maxFee: { $ref: '#/components/schemas/DecimalUint' }
+        nonce: { $ref: '#/components/schemas/DecimalUint' }
+        commitment: { type: string }
+        options:
+          type: object
+          properties:
+            simulateBeforeBroadcast: { type: boolean, default: true }
+            waitForFinality: { $ref: '#/components/schemas/FinalityLevel' }
+            idempotencyKey: { type: string }
+
+    UnsignedTransaction:
+      type: object
+      required: [schemaVersion, chain, payload, meta]
+      properties:
+        schemaVersion: { const: '1' }
+        chain: { $ref: '#/components/schemas/ChainId' }
+        payload: { type: string }
+        meta:
+          type: object
+          properties:
+            requiresNonce: { $ref: '#/components/schemas/DecimalUint' }
+            chainIdForSigning: { type: string }
+            recentBlockhash: { type: string }
+            expiresAt: { $ref: '#/components/schemas/Iso8601' }
+            feeEstimate: { $ref: '#/components/schemas/Amount' }
+            warnings:
+              type: array
+              items: { type: string }
+
+    SignedTransaction:
+      type: object
+      required: [schemaVersion, chain, unsigned, signedPayload, expectedHash]
+      properties:
+        schemaVersion: { const: '1' }
+        chain: { $ref: '#/components/schemas/ChainId' }
+        unsigned: { $ref: '#/components/schemas/UnsignedTransaction' }
+        signedPayload: { type: string, writeOnly: true }
+        expectedHash: { type: string }
+        signerRef: { type: string }
+
+    ConfirmTransactionRequest:
+      type: object
+      required: [chain]
+      description: |
+        HTTP request body for confirm (see docs/architecture/m1-api-contract.md, section 2).
+        chain and the path hash jointly locate the transaction; chain appears only here, not repeated as a query parameter.
+      properties:
+        chain: { $ref: '#/components/schemas/ChainId' }
+        minFinality:
+          $ref: '#/components/schemas/FinalityLevel'
+          description: When omitted, the default target is decided by this chain's Chain Registry policy.
+        timeoutMs:
+          type: integer
+          minimum: 1000
+          maximum: 600000
+          default: 60000
+          description: |
+            Maximum wait for this HTTP request in milliseconds; the 600000 (10 minute) upper bound is enforced by the Gateway,
+            and unbounded requests are not allowed. On timeout it returns 200 + reached=false while tracking continues in the background.
+
+    SimulateTransactionRequest:
+      type: object
+      required: [transactionId, unsignedTransaction]
+      description: |
+        HTTP request body for simulate (see docs/architecture/m1-api-contract.md, section 2).
+
+        Must carry the `transactionId` and `UnsignedTransaction` returned by build: the server uses them to
+        locate the saved record and verify it byte-for-byte against the build fingerprint (bringing "a different payload" is not accepted).
+        The old schema's `oneOf: TransactionRequest | UnsignedTransaction` had no
+        transactionId, so the engine could not locate the record; fixed in DFR-M1-B08.
+      properties:
+        transactionId:
+          type: string
+          description: DFR internal execution identifier txn_<ULID> returned by build.
+        unsignedTransaction: { $ref: '#/components/schemas/UnsignedTransaction' }
+
+    BroadcastTransactionRequest:
+      type: object
+      required: [transactionId, signedTransaction]
+      properties:
+        transactionId:
+          type: string
+          description: |
+            DFR internal execution identifier txn_<ULID> returned by build. The server uses it to locate the saved
+            unsigned transaction for signature-binding verification (see m1-api-contract, section 3).
+        signedTransaction: { $ref: '#/components/schemas/SignedTransaction' }
+        rebroadcast:
+          type: boolean
+          default: false
+          description: |
+            true is only allowed while the transaction is in the dropped state (the dropped -> broadcast edge in transaction-lifecycle).
+            Default false: ordinary calls never implicitly rebroadcast.
+
+    SimulationResult:
+      type: object
+      required: [success]
+      properties:
+        success: { type: boolean }
+        estimatedCost: { $ref: '#/components/schemas/DecimalUint' }
+        estimatedFee: { $ref: '#/components/schemas/Amount' }
+        revertReason: { type: string }
+        stateChanges:
+          type: array
+          items:
+            type: object
+            properties:
+              kind: { type: string, enum: [balance, allowance, storage, account, unknown] }
+              account: { type: string }
+              asset: { $ref: '#/components/schemas/AssetRef' }
+              before: { type: string }
+              after: { type: string }
+              note: { type: string }
+        warnings:
+          type: array
+          items: { type: string }
+
+    BroadcastTransactionOutcome:
+      type: object
+      description: |
+        The broadcast result inside the broadcast success envelope, matching TransactionEngine's public return value.
+
+        Deliberately **not** the Adapter capability's BroadcastResult: the HTTP response does not expose providerId
+        (provider identity is an internal implementation detail), and puts txHash at the top level — the confirm endpoint's path
+        parameter is txHash, so the caller can proceed to confirmation straight from the response without unwrapping another ref.
+        DFR-M1-E03 fix: this field previously referenced BroadcastResult by mistake, drifting from the implementation with no test coverage.
+      required: [transactionId, status, txHash, accepted, observedAt]
+      properties:
+        transactionId:
+          type: string
+          description: Matches the DFR internal execution identifier returned by build.
+        status: { $ref: '#/components/schemas/TransactionStatus' }
+        txHash:
+          type: string
+          description: On-chain transaction hash; falls back to the signed expectedHash when the broadcast receipt is abnormal.
+        accepted: { type: boolean }
+        rebroadcast:
+          type: boolean
+          description: |
+            Whether this broadcast is a replay. Audit fix A-06: transaction-lifecycle requires the dropped -> broadcast
+            edge to carry this flag, but the old contract had no field for it.
+        observedAt: { $ref: '#/components/schemas/Iso8601' }
+
+    ConfirmationResult:
+      type: object
+      required: [ref, status, finality, reached]
+      properties:
+        ref: { $ref: '#/components/schemas/TransactionRef' }
+        status: { $ref: '#/components/schemas/TransactionStatus' }
+        finality:
+          allOf:
+            - $ref: '#/components/schemas/FinalityState'
+          description: Observed finality state.
+        requiredFinality: { $ref: '#/components/schemas/FinalityLevel' }
+        blockRef: { $ref: '#/components/schemas/BlockRef' }
+        canonicalBlockHash: { type: string, pattern: '^0x[0-9a-fA-F]{64}$' }
+        confirmations: { $ref: '#/components/schemas/DecimalUint' }
+        reached: { type: boolean }
+
+    BuildTransactionResponse:
+      type: object
+      required: [transactionId, unsignedTransaction, requestId]
+      properties:
+        transactionId:
+          type: string
+          description: |
+            DFR internal execution identifier (`txn_<ULID>`), separate from the on-chain txHash, see ADR-015.
+            Response envelope for write endpoints (see docs/architecture/m1-api-contract.md, section 1).
+        unsignedTransaction: { $ref: '#/components/schemas/UnsignedTransaction' }
+        requestId: { type: string }
+
+    AbandonTransactionResponse:
+      type: object
+      description: |
+        ADR-037 option A. `leaseReleased` indicates whether **this** call actually released the nonce lease;
+        it is `false` on an idempotent replay (record already `abandoned`).
+      required: [transactionId, status, leaseReleased, requestId]
+      properties:
+        transactionId:
+          type: string
+        status:
+          type: string
+          const: abandoned
+        leaseReleased:
+          type: boolean
+        nonce:
+          $ref: '#/components/schemas/DecimalUint'
+        requestId:
+          type: string
+
+    PreflightTransactionResponse:
+      type: object
+      description: |
+        ADR-037 option B. `unsignedTransaction` is a **preview**: it is built on a read-only pending nonce,
+        with no lease protection, so it **must not be used for signing or broadcast**.
+      required: [unsignedTransaction, simulation, requestId]
+      properties:
+        unsignedTransaction:
+          $ref: '#/components/schemas/UnsignedTransaction'
+        simulation:
+          $ref: '#/components/schemas/SimulationResult'
+        observedNonce:
+          allOf:
+            - $ref: '#/components/schemas/DecimalUint'
+          description: Pending nonce **not** taken by this preflight, shown for display only; callers must not sign with it.
+        requestId:
+          type: string
+
+    SimulateTransactionResponse:
+      type: object
+      required: [transactionId, simulation, requestId]
+      properties:
+        transactionId:
+          type: string
+          description: Matches the DFR internal execution identifier returned by build.
+        simulation: { $ref: '#/components/schemas/SimulationResult' }
+        requestId: { type: string }
+
+    BroadcastTransactionResponse:
+      type: object
+      required: [transactionId, broadcast, requestId]
+      properties:
+        transactionId:
+          type: string
+          description: Matches the DFR internal execution identifier returned by build.
+        broadcast: { $ref: '#/components/schemas/BroadcastTransactionOutcome' }
+        requestId: { type: string }
+
+    ConfirmTransactionResponse:
+      type: object
+      required: [confirmation, requestId]
+      properties:
+        confirmation: { $ref: '#/components/schemas/ConfirmationResult' }
+        requestId: { type: string }
+
+    ChainError:
+      type: object
+      properties:
+        code: { type: string }
+        message: { type: string, description: Redacted }
+
+    DfrError:
+      type: object
+      required: [code, category, message, retryable, safeToRetry, requestId]
+      properties:
+        code:
+          type: string
+          enum:
+            - DFR_INVALID_REQUEST
+            - DFR_VALIDATION_FAILED
+            - DFR_INVALID_ACCOUNT
+            - DFR_INVALID_ASSET
+            - DFR_NOT_FOUND
+            - DFR_UNSUPPORTED_CAPABILITY
+            - DFR_UNSUPPORTED_VERSION
+            - DFR_IDEMPOTENCY_CONFLICT
+            - DFR_PAYLOAD_TOO_LARGE
+            - DFR_UNAUTHENTICATED
+            - DFR_INVALID_TICKET
+            - DFR_UNAUTHORIZED
+            - DFR_PROJECT_SCOPE_DENIED
+            - DFR_IP_NOT_ALLOWED
+            - DFR_RATE_LIMITED
+            - DFR_QUOTA_EXCEEDED
+            - DFR_POLICY_DENIED
+            - DFR_APPROVAL_REQUIRED
+            - DFR_SPENDING_LIMIT_EXCEEDED
+            - DFR_CHAIN_UNAVAILABLE
+            - DFR_CHAIN_MISMATCH
+            - DFR_CHAIN_REORG
+            - DFR_TRANSACTION_REVERTED
+            - DFR_TRANSACTION_REJECTED
+            - DFR_TRANSACTION_NOT_FOUND
+            - DFR_TRANSACTION_DROPPED
+            - DFR_TRANSACTION_REPLACED
+            - DFR_FINALITY_NOT_REACHED
+            - DFR_INSUFFICIENT_FUNDS
+            - DFR_NONCE_CONFLICT
+            - DFR_BLOCKHASH_EXPIRED
+            - DFR_PROVIDER_UNAVAILABLE
+            - DFR_PROVIDER_TIMEOUT
+            - DFR_PROVIDER_RATE_LIMITED
+            - DFR_PROVIDER_INVALID_RESPONSE
+            - DFR_PROVIDER_CIRCUIT_OPEN
+            - DFR_INTERNAL_ERROR
+            - DFR_NOT_IMPLEMENTED
+            - DFR_CONFIGURATION_ERROR
+            - DFR_SIGNING_FAILED
+        category:
+          type: string
+          enum: [client, auth, policy, chain, provider, internal]
+        message: { type: string }
+        retryable: { type: boolean }
+        safeToRetry: { type: boolean }
+        requestId: { type: string }
+        chain: { $ref: '#/components/schemas/ChainId' }
+        provider: { type: string }
+        details:
+          type: object
+          additionalProperties: true
+        chainError: { $ref: '#/components/schemas/ChainError' }
+
+    DfrErrorResponse:
+      allOf:
+        - type: object
+          required: [type, title, status, detail]
+          properties:
+            type: { type: string, format: uri }
+            title: { type: string }
+            status: { type: integer }
+            detail: { type: string }
+            instance: { type: string }
+        - type: object
+          required:
+            [dfr_code, category, retryable, safe_to_retry, request_id]
+          properties:
+            dfr_code:
+              type: string
+              description: Same as DfrError.code
+            category:
+              type: string
+              enum: [client, auth, policy, chain, provider, internal]
+            retryable: { type: boolean }
+            safe_to_retry: { type: boolean }
+            request_id: { type: string }
+            chain: { type: string }
+            provider: { type: string }
+            details:
+              type: object
+              additionalProperties: true
+            chain_error: { $ref: '#/components/schemas/ChainError' }
