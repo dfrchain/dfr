@@ -26,6 +26,7 @@ import type {
   PreflightTransactionResponse,
   SimulateTransactionRequest,
   SimulateTransactionResponse,
+  LogsPageResponse,
   Transaction,
   TransactionRequest,
   UsageResponse,
@@ -153,6 +154,19 @@ export interface GetLogsPagedParams {
   topics?: readonly (string | readonly string[] | null)[];
   /** Blocks per request; default 2000 (the EVM adapter's default `maxBlockRange`). */
   windowBlocks?: number;
+}
+
+export interface GetLogsPageParams {
+  chain: string;
+  /** First-page form; required unless `cursor` is set. */
+  fromBlock?: string;
+  toBlock?: string;
+  address?: string;
+  topics?: readonly (string | readonly string[] | null)[];
+  /** Page size. */
+  limit?: number;
+  /** Continuation from a previous `hasMore: true` response. */
+  cursor?: string;
 }
 
 export interface GetLogsPagedResult {
@@ -401,6 +415,40 @@ export class DFR {
       { body, safeToRetryOnTimeout: true },
     );
     return result.logs;
+  }
+
+  /**
+   * One page of logs with an opaque continuation (`POST /v1/logs`, cursor pagination).
+   *
+   * The cursor carries the pinned range and filters, so a resume request sends **only**
+   * `{ chain, cursor, limit? }`. Mixing a cursor with `fromBlock`/`toBlock` is rejected locally
+   * (the server rejects it too) because guessing which side wins causes reconciliation bugs.
+   *
+   * Unlike `getLogs`, `limit` here is a real page size: `hasMore` and `nextCursor` describe
+   * exactly what was returned, including when a single block holds more logs than one page.
+   */
+  async getLogsPage(params: GetLogsPageParams): Promise<LogsPageResponse> {
+    const { chain, ...body } = params;
+    if (body.cursor !== undefined) {
+      if (body.fromBlock !== undefined || body.toBlock !== undefined) {
+        throw new TypeError('DFR: getLogsPage cursor cannot be combined with fromBlock/toBlock');
+      }
+    } else {
+      if (body.fromBlock === undefined || body.toBlock === undefined) {
+        throw new TypeError('DFR: getLogsPage requires either cursor or fromBlock + toBlock');
+      }
+      if (!/^[0-9]+$/u.test(body.fromBlock) || !/^[0-9]+$/u.test(body.toBlock)) {
+        throw new TypeError('DFR: getLogsPage block numbers must be decimal strings');
+      }
+    }
+    if (body.limit !== undefined && (!Number.isSafeInteger(body.limit) || body.limit < 1)) {
+      throw new TypeError('DFR: getLogsPage limit must be a positive safe integer');
+    }
+    return this.request<LogsPageResponse>(
+      'POST',
+      `/v1/logs?chain=${encodeURIComponent(chain)}`,
+      { body, safeToRetryOnTimeout: true },
+    );
   }
 
   /**
@@ -926,6 +974,7 @@ export type {
   TransactionRequest,
   UnsignedTransaction,
   UsageResponse,
+  LogsPageResponse,
 } from '@dfr/types';
 
 /**

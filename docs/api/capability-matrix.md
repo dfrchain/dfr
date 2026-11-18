@@ -30,7 +30,7 @@ All claims below were verified with `pnpm verify` on this branch; the counts are
 | Transaction + receipt read | `GET /v1/transactions/{txHash}` | e2e | By on-chain hash only; `transactionId` is write-only by design |
 | Account existence / contract detection | `GET /v1/accounts/{address}` | `tests/e2e/m4-bex-http-smoke.e2e.test.ts` (opt-in) | Only chains declaring `account.code` |
 | Read-only contract call | `POST /v1/contracts/read` | same | Only chains declaring `contract.read` |
-| Event logs by block range | `POST /v1/logs` | `tests/integration/logs-reconcile.test.ts`, SDK tests | Range must fit the chain's `maxBlockRange`; `limit` truncates silently |
+| Event logs by block range | `POST /v1/logs` | `logs-pagination-endpoint.test.ts`, SDK tests | Range must fit the chain's `maxBlockRange`; `limit` is a real page size with `hasMore`/`nextCursor` |
 | Transaction build / preflight / simulate | `POST /v1/transactions/{build,preflight,simulate}` | `tests/e2e/m1-write.e2e.test.ts`, `preflight.test.ts` | EVM: 3 Sepolia chains; Solana: build/simulate on devnet |
 | Single broadcast (no auto retry) | `POST /v1/transactions/broadcast` | `tests/e2e/m1-broadcast.e2e.test.ts` | Requires persistent Store; exactly one provider send |
 | Confirmation long-poll | `POST /v1/transactions/{txHash}/confirm` | `m1-write` e2e | Returns `reached:false` on timeout, which is not an error |
@@ -41,7 +41,8 @@ All claims below were verified with `pnpm verify` on this branch; the counts are
 | Usage view | `GET /v1/usage` | `apps/gateway/test/usage-endpoint.test.ts`, developer e2e | **Per process**; not a billing ledger (see §3) |
 | SDK read/write/events/usage | `@dfr/sdk-typescript` | `sdk/typescript/test/*` | See caveats in §2 |
 | SDK retry policy | opt-in `retry` | `sdk/typescript/test/retry.test.ts` | Never retries unsafe writes |
-| SDK block-range pagination | `getLogsPaged` | `sdk/typescript/test/logs-pagination.test.ts` | Not cursor pagination |
+| Log cursor pagination | `POST /v1/logs` `{cursor}` + SDK `getLogsPage` | `apps/gateway/test/logs-pagination-endpoint.test.ts`, `sdk/typescript/test/logs-cursor.test.ts` | Cursor is opaque/stateless and not signed; one range/filter per cursor |
+| SDK block-range windowing | `getLogsPaged` | `sdk/typescript/test/logs-pagination.test.ts` | Kept for older deployments; prefer `getLogsPage` |
 | Installable SDK artifact | `pnpm test:sdk-pack` | `scripts/sdk-pack-smoke.mjs` | Tarball install verified; registry publish not performed |
 | Health / readiness / metrics | `/healthz`, `/readyz`, `/metrics` | `readiness*.test.ts`, metrics tests | `/metrics` needs a key; Prometheus is operator-facing |
 | Quickstart examples | `examples/quickstart/*` | `tests/e2e/developer-quickstart.e2e.test.ts` | Run against a deployment with SSE/write enabled as needed |
@@ -54,7 +55,6 @@ All claims below were verified with `pnpm verify` on this branch; the counts are
 | Finality | `finalityStatus: verified` is verified **on testnets**, as tag semantics, not an economic-security claim. Solana devnet `finalized == confirmed`. |
 | Events | The event bus is in-process: `afterCursor` does not survive a restart. Reconcile with `/v1/logs` + `confirm` for money-critical flows. |
 | Usage | Counts reset on Gateway restart and are not aggregated across replicas. |
-| Pagination | Only block-range windowing (`getLogsPaged`). No opaque cursor; `limit` truncates without `hasMore`. |
 | Rate limits | Process-local token bucket (per project+key+route class). No distributed limiter, so N replicas multiply the effective burst. |
 | SDK distribution | Install from tarball (`pnpm pack`) or workspace. No npm registry publication or semver release process yet. |
 | Solana | Balance/block/tx/build/simulate/broadcast on devnet; no `contract.read`, `contract.logs`, `account.code`. |
@@ -71,7 +71,6 @@ All claims below were verified with `pnpm verify` on this branch; the counts are
 | Self-serve key management | No control-plane API/UI, no per-project key pools, no revoke API. | Operator CLI `pnpm api-key:issue` + dual-active env rotation |
 | Multi-tenant control plane | Explicitly out of scope (AGENTS.md); one static project per deployment. | Run one deployment per customer if isolation is required |
 | Published SDK release | `private: true`; no registry credentials/release pipeline. | Verified tarball install path (`pnpm test:sdk-pack`) |
-| Opaque-cursor pagination | No server cursor for `/v1/logs`; `limit` has no `hasMore`. | Range windowing helper + explicit cap errors |
 | Persistent event replay | In-process `EventBus` only. | At-least-once live delivery; reconcile from logs |
 | Mainnet | No registry entries, no mainnet RPC credentials, no economic finality validation. | Testnet/devnet only |
 | Distributed rate limiting / HA | Single-process limiter and in-memory usage. | Deploy behind a proxy with its own limits; accept per-replica buckets |

@@ -23,8 +23,10 @@ DFR TypeScript client, depending only on the public HTTP contract and `@dfr/type
   `Retry-After` on 429; never retries caller cancellation or unsafe writes. Off by default.
 - **Usage**: `getUsage()` — request counts per route/chain/error code plus effective limits.
   Counts are per Gateway process and reset on restart; not a billing ledger.
-- **Log pagination**: `getLogsPaged({ chain, fromBlock, toBlock, windowBlocks })` splits a wide
-  range into adapter-safe windows. There is no opaque-cursor pagination on the HTTP API.
+- **Log pagination**: `getLogsPage({ chain, fromBlock, toBlock, limit })` returns
+  `{ logs, hasMore, nextCursor }` from the server's stateless cursor (continue with
+  `{ chain, cursor, limit }`). `getLogsPaged({ ..., windowBlocks })` remains available for older
+  deployments and splits a wide range into adapter-safe windows.
 - **Installable build**: `pnpm --filter @dfr/sdk-typescript build` emits `dist/`; `pnpm pack`
   applies `publishConfig` so a tarball install resolves `dist`, while workspace tests keep using
   `src`. `pnpm test:sdk-pack` verifies build → pack → clean `node_modules` → runtime + `tsc`.
@@ -34,7 +36,10 @@ Usage example:
 ```ts
 const dfr = new DFR({ apiKey, retry: { maxRetries: 2 } });
 const usage = await dfr.getUsage();
-const { logs } = await dfr.getLogsPaged({ chain: 'base-sepolia', fromBlock: '0', toBlock: '4500' });
+let page = await dfr.getLogsPage({ chain: 'base-sepolia', fromBlock: '0', toBlock: '4500', limit: 500 });
+while (page.hasMore && page.nextCursor) {
+  page = await dfr.getLogsPage({ chain: 'base-sepolia', cursor: page.nextCursor, limit: 500 });
+}
 ```
 
 Every SDK method must have a Gateway E2E test, not only fetch-mock unit tests.

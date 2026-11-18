@@ -553,13 +553,27 @@ paths:
     post:
       tags: [logs]
       operationId: getLogs
-      summary: Query event logs by block range
+      summary: Query event logs by block range (with cursor pagination)
       description: |
         ADR-034: event log queries (`eth_getLogs` semantics), for callers such as BEX to reconcile against on-chain data.
 
+        Two mutually exclusive request forms:
+        - **First page**: `{ fromBlock, toBlock, address?, topics?, limit? }`;
+        - **Continuation**: `{ cursor, limit? }` — the cursor already carries the pinned range and
+          filters, so re-sending them is rejected (`400 DFR_VALIDATION_FAILED`).
+
+        Pagination semantics:
+        - Logs are ordered by `(blockNumber, logIndex)` ascending, including within a single block;
+        - `limit` is a real page size. When it is omitted the whole remaining result is returned
+          with `hasMore: false`;
+        - `nextCursor` is opaque and stateless: send it back unchanged. It is not signed and must
+          not be constructed or reused across chains (a chain mismatch is rejected);
+        - `hasMore: true` always comes with `nextCursor`, so no page can be silently dropped.
+
         Constraints:
-        - `fromBlock`/`toBlock` are **required** and must be decimal block-number strings (`tag`/`hash` not accepted);
-        - If the range exceeds the chain's declared `maxBlockRange`, **422** (no silent truncation);
+        - Block numbers are decimal strings (`tag`/`hash` not accepted);
+        - If the range exceeds the chain's declared `maxBlockRange`, the request is rejected
+          (`400 DFR_VALIDATION_FAILED`, no silent truncation);
         - Omitting `address` means any contract; `topics` align with `eth_getLogs` (null is a wildcard, arrays are OR).
       x-dfr-milestone: M4
       requestBody:
@@ -942,8 +956,13 @@ components:
 
     LogsQuery:
       type: object
-      required: [fromBlock, toBlock]
+      description: |
+        First-page form requires `fromBlock` + `toBlock`. Continuation form requires `cursor`
+        and must not include `fromBlock`/`toBlock`/`address`/`topics`.
       properties:
+        cursor:
+          type: string
+          description: "Opaque continuation from a previous `hasMore: true` response."
         fromBlock:
           type: string
           pattern: '^[0-9]+$'
@@ -969,12 +988,18 @@ components:
 
     LogsResponse:
       type: object
-      required: [logs, requestId]
+      required: [logs, hasMore, requestId]
       properties:
         logs:
           type: array
           items:
             $ref: '#/components/schemas/ChainLog'
+        hasMore:
+          type: boolean
+          description: True when `nextCursor` is present and more logs exist in the pinned range.
+        nextCursor:
+          type: string
+          description: Opaque, stateless continuation. Send back unchanged; do not construct.
         requestId: { type: string }
 
     ContractReadQuery:

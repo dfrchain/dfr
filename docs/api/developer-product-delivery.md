@@ -5,6 +5,8 @@
 > Implementation commit: `1283df7` — `[DFR-DEV-PRODUCT] feat(api): usage endpoint, key issuance, SDK retry/pagination/packaging, runnable quickstart`.
 > Report commit: the commit that adds this file (see `git log -1 -- docs/api/developer-product-delivery.md`).
 > Date: 2026-11-19 (Asia/Singapore).
+> Follow-up delivered after this record: server-side cursor pagination for `/v1/logs` — see
+> [developer-product-followup-delivery.md](./developer-product-followup-delivery.md).
 
 ## 1. What was actually delivered
 
@@ -113,8 +115,9 @@ appears in it.
    deployment plus a rotation window.
 4. **SDK is not published.** Tarball install is verified; registry release, semver policy, and
    provenance are future work.
-5. **No cursor pagination for logs.** `limit` truncates silently; only block-range windowing is
-   provided client-side.
+5. ~~**No cursor pagination for logs.**~~ Fixed in the follow-up: `/v1/logs` now returns
+   `hasMore` + `nextCursor` and the SDK exposes `getLogsPage`. `getLogsPaged` (block windowing)
+   remains for older deployments.
 6. **Events are not durable.** In-process bus; cursors do not survive restart.
 7. **Testnet/devnet only.** No mainnet chain or economic finality evidence.
 8. **Lockfile pruning:** regenerating `pnpm-lock.yaml` for the new `examples/quickstart` workspace
@@ -126,11 +129,12 @@ appears in it.
 
 ## 6. Recommended next claimable work (in order)
 
-1. **Durable usage aggregation + quotas** (ADR required): persist per-project usage windows, add
+1. **Durable usage aggregation + quotas** (ADR required; still not started — needs an explicit
+   decision): persist per-project usage windows, add
    quota config/enforcement, then expose plan/invoice fields. This is the blocker for selling
    usage-based pricing.
-2. **Cursor pagination for `/v1/logs`** (`hasMore` + `nextFromBlock` or opaque cursor) so BEX
-   reconciliation can be server-driven instead of client-windowed.
+2. ~~**Cursor pagination for `/v1/logs`**~~ Delivered in the follow-up
+   (`developer-product-followup-delivery.md`); next claimable item is the SDK release pipeline.
 3. **SDK release pipeline**: publish `@dfr/types` + `@dfr/sdk-typescript` to a registry with
    provenance and a semver policy; keep `pnpm test:sdk-pack` as the gate.
 4. **Self-serve key API/portal** (control plane; requires an explicit scope decision).

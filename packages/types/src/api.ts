@@ -13,6 +13,7 @@ import type { CapabilityId } from './capability.js';
 import type { Balance } from './asset.js';
 import type { Block, FinalityLevel } from './block.js';
 import type {
+  ChainLog,
   ConfirmationResult,
   SimulationResult,
   SignedTransaction,
@@ -61,6 +62,16 @@ export interface GetBalanceResponse {
 export interface GetBlockResponse {
   block: Block;
   requestId: RequestId;
+}
+
+/** Response of `POST /v1/logs` (ADR-034 + cursor pagination). */
+export interface LogsPageResponse {
+  readonly logs: readonly ChainLog[];
+  /** True when `nextCursor` is present and more logs exist within the pinned range. */
+  readonly hasMore: boolean;
+  /** Opaque, stateless continuation. Do not construct or parse it; send it back unchanged. */
+  readonly nextCursor?: string;
+  readonly requestId: RequestId;
 }
 
 export interface GetTransactionResponse {

@@ -243,10 +243,39 @@ const stream = dfr.subscribeEventsWithTicket(ticket.ticket, { chain: 'ethereum-s
 Cursors are process-local in the current implementation; they are not a durable replay
 log. For money-critical reconciliation use `/v1/logs` plus `confirm`.
 
-## 10. Query logs over a wide range
+## 10. Query logs over a wide range (cursor pagination)
 
 The server caps each `/v1/logs` request at the chain's `maxBlockRange` (2000 blocks by
-default for EVM) and `limit` truncates silently. Use the SDK's ranged helper:
+default for EVM). Two supported ways to cover a wide range:
+
+**Server cursor (preferred).** `limit` is a real page size; `hasMore` / `nextCursor` describe
+exactly what was returned, including several logs in one block. The cursor carries the pinned
+range and filters, so a resume request sends only `{ cursor, limit }`:
+
+```ts
+let page = await dfr.getLogsPage({
+  chain: 'base-sepolia',
+  fromBlock: '0',
+  toBlock: '4500',
+  address: '0x…',
+  limit: 500,
+});
+const all = [...page.logs];
+while (page.hasMore && page.nextCursor !== undefined) {
+  page = await dfr.getLogsPage({
+    chain: 'base-sepolia',
+    cursor: page.nextCursor,
+    limit: 500,
+  });
+  all.push(...page.logs);
+}
+```
+
+The cursor is opaque and stateless: do not construct it, do not reuse it across chains, and do not
+combine it with `fromBlock`/`toBlock` (rejected with `400 DFR_VALIDATION_FAILED`).
+
+**Client block windows (works with older deployments).** `getLogsPaged` splits the range into
+adapter-safe windows:
 
 ```ts
 const { logs, pages } = await dfr.getLogsPaged({

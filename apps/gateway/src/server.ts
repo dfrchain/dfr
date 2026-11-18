@@ -31,6 +31,14 @@ import type {
 } from '@dfr/types';
 import { scopeAllows, type ApiKeyScope, type StaticApiKeyConfig, verifyApiKey } from './auth.js';
 import { UsageMeter } from './usage.js';
+import {
+  cursorAfterPage,
+  decodeLogsCursor,
+  logsAfter,
+  sortChainLogs,
+  type LogPosition,
+  type LogsCursorState,
+} from './logs-cursor.js';
 import { readJsonBody } from './body.js';
 import {
   handleBuildTransaction,
@@ -958,9 +966,31 @@ async function dispatch(
 
     case 'getLogs': {
       const chain = requireQuery(url, 'chain', requestId);
-      const req = parseLogsBody(body, requestId);
-      const logs = await core.getLogs(chain as ChainId, req, ctx);
-      return { status: 200, body: { logs, requestId } };
+      const parsed = parseLogsBody(body, requestId);
+      const resolved = resolveLogsRequest(chain, parsed, requestId);
+      // The Adapter's own `limit` truncates silently; pagination must happen here so `hasMore`
+      // and the continuation cursor describe exactly what was returned.
+      const logs = await core.getLogs(chain as ChainId, resolved.request, ctx);
+      const sorted = sortChainLogs(logs);
+      const remaining =
+        resolved.after !== undefined ? logsAfter(sorted, resolved.after) : sorted;
+      if (parsed.limit === undefined) {
+        return { status: 200, body: { logs: remaining, hasMore: false, requestId } };
+      }
+      const page = remaining.slice(0, parsed.limit);
+      const hasMore = remaining.length > parsed.limit;
+      const last = page[page.length - 1];
+      const nextCursor =
+        hasMore && last !== undefined ? cursorAfterPage(resolved.state, last, requestId) : undefined;
+      return {
+        status: 200,
+        body: {
+          logs: page,
+          hasMore,
+          ...(nextCursor !== undefined ? { nextCursor } : {}),
+          requestId,
+        },
+      };
     }
 
     case 'buildTransaction': {
@@ -1089,11 +1119,50 @@ export function parseBlockRef(value: string, requestId: RequestId): BlockRef {
   }
 }
 
-/** Parse the `POST /v1/logs` request body (ADR-034). All field validation is fail-closed. */
-function parseLogsBody(body: Record<string, unknown> | undefined, requestId: RequestId): ContractLogsRequest {
+interface ParsedLogsBody {
+  /** Continuation cursor; mutually exclusive with range/filter fields. */
+  readonly cursor?: string;
+  /** Page size; when omitted the whole remaining result is returned with `hasMore: false`. */
+  readonly limit?: number;
+  /** Present only in the first-page form (no cursor). */
+  readonly request?: ContractLogsRequest;
+}
+
+/**
+ * Parse the `POST /v1/logs` body (ADR-034 + cursor pagination).
+ *
+ * Two mutually exclusive forms:
+ *   - first page: `{ fromBlock, toBlock, address?, topics?, limit? }`
+ *   - continuation: `{ cursor, limit? }`
+ * Mixing them is rejected: a cursor already carries its range/filter, and guessing which side wins
+ * is exactly how reconciliation bugs happen.
+ */
+function parseLogsBody(body: Record<string, unknown> | undefined, requestId: RequestId): ParsedLogsBody {
   if (body === undefined) {
      throw createDfrError('DFR_VALIDATION_FAILED', { requestId, message: 'Missing request body' });
   }
+  const limit = parseLogsLimit(body['limit'], requestId);
+  const cursorRaw = body['cursor'];
+  if (cursorRaw !== undefined) {
+    if (typeof cursorRaw !== 'string' || cursorRaw === '') {
+      throw createDfrError('DFR_VALIDATION_FAILED', {
+        requestId,
+        message: 'cursor must be a non-empty string',
+        details: { fields: ['cursor'] },
+      });
+    }
+    for (const field of ['fromBlock', 'toBlock', 'address', 'topics'] as const) {
+      if (body[field] !== undefined) {
+        throw createDfrError('DFR_VALIDATION_FAILED', {
+          requestId,
+          message: `cursor cannot be combined with ${field}`,
+          details: { fields: ['cursor', field] },
+        });
+      }
+    }
+    return { cursor: cursorRaw, ...(limit !== undefined ? { limit } : {}) };
+  }
+
   const fromBlock = parseBlockRefBody(body['fromBlock'], requestId, 'fromBlock');
   const toBlock = parseBlockRefBody(body['toBlock'], requestId, 'toBlock');
   const req: ContractLogsRequest = { fromBlock, toBlock };
@@ -1107,13 +1176,80 @@ function parseLogsBody(body: Record<string, unknown> | undefined, requestId: Req
     }
     (req as { topics?: unknown }).topics = body['topics'];
   }
-  if (body['limit'] !== undefined) {
-    if (!Number.isInteger(body['limit']) || (body['limit'] as number) < 1) {
-       throw createDfrError('DFR_VALIDATION_FAILED', { requestId, message: 'limit must be a positive integer', details: { fields: ['limit'] } });
-    }
-    (req as { limit?: number }).limit = body['limit'] as number;
+  return { request: req, ...(limit !== undefined ? { limit } : {}) };
+}
+
+function parseLogsLimit(value: unknown, requestId: RequestId): number | undefined {
+  if (value === undefined) return undefined;
+  if (!Number.isInteger(value) || (value as number) < 1) {
+     throw createDfrError('DFR_VALIDATION_FAILED', { requestId, message: 'limit must be a positive integer', details: { fields: ['limit'] } });
   }
-  return req;
+  return value as number;
+}
+
+interface ResolvedLogsRequest {
+  readonly request: ContractLogsRequest;
+  readonly state: Omit<LogsCursorState, 'afterBlock' | 'afterIndex'>;
+  readonly after?: LogPosition;
+}
+
+/** Turn the first-page or continuation form into one Core request plus the cursor position. */
+function resolveLogsRequest(
+  chain: string,
+  parsed: ParsedLogsBody,
+  requestId: RequestId,
+): ResolvedLogsRequest {
+  if (parsed.cursor !== undefined) {
+    const cursor = decodeLogsCursor(parsed.cursor, requestId);
+    if (cursor.chain !== chain) {
+      throw createDfrError('DFR_VALIDATION_FAILED', {
+        requestId,
+        message: 'cursor was issued for a different chain',
+        details: { fields: ['cursor'] },
+        chain: chain as ChainId,
+      });
+    }
+    if (BigInt(cursor.fromBlock) > BigInt(cursor.toBlock)) {
+      throw createDfrError('DFR_VALIDATION_FAILED', {
+        requestId,
+        message: 'cursor contains an inverted block range',
+        details: { fields: ['cursor'] },
+      });
+    }
+    return {
+      request: {
+        fromBlock: { kind: 'number', number: cursor.fromBlock },
+        toBlock: { kind: 'number', number: cursor.toBlock },
+        ...(cursor.address !== undefined ? { address: cursor.address } : {}),
+        ...(cursor.topics !== undefined ? { topics: cursor.topics } : {}),
+      },
+      state: {
+        chain: cursor.chain,
+        fromBlock: cursor.fromBlock,
+        toBlock: cursor.toBlock,
+        ...(cursor.address !== undefined ? { address: cursor.address } : {}),
+        ...(cursor.topics !== undefined ? { topics: cursor.topics } : {}),
+      },
+      after: { block: BigInt(cursor.afterBlock), index: BigInt(cursor.afterIndex) },
+    };
+  }
+
+  const request = parsed.request;
+  if (request === undefined) {
+    throw createDfrError('DFR_INTERNAL_ERROR', { requestId, message: 'logs request was not parsed' });
+  }
+  const from = request.fromBlock as { kind: 'number'; number: DecimalUint };
+  const to = request.toBlock as { kind: 'number'; number: DecimalUint };
+  return {
+    request,
+    state: {
+      chain,
+      fromBlock: from.number,
+      toBlock: to.number,
+      ...(request.address !== undefined ? { address: request.address } : {}),
+      ...(request.topics !== undefined ? { topics: request.topics } : {}),
+    },
+  };
 }
 
 /** Parse the `POST /v1/contracts/read` request body (ADR-035). */
