@@ -15,7 +15,9 @@ Developer-product documents in this directory:
 - [quickstart.md](./quickstart.md) — key → install → first call → errors → usage → events.
 - [bex-integration.md](./bex-integration.md) — how the upper-layer BEX product consumes DFR safely.
 - [capability-matrix.md](./capability-matrix.md) — sellable / caveated / not-sellable capabilities.
-- [developer-product-delivery.md](./developer-product-delivery.md) — delivery evidence and SHAs.
+- [developer-product-delivery.md](./developer-product-delivery.md) — task-03 delivery evidence and SHAs.
+- [developer-product-followup-delivery.md](./developer-product-followup-delivery.md) — `/v1/logs`
+  cursor pagination follow-up (implementation SHA, tests, limits).
 
 Endpoints currently implemented (matching `openapi.yaml`'s `paths` one to
 one):

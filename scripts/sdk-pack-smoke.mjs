@@ -54,6 +54,7 @@ try {
       "if (client.describe() !== 'DFR(baseUrl=https://gateway.example)') throw new Error('unexpected describe()');",
       "if (typeof client.getUsage !== 'function') throw new Error('getUsage missing from dist');",
       "if (typeof client.getLogsPaged !== 'function') throw new Error('getLogsPaged missing from dist');",
+      "if (typeof client.getLogsPage !== 'function') throw new Error('getLogsPage missing from dist');",
       "if (typeof isDfrApiError !== 'function') throw new Error('isDfrApiError missing from dist');",
       "process.stdout.write('runtime-consumer-ok\\n');",
       '',
