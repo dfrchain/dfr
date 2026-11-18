@@ -1,20 +1,20 @@
 /**
- * PostgresTransactionStore 契约测试（DFR-M1-A09）。
+ * PostgresTransactionStore contract test (DFR-M1-A09).
  *
- * 权威来源：docs/architecture/m1-storage-model.md 第 4/5 节、ADR-015 §5。
+ * Authoritative sources: docs/architecture/m1-storage-model.md sections 4/5, ADR-015 §5.
  *
- * 默认**跳过**；显式开启（`pnpm test:db` 会导出 DSN）：
+ * Skipped by **default**; enable explicitly (`pnpm test:db` exports the DSN):
  *
  *   DFR_TRANSACTION_MIGRATION_DATABASE_URL=postgres://dfr_migrator:...@127.0.0.1:55432/dfr_m1_test \
  *   pnpm vitest run packages/storage-postgres/test/transaction-store.test.ts
  *
- * 本文件**自建一次性数据库**（`dfr_t_store_test`）并在结束时不删除它之前先关闭连接。
- * 原因：schema 契约测试会 `DROP SCHEMA transaction_data CASCADE`，
- * 若共用同一数据库，两个测试文件会互相破坏（vitest 默认跨文件并行）。
+ * This file **builds its own throwaway database** (`dfr_t_store_test`) and closes connections before deleting it at the end.
+ * Reason: the schema contract test runs `DROP SCHEMA transaction_data CASCADE`,
+ * so sharing one database would let the two test files break each other (vitest runs files in parallel by default).
  *
- * 任务卡要求的两个关键验证：
- *   1. 两个连接竞争同一 version，只有一个成功（CAS 生效）；
- *   2. transition 审计写入失败时，状态快照必须回滚。
+ * The two key verifications the task card requires:
+ *   1. Two connections race on the same version, and exactly one succeeds (CAS works);
+ *   2. When the transition audit write fails, the state snapshot must roll back.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Client, Pool } from 'pg';
@@ -30,7 +30,7 @@ import { fileURLToPath } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
 const migrationsDir = resolve(here, '..', 'migrations');
 
-/** 迁移身份 DSN：用于建库、跑迁移，以及安装测试用探针约束。 */
+/** Migration-identity DSN: used to create the database, run migrations, and install test probe constraints. */
 const ADMIN_DSN = process.env['DFR_TRANSACTION_MIGRATION_DATABASE_URL'];
 const ENABLED = typeof ADMIN_DSN === 'string' && ADMIN_DSN.length > 0;
 
@@ -45,13 +45,13 @@ const num = (v: string): DecimalUint => v as DecimalUint;
 const iso = (v: string): Iso8601 => v as Iso8601;
 
 let admin: Client;
-/** 指向私有库的原始连接：用于绕过 Store 直接断言数据库真实状态。 */
+/** Raw connection to the private database: used to assert the real database state directly, bypassing the Store. */
 let inspector: Client;
 let pool: Pool;
 let store: PostgresTransactionStore;
 
 function dsnFor(database: string): string {
-  // 把 DSN 的库名替换为目标库；保留其余部分不变。
+  // Replace the DSN's database name with the target database; keep everything else unchanged.
   return ADMIN_DSN!.replace(/\/[^/]*$/u, `/${database}`);
 }
 
@@ -116,7 +116,7 @@ async function seedBlockhashLease(
   );
 }
 
-/** 读取绕过 Store 的原始行，用于验证"数据库里真正发生了什么"。 */
+/** Read raw rows bypassing the Store, to verify "what really happened in the database". */
 async function rawRow(id: string): Promise<{ status: string; state_version: string; canonical_block_hash: string | null } | undefined> {
   const { rows } = await inspector.query<{ status: string; state_version: string; canonical_block_hash: string | null }>(
     `SELECT status, state_version, canonical_block_hash FROM ${SCHEMA}.transactions WHERE id = $1`,
@@ -140,13 +140,13 @@ beforeAll(async () => {
 
   const { rows } = await admin.query<{ db: string }>('SELECT current_database() AS db');
   if (!/_test$/u.test(rows[0]!.db)) {
-    throw new Error(`拒绝在非测试库 "${rows[0]!.db}" 上执行（库名必须以 _test 结尾）`);
+    throw new Error(`refusing to run against non-test database "${rows[0]!.db}" (database name must end with _test)`);
   }
 
   await admin.query(`DROP DATABASE IF EXISTS ${PRIVATE_DB} WITH (FORCE)`);
   await admin.query(`CREATE DATABASE ${PRIVATE_DB}`);
 
-  // 在私有库上应用真实迁移，保证测试针对的是真实 schema。
+  // Apply the real migrations on the private database, so tests target the real schema.
   const setupClient = new Client({ connectionString: dsnFor(PRIVATE_DB) });
   await setupClient.connect();
   await runMigrations({ client: setupClient, migrations: loadMigrations(migrationsDir) });
@@ -161,12 +161,12 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (!ENABLED) return;
-  // DROP DATABASE 要求没有活动连接：先释放池，再从 admin 连接删除。
+  // DROP DATABASE requires no active connections: release the pool first, then delete from the admin connection.
   if (inspector) await inspector.end();
   if (pool) await pool.end();
   if (admin) {
-    // 池关闭后服务端可能仍有极少量残留 backend；先 terminate 再 DROP，
-    // 避免 FORCE 掐连接时在 pg 客户端上抛出 57P01 噪声错误。
+    // After the pool closes, the server may still have a few leftover backends; terminate them first, then DROP,
+    // to avoid noisy 57P01 errors on pg clients when FORCE cuts connections.
     await admin.query(
       `SELECT pg_terminate_backend(pid) FROM pg_stat_activity
         WHERE datname = $1 AND pid <> pg_backend_pid()`,
@@ -177,8 +177,8 @@ afterAll(async () => {
   }
 }, 60_000);
 
-describe.skipIf(!ENABLED)('PostgresTransactionStore（DFR-M1-A09）', () => {
-  it('create → get 往返：字段映射正确且版本为十进制字符串', async () => {
+describe.skipIf(!ENABLED)('PostgresTransactionStore (DFR-M1-A09)', () => {
+  it('create → get round trip: field mapping is correct and the version is a decimal string', async () => {
     await resetRows();
     const record = makeRecord('txn_roundtrip', {
       to,
@@ -200,7 +200,7 @@ describe.skipIf(!ENABLED)('PostgresTransactionStore（DFR-M1-A09）', () => {
     expect(loaded!.transactionId).toBe(record.transactionId);
     expect(loaded!.status).toBe('built');
     expect(loaded!.stateVersion).toBe('1');
-    // nonce 必须是十进制字符串，不能变成 number（浮点/精度红线）。
+    // nonce must be a decimal string, never a number (float/precision red line).
     expect(typeof loaded!.nonce).toBe('string');
     expect(loaded!.nonce).toBe('7');
     expect(loaded!.from.address).toBe(from.address);
@@ -209,15 +209,15 @@ describe.skipIf(!ENABLED)('PostgresTransactionStore（DFR-M1-A09）', () => {
     expect(loaded!.minFinality).toBe('finalized');
     expect(loaded!.blockRef).toEqual({ kind: 'tag', tag: 'latest' });
     expect(loaded!.canonicalBlockHash).toBe('0x' + 'cd'.repeat(32));
-    // 时间必须是 ISO 8601 字符串。
+    // Times must be ISO 8601 strings.
     expect(loaded!.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T/u);
   });
 
-  it('get 未找到返回 null（不是 undefined）', async () => {
+  it('get returns null when missing (not undefined)', async () => {
     expect(await store.get('txn_missing' as TransactionId)).toBeNull();
   });
 
-  it('getByHash 限定链并可命中已广播哈希或 expectedHash', async () => {
+  it('getByHash scopes to a chain and can hit a broadcast hash or expectedHash', async () => {
     await resetRows();
     const expectedHash = `0x${'ab'.repeat(32)}`;
     const txHash = `0x${'cd'.repeat(32)}`;
@@ -229,7 +229,7 @@ describe.skipIf(!ENABLED)('PostgresTransactionStore（DFR-M1-A09）', () => {
     await expect(store.getByHash(chain, `0x${'ef'.repeat(32)}`)).resolves.toBeNull();
   });
 
-  it('重复 create 返回 already_exists，且不覆盖既有记录', async () => {
+  it('a repeated create returns already_exists without overwriting the existing record', async () => {
     await resetRows();
     await store.create({ record: makeRecord('txn_dup', { status: 'built' }) });
     const again = await store.create({
@@ -242,7 +242,7 @@ describe.skipIf(!ENABLED)('PostgresTransactionStore（DFR-M1-A09）', () => {
     }
   });
 
-  it('ADR-033：非 EVM（Solana blockhash）记录可落 sequencing_ref，且往返一致', async () => {
+  it('ADR-033: a non-EVM (Solana blockhash) record can persist sequencing_ref, and round-trips consistently', async () => {
     await resetRows();
     const solChain = 'solana-devnet' as ChainId;
     const record: TransactionRecord = {
@@ -267,7 +267,7 @@ describe.skipIf(!ENABLED)('PostgresTransactionStore（DFR-M1-A09）', () => {
 
     const readBack = await store.get('txn_seq_ref' as TransactionId);
     expect(readBack?.sequencingRef).toEqual(record.sequencingRef);
-    // Solana 记录没有 EVM nonce 列。
+    // Solana records have no EVM nonce column.
     expect(readBack?.nonce).toBeUndefined();
 
     const { rows } = await inspector.query<{ ref: unknown }>(
@@ -334,7 +334,7 @@ describe.skipIf(!ENABLED)('PostgresTransactionStore（DFR-M1-A09）', () => {
       }
       await expect(store.create({ record: {
         ...makeRecord(scenario.id), chain: solChain, from: account, sequencingRef: token,
-      } })).rejects.toThrow(/sequencing|blockhash|租约/u);
+      } })).rejects.toThrow(/sequencing|blockhash|lease/u);
       expect(await store.get(scenario.id as TransactionId)).toBeNull();
     }
   });
@@ -358,21 +358,21 @@ describe.skipIf(!ENABLED)('PostgresTransactionStore（DFR-M1-A09）', () => {
     expect((await store.get('txn_shared_blockhash_two' as TransactionId))?.sequencingRef).toEqual(token);
   });
 
-  it('ADR-033：EVM 记录 sequencing_ref(nonce) 与 nonce 列必须自洽', async () => {
+  it('ADR-033: an EVM record's sequencing_ref(nonce) must be consistent with its nonce column', async () => {
     await resetRows();
-    // 自洽且持有有效租约：允许。DB-01 之后，仅字段自洽不够。
+    // Consistent and holding a valid lease: allowed. Since DB-01, field consistency alone is not enough.
     await seedNonceLease('txn_ref_ok', '5');
     await expect(
       store.create({ record: makeRecord('txn_ref_ok', { nonce: num('5'), sequencingRef: { kind: 'nonce', value: num('5') } }) }),
     ).resolves.toMatchObject({ kind: 'created' });
-    // 不一致：fail-closed。
+    // Inconsistent: fail-closed.
     await expect(
       store.create({ record: makeRecord('txn_ref_bad', { nonce: num('5'), sequencingRef: { kind: 'nonce', value: num('6') } }) }),
     ).rejects.toThrow(/sequencing_ref/u);
-    // 有引用却没有 nonce 列：fail-closed。
+    // Reference present but no nonce column: fail-closed.
     await expect(
       store.create({ record: makeRecord('txn_ref_nononce', { sequencingRef: { kind: 'nonce', value: num('1') } }) }),
-    ).rejects.toThrow(/没有 nonce/u);
+    ).rejects.toThrow(/no nonce/u);
   });
 
   it('DB-01: production EVM create refuses a missing or reclaimed lease', async () => {
@@ -380,11 +380,11 @@ describe.skipIf(!ENABLED)('PostgresTransactionStore（DFR-M1-A09）', () => {
     const id = 'txn_expired_owner';
     const record = makeRecord(id, { nonce: num('8'), sequencingRef: { kind: 'nonce', value: num('8') } });
 
-    await expect(store.create({ record })).rejects.toThrow(/租约|水位/u);
+    await expect(store.create({ record })).rejects.toThrow(/lease|watermark/u);
     expect(await store.get(id as TransactionId)).toBeNull();
 
     await seedNonceLease(id, '8', { owner: 'txn_new_owner' });
-    await expect(store.create({ record })).rejects.toThrow(/租约/u);
+    await expect(store.create({ record })).rejects.toThrow(/lease/u);
     expect(await store.get(id as TransactionId)).toBeNull();
   });
 
@@ -398,7 +398,7 @@ describe.skipIf(!ENABLED)('PostgresTransactionStore（DFR-M1-A09）', () => {
       await seedNonceLease(scenario.id, '9', { ttl: scenario.ttl, status: scenario.status });
       await expect(store.create({ record: makeRecord(scenario.id, {
         nonce: num('9'), sequencingRef: { kind: 'nonce', value: num('9') },
-      }) })).rejects.toThrow(/租约/u);
+      }) })).rejects.toThrow(/lease/u);
       expect(await store.get(scenario.id as TransactionId)).toBeNull();
     }
   });
@@ -441,10 +441,10 @@ describe.skipIf(!ENABLED)('PostgresTransactionStore（DFR-M1-A09）', () => {
     }
   }, 15_000);
 
-  it('create 时同 transactionId 的既有租约 chain/from 不一致 → fail-closed', async () => {
+  it('create with an existing lease for the same transactionId whose chain/from mismatch → fail-closed', async () => {
     await resetRows();
     const id = 'txn_lease_mismatch';
-    // 先落一条与记录不匹配的租约（M1-C00 后租约不再要求交易行先存在）。
+    // First place a lease that does not match the record (since M1-C00, leases no longer require the transaction row to exist first).
     await inspector.query(
       `INSERT INTO ${SCHEMA}.nonce_leases
          (chain_id, account_address, nonce, transaction_id, status, expires_at)
@@ -453,13 +453,13 @@ describe.skipIf(!ENABLED)('PostgresTransactionStore（DFR-M1-A09）', () => {
     );
 
     await expect(store.create({ record: makeRecord(id, { nonce: num('9'), sequencingRef: { kind: 'nonce', value: num('9') } }) })).rejects.toThrow(
-      /租约|lease/u,
+      /lease/u,
     );
-    // 记录不得落库：否则会出现"记录与租约指向不同账户"的静默不一致。
+    // The record must not be persisted: otherwise a silent inconsistency like "record and lease point at different accounts" would appear.
     expect(await store.get(id as TransactionId)).toBeNull();
   });
 
-  it('transition 成功：状态推进、version +1，并写入审计行', async () => {
+  it('transition succeeds: state advances, version +1, and an audit row is written', async () => {
     await resetRows();
     await store.create({ record: makeRecord('txn_ok') });
 
@@ -480,7 +480,7 @@ describe.skipIf(!ENABLED)('PostgresTransactionStore（DFR-M1-A09）', () => {
     const raw = await rawRow('txn_ok');
     expect(raw).toEqual({ status: 'simulated', state_version: '2', canonical_block_hash: null });
 
-    // 审计行与快照必须同时存在（同事务）。
+    // The audit row and the snapshot must exist together (same transaction).
     const { rows } = await inspector.query<{
       from_status: string | null;
       to_status: string;
@@ -500,7 +500,7 @@ describe.skipIf(!ENABLED)('PostgresTransactionStore（DFR-M1-A09）', () => {
     });
   });
 
-  it('transition 携带 patch 时一并更新白名单字段', async () => {
+  it('a transition carrying a patch also updates the allowlisted fields', async () => {
     await resetRows();
     await store.create({ record: makeRecord('txn_patch') });
     const patch: TransitionPatch = {
@@ -521,7 +521,7 @@ describe.skipIf(!ENABLED)('PostgresTransactionStore（DFR-M1-A09）', () => {
     expect(loaded!.nonce).toBe('3');
   });
 
-  it('reorg 回退在同一 CAS 中清空失效的 blockRef 与 canonical hash', async () => {
+  it('a reorg rollback clears the stale blockRef and canonical hash in the same CAS', async () => {
     await resetRows();
     await store.create({ record: makeRecord('txn_reorg_clear', {
       status: 'included',
@@ -545,7 +545,7 @@ describe.skipIf(!ENABLED)('PostgresTransactionStore（DFR-M1-A09）', () => {
     }
   });
 
-  it('transition 版本不匹配 → version_conflict 并回带当前记录', async () => {
+  it('transition with a mismatched version → version_conflict, returning the current record', async () => {
     await resetRows();
     await store.create({ record: makeRecord('txn_vc', { stateVersion: num('5') }) });
     const result = await store.transition({
@@ -557,11 +557,11 @@ describe.skipIf(!ENABLED)('PostgresTransactionStore（DFR-M1-A09）', () => {
     });
     expect(result.kind).toBe('version_conflict');
     if (result.kind === 'version_conflict') expect(result.current.stateVersion).toBe('5');
-    // 数据库未被改动。
+    // The database is unchanged.
     expect(await rawRow('txn_vc')).toEqual({ status: 'built', state_version: '5', canonical_block_hash: null });
   });
 
-  it('transition 状态不匹配 → status_conflict', async () => {
+  it('transition with a mismatched status → status_conflict', async () => {
     await resetRows();
     await store.create({ record: makeRecord('txn_sc', { status: 'built' }) });
     const result = await store.transition({
@@ -574,7 +574,7 @@ describe.skipIf(!ENABLED)('PostgresTransactionStore（DFR-M1-A09）', () => {
     expect(result.kind).toBe('status_conflict');
   });
 
-  it('transition 未知交易 → not_found', async () => {
+  it('transition for an unknown transaction → not_found', async () => {
     await resetRows();
     const result = await store.transition({
       transactionId: 'txn_nope' as TransactionId,
@@ -586,7 +586,7 @@ describe.skipIf(!ENABLED)('PostgresTransactionStore（DFR-M1-A09）', () => {
     expect(result.kind).toBe('not_found');
   });
 
-  it('行锁确定性验证：前一个事务持有 FOR UPDATE 时，第二个连接必须等待', async () => {
+  it('row-lock determinism check: while the first transaction holds FOR UPDATE, the second connection must wait', async () => {
     await resetRows();
     await store.create({ record: makeRecord('txn_lock') });
 
@@ -606,13 +606,13 @@ describe.skipIf(!ENABLED)('PostgresTransactionStore（DFR-M1-A09）', () => {
           settled = true;
         });
 
-      // 给第二个连接充分时间尝试获取锁；若行锁失效它会立刻完成。
+      // Give the second connection enough time to try to acquire the lock; if row locking were broken it would complete immediately.
       await new Promise((r) => setTimeout(r, 400));
-      expect(settled, '第二个连接未被阻塞：行锁（FOR UPDATE）未生效').toBe(false);
+      expect(settled, 'the second connection was not blocked: the row lock (FOR UPDATE) did not take effect').toBe(false);
 
       await c1.query('COMMIT');
       await pending;
-      expect(settled, '第一个事务提交后，第二个连接应被放行').toBe(true);
+      expect(settled, 'after the first transaction commits, the second connection should be released').toBe(true);
       await c2.query('COMMIT');
     } finally {
       c1.release();
@@ -620,15 +620,15 @@ describe.skipIf(!ENABLED)('PostgresTransactionStore（DFR-M1-A09）', () => {
     }
   });
 
-  it('多连接并发竞争同一 version：恰好一个成功，且版本只前进一格', async () => {
+  it('many connections race on the same version: exactly one succeeds, and the version advances by only one', async () => {
     await resetRows();
     await store.create({ record: makeRecord('txn_race') });
 
-    // 8 路并发：全部基于同一旧 version 竞争。
+    // 8-way concurrency: all race on the same old version.
     //
-    // 用 8 路而不是 2 路，是为了让"丢失更新"无处可藏：若缺少 FOR UPDATE，
-    // 多个连接可能都读到 version=1 并各自成功，导致状态被覆盖多次。
-    // 2 路时偶发的串行执行会掩盖这个缺陷（见交付报告的变异记录）。
+    // 8-way rather than 2-way, so "lost updates" have nowhere to hide: without FOR UPDATE,
+    // several connections might all read version=1 and succeed individually, overwriting the state multiple times.
+    // With 2-way, occasional serial execution would mask this defect (see the mutation record in the delivery report).
     const CONCURRENCY = 8;
     const results = await Promise.all(
       Array.from({ length: CONCURRENCY }, (_, i) =>
@@ -644,10 +644,10 @@ describe.skipIf(!ENABLED)('PostgresTransactionStore（DFR-M1-A09）', () => {
 
     const applied = results.filter((r) => r.kind === 'applied');
     const conflicts = results.filter((r) => r.kind === 'version_conflict');
-    expect(applied, '必须恰好一个成功').toHaveLength(1);
+    expect(applied, 'exactly one must succeed').toHaveLength(1);
     expect(conflicts).toHaveLength(CONCURRENCY - 1);
 
-    // 数据库只前进一格，且只有一条审计行——这是"没有丢失更新"的直接证据。
+    // The database advances by only one, with only one audit row — direct evidence of "no lost updates".
     const raw = await rawRow('txn_race');
     expect(raw!.state_version).toBe('2');
     expect(await transitionCount('txn_race')).toBe(1);
@@ -708,7 +708,7 @@ describe.skipIf(!ENABLED)('PostgresTransactionStore（DFR-M1-A09）', () => {
     }
   });
 
-  it('DB-REPLAY-26: dropped 显式重播的并发 CAS 只推进一次且保留签名哈希', async () => {
+  it('DB-REPLAY-26: concurrent CAS replays of an explicit dropped replay advance only once and keep the signature hash', async () => {
     await resetRows();
     const id = 'txn_dropped_replay_race';
     const expectedHash = `0x${'bc'.repeat(32)}`;
@@ -718,8 +718,8 @@ describe.skipIf(!ENABLED)('PostgresTransactionStore（DFR-M1-A09）', () => {
       unsignedPayload: '0x02f8',
     }) });
 
-    // 8 个真实 PostgreSQL 连接争用同一个 dropped/version 快照。
-    // 任何额外成功都会导致同一签名交易出现重复重播授权。
+    // 8 real PostgreSQL connections contend over the same dropped/version snapshot.
+    // Any extra success would authorize a duplicate replay of the same signed transaction.
     const results = await Promise.all(Array.from({ length: 8 }, () => store.transition({
       transactionId: id as TransactionId,
       expectedStatus: 'dropped',
@@ -737,11 +737,11 @@ describe.skipIf(!ENABLED)('PostgresTransactionStore（DFR-M1-A09）', () => {
     expect(await transitionCount(id)).toBe(1);
   });
 
-  it('transition 审计写入失败时状态快照回滚（原子提交）', async () => {
+  it('when the transition audit write fails, the state snapshot rolls back (atomic commit)', async () => {
     await resetRows();
     await store.create({ record: makeRecord('txn_atomic') });
 
-    // 安装探针约束，让审计 INSERT 必然失败；验证快照 UPDATE 被一起回滚。
+    // Install a probe constraint so the audit INSERT must fail; verify the snapshot UPDATE rolls back with it.
     await inspector.query(
       `ALTER TABLE ${SCHEMA}.transaction_transitions
          ADD CONSTRAINT probe_reject_reason CHECK (reason <> 'probe.reject')`,
@@ -757,7 +757,7 @@ describe.skipIf(!ENABLED)('PostgresTransactionStore（DFR-M1-A09）', () => {
         }),
       ).rejects.toThrow(/probe_reject_reason|check constraint/iu);
 
-      // 关键断言：快照必须保持原状。
+      // Key assertion: the snapshot must stay unchanged.
       expect(await rawRow('txn_atomic')).toEqual({ status: 'built', state_version: '1', canonical_block_hash: null });
       expect(await transitionCount('txn_atomic')).toBe(0);
     } finally {
@@ -767,7 +767,7 @@ describe.skipIf(!ENABLED)('PostgresTransactionStore（DFR-M1-A09）', () => {
     }
   });
 
-  it('listRecoverable 遵守批次上限并支持键集分页', async () => {
+  it('listRecoverable respects the batch cap and supports keyset pagination', async () => {
     await resetRows();
     for (let i = 0; i < 7; i += 1) {
       await store.create({
@@ -777,26 +777,26 @@ describe.skipIf(!ENABLED)('PostgresTransactionStore（DFR-M1-A09）', () => {
 
     const first = await store.listRecoverable({ limit: 3 });
     expect(first).toHaveLength(3);
-    // 默认只返回非终态交易（finalized 属于终态）。
+    // By default only non-terminal transactions are returned (finalized is terminal).
     expect(first.every((r) => r.status !== 'finalized')).toBe(true);
 
     const second = await store.listRecoverable({
       limit: 3,
       afterTransactionId: first[first.length - 1]!.transactionId,
     });
-    // 键集分页：第二批不得重复第一批。
+    // Keyset pagination: the second batch must not repeat the first.
     const firstIds = new Set(first.map((r) => r.transactionId));
     expect(second.some((r) => firstIds.has(r.transactionId))).toBe(false);
 
-    // 显式状态过滤。
+    // Explicit state filtering.
     const finalized = await store.listRecoverable({ limit: 10, statuses: ['finalized'] });
     expect(finalized.every((r) => r.status === 'finalized')).toBe(true);
     expect(finalized.length).toBeGreaterThan(0);
   });
 
-  it('listRecoverable 支持 updatedAfter 时间下界（ADR-023 的 dropped 有界观测）', async () => {
+  it('listRecoverable supports the updatedAfter time lower bound (ADR-023 bounded observation of dropped)', async () => {
     await resetRows();
-    // 造一条 updatedAt 明显偏早的 dropped 记录，以及一条新建的 dropped 记录。
+    // Create one dropped record with a clearly old updatedAt, and one newly created dropped record.
     const oldUpdatedAt = new Date(Date.now() - 48 * 3600_000).toISOString();
     await store.create({
       record: makeRecord('txn_old_dropped', {
@@ -804,7 +804,7 @@ describe.skipIf(!ENABLED)('PostgresTransactionStore（DFR-M1-A09）', () => {
         updatedAt: oldUpdatedAt as never,
       }),
     });
-    // makeRecord 的默认时间戳是固定的 2026-10-04，必须显式给"现在"，否则两条都偏旧。
+    // makeRecord's default timestamp is fixed at 2026-10-04, so "now" must be passed explicitly, or both records would be old.
     const freshUpdatedAt = new Date().toISOString();
     await store.create({
       record: makeRecord('txn_new_dropped', {
@@ -814,7 +814,7 @@ describe.skipIf(!ENABLED)('PostgresTransactionStore（DFR-M1-A09）', () => {
       }),
     });
 
-    // 时间下界 = 6 小时前 → 只应返回新建的那条。
+    // Time lower bound = 6 hours ago → only the newly created record should be returned.
     const cutoff = new Date(Date.now() - 6 * 3600_000).toISOString() as never;
     const inWindow = await store.listRecoverable({
       limit: 10,
@@ -823,7 +823,7 @@ describe.skipIf(!ENABLED)('PostgresTransactionStore（DFR-M1-A09）', () => {
     });
     expect(inWindow.map((r) => r.transactionId)).toEqual(['txn_new_dropped']);
 
-    // 不带时间下界时两条都返回：证明过滤确实来自 updatedAfter，而不是别的条件。
+    // Without a time lower bound, both are returned: proof the filtering really comes from updatedAfter, not something else.
     const all = await store.listRecoverable({ limit: 10, statuses: ['dropped'] });
     expect(all.map((r) => r.transactionId).sort()).toEqual([
       'txn_new_dropped',

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://dfr.local/schemas/chains.schema.json",
   "title": "DFR Chain & Provider Registry",
-  "description": "chains.yaml 的机器可读 schema。启动校验（DFR-005）与 CI 校验共用本文件，避免规则随实现漂移（评审修正 R-13）。",
+  "description": "Machine-readable schema for chains.yaml. Startup validation (DFR-005) and CI validation share this file, so rules cannot drift with the implementation (review fix R-13)."
   "type": "object",
   "additionalProperties": false,
   "required": ["schemaVersion", "updatedAt", "chains", "providers"],
@@ -101,7 +101,7 @@
         "network": {
           "type": "string",
           "enum": ["mainnet", "testnet", "devnet", "custom"],
-          "description": "网络类别。由链 id 唯一决定，是描述属性而非独立参数（审计修正 A-07）。"
+          "description": "Network category. Determined solely by the chain id; a descriptive attribute, not an independent parameter (audit fix A-07)."
         },
         "externalChainId": { "type": "string" },
         "adapter": {
@@ -117,7 +117,7 @@
         "finalityStatus": {
           "type": "string",
           "enum": ["unverified", "verified"],
-          "description": "unverified 表示该最终性参数尚未用真实 RPC 验证；DFR-014 负责升级为 verified 并记录证据（评审修正 R-22）。"
+          "description": "unverified means the finality parameters have not been verified against a real RPC; DFR-014 is responsible for upgrading them to verified and recording evidence (review fix R-22)."
         },
         "capabilities": {
           "type": "array",
@@ -148,13 +148,13 @@
         },
         "archive": {
           "type": "boolean",
-          "description": "是否为归档节点。ProviderRequirements.requiresArchive 据此过滤（审计修正 A-26）。"
+          "description": "Whether this is an archive node. ProviderRequirements.requiresArchive filters on this (audit fix A-26)."
         },
         "priority": {
           "type": "integer",
           "minimum": 0,
           "maximum": 10,
-          "description": "0..10，与评分公式 priorityBonus(0..10) 同量纲（评审修正 R-14）。"
+          "description": "0..10, on the same scale as the scoring formula priorityBonus(0..10) (review fix R-14)."
         },
         "weight": { "type": "integer", "minimum": 1 },
         "timeoutMs": { "type": "integer", "minimum": 1000, "maximum": 60000 },

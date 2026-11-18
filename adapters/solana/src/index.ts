@@ -1,5 +1,5 @@
 /**
- * @dfr/adapter-solana —— Solana Adapter（M2 只读）。
+ * @dfr/adapter-solana — Solana Adapter (M2 read-only).
  */
 export { SolanaAdapter, SOLANA_IMPLEMENTED_CAPABILITIES, type SolanaAdapterOptions } from './adapter.js';
 export { assertSolanaAddress, assertSolanaSignature, isSolanaAddress, isSolanaSignature } from './address.js';

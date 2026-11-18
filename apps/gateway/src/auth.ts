@@ -1,13 +1,13 @@
 /**
- * M0 单租户静态 API Key 鉴权（见 docs/architecture/auth-tenancy-spec-v0.1.md 第 3 章）。
+ * M0 single-tenant static API Key authentication (see docs/architecture/auth-tenancy-spec-v0.1.md chapter 3).
  *
- * 形式：`dfr_<keyId>_<secret>`
- * 存储：只存 sha256(secret + pepper)，比较使用恒定时间算法。
+ * Form: `dfr_<keyId>_<secret>`
+ * Storage: only sha256(secret + pepper) is stored; comparison uses a constant-time algorithm.
  *
- * 安全约束：
- * - "keyId 不存在"与"哈希不匹配"必须返回同一个错误，避免枚举；
- * - 明文 Key 不得进入日志、指标、错误详情；
- * - 支持 current + previous 双活，使轮换不中断服务。
+ * Security constraints:
+ * - "keyId does not exist" and "hash mismatch" must return the same error, to prevent enumeration;
+ * - Plaintext keys must never enter logs, metrics, or error details;
+ * - current + previous dual-active is supported, so rotation does not interrupt service.
  */
 import { createHash, timingSafeEqual } from 'node:crypto';
 import type { CapabilityId, ChainId } from '@dfr/types';
@@ -23,18 +23,18 @@ export interface ApiKeyScope {
 
 export interface StaticApiKeyConfig {
   /**
-   * 当前 Key 的 keyId（8 位 base62）。
+   * The current Key's keyId (8-char base62).
    *
-   * 审计修正 A-27：M0 最初只存哈希，导致 `dfr_<任意 keyId>_<正确 secret>` 也能通过 ——
-   * 规范要求"keyId 不存在 → 401 DFR_UNAUTHENTICATED"，因此 keyId 必须与哈希一起绑定校验。
-   * keyId 不是秘密，可以出现在审计日志中。
+   * Audit fix A-27: M0 originally stored only the hash, so `dfr_<any keyId>_<correct secret>` could also pass —
+   * the spec requires "unknown keyId → 401 DFR_UNAUTHENTICATED", so keyId must be validated bound together with the hash.
+   * keyId is not a secret and may appear in audit logs.
    */
   keyId: string;
-  /** 当前生效的 Key 哈希（hex，sha256(secret+pepper)）。 */
+  /** Hash of the currently active Key (hex, sha256(secret+pepper)). */
   currentHash: string;
-  /** 轮换期间的旧 keyId；可选。 */
+  /** Previous keyId during rotation; optional. */
   previousKeyId?: string | undefined;
-  /** 轮换期间的旧 Key 哈希；可选。 */
+  /** Previous Key hash during rotation; optional. */
   previousHash?: string | undefined;
   pepper: string;
   scope: ApiKeyScope;
@@ -50,7 +50,7 @@ export interface AuthSuccess {
 
 export interface AuthFailure {
   ok: false;
-  /** 统一为 DFR_UNAUTHENTICATED，不区分 keyId 是否存在。 */
+  /** Unified as DFR_UNAUTHENTICATED, without distinguishing whether the keyId exists. */
   reason: 'missing' | 'malformed' | 'mismatch';
 }
 
@@ -61,15 +61,15 @@ export function hashSecret(secret: string, pepper: string): string {
 }
 
 /**
- * 恒定时间比较两个 hex 哈希。
+ * Constant-time comparison of two hex hashes.
  *
- * 长度不同时**仍然**执行一次比较，避免通过响应时间区分"长度不对"与"值不对"。
+ * When lengths differ, a comparison is **still** performed once, so response timing cannot distinguish "wrong length" from "wrong value".
  */
 export function constantTimeEqualHex(a: string, b: string): boolean {
   const bufA = Buffer.from(a, 'hex');
   const bufB = Buffer.from(b, 'hex');
   if (bufA.length !== bufB.length) {
-    // 用等长缓冲做一次无害比较，保持时间特征一致。
+    // Do one harmless comparison with equal-length buffers to keep the timing profile consistent.
     const filler = Buffer.alloc(bufA.length);
     timingSafeEqual(bufA, filler);
     return false;
@@ -85,7 +85,7 @@ export function verifyApiKey(headerValue: string | undefined, config: StaticApiK
   const keyId = match[1] as string;
   const secret = match[2] as string;
 
-  // keyId 必须匹配当前或上一版；不匹配与哈希不匹配返回同一失败原因，不泄漏差异。
+  // keyId must match the current or previous version; a mismatch returns the same failure reason as a hash mismatch, leaking no difference.
   const keyIdKnown = keyId === config.keyId || keyId === config.previousKeyId;
   if (!keyIdKnown) return { ok: false, reason: 'mismatch' };
 
@@ -102,7 +102,7 @@ export function verifyApiKey(headerValue: string | undefined, config: StaticApiK
   return { ok: true, keyId, projectId: config.projectId, scope: config.scope };
 }
 
-/** 作用域检查：链与能力。 */
+/** Scope check: chains and capabilities. */
 export function scopeAllows(
   scope: ApiKeyScope,
   args: { chain?: string; capability?: CapabilityId },

@@ -1,8 +1,8 @@
 /**
- * 事件模型（见 docs/architecture/transaction-lifecycle.md 第 6 节、
- * ADR-006）。
+ * Event model (see docs/architecture/transaction-lifecycle.md section 6,
+ * ADR-006).
  *
- * 投递语义：at-least-once。消费端必须按 eventId 去重。
+ * Delivery semantics: at-least-once. Consumers must dedupe by eventId.
  */
 import type { ChainId, Cursor, Iso8601, DecimalUint } from './primitives.js';
 import type { BlockRef } from './block.js';
@@ -29,15 +29,15 @@ export type EventType =
   | 'chain.reorg';
 
 export interface ChainEvent<T = unknown> {
-  /** 全局唯一事件 ID，用于消费端去重。 */
+  /** Globally unique event ID, for consumer-side dedupe. */
   eventId: string;
   /**
-   * 单调递增游标，用于断点重放。
+   * Monotonically increasing cursor, for resumable replay.
    *
-   * 作用域（审计修正 A-24）：游标在**订阅作用域**内单调。当 `EventFilter.chain` 被省略
-   * （跨链订阅）时，游标由 Core 在跨链合并流上统一分配；当指定了 `chain` 时，游标只在该链
-   * 流内单调。两种作用域的游标**不可互换**，消费方必须按订阅时使用的过滤条件重放。
-   * 另见 ADR-006：M0/M1 为进程内总线，游标不跨进程重启。
+   * Scope (audit fix A-24): the cursor is monotonic **within the subscription scope**. When `EventFilter.chain` is omitted
+   * (a cross-chain subscription), the cursor is allocated uniformly by Core on the merged cross-chain stream; when `chain` is specified, the cursor is
+   * monotonic only within that chain's stream. Cursors from the two scopes are **not interchangeable**; consumers must replay with the filter used at subscribe time.
+   * See also ADR-006: in M0/M1 the bus is in-process, so cursors do not survive a process restart.
    */
   cursor: Cursor;
   type: EventType;
@@ -58,7 +58,7 @@ export interface TransactionEventPayload {
 export interface ReorgEventPayload {
   oldBlockRef: BlockRef;
   newBlockRef: BlockRef;
-  /** 受影响的交易哈希列表（可能为空）。 */
+  /** List of affected transaction hashes (may be empty). */
   affectedTransactions: readonly string[];
   depth?: DecimalUint;
 }
@@ -72,8 +72,8 @@ export interface ProviderEventPayload {
 export interface EventFilter {
   chain?: ChainId;
   types?: readonly EventType[];
-  /** 仅订阅指定合约/程序的事件。 */
+  /** Only subscribe to events from the specified contract/program. */
   addresses?: readonly string[];
-  /** 从该游标之后开始投递，用于重放。 */
+  /** Start delivery after this cursor, for replay. */
   afterCursor?: Cursor;
 }

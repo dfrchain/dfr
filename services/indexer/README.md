@@ -1,3 +1,4 @@
-# DFR Indexer（M6 占位）
+# DFR Indexer (M6 placeholder)
 
-只有查询负载、历史索引或事件需求证明需要独立伸缩时才实现。M1-M5 不拆出服务。
+Implement it only when query load, historical indexing, or event demand
+proves that independent scaling is needed. M1–M5 do not split out services.

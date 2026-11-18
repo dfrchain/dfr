@@ -1,14 +1,14 @@
-// `Idempotency-Key` 头长度契约测试（TODO-007 收口）。
+// `Idempotency-Key` header length contract test (TODO-007 close-out).
 //
-// 权威来源：docs/api/openapi.yaml 的 `IdempotencyKey`（必填，broadcast）与
-// `IdempotencyKeyOptional`（可选，build / simulate），两者 schema 均为
-// `minLength: 8, maxLength: 128`。
+// Authoritative sources: docs/api/openapi.yaml's `IdempotencyKey` (required, broadcast) and
+// `IdempotencyKeyOptional` (optional, build / simulate); both schemas are
+// `minLength: 8, maxLength: 128`.
 //
-// 修复前的漂移（本测试的 RED）：
-//   - `maxLength: 128` **从未**被强制——129 字符的键会被接受；
-//   - `minLength: 8` 只在 broadcast 生效，build / simulate 完全不校验（3 字符也被接受）。
-// 后果：SDK 与网关对"合法幂等键"的理解不一致，客户端可能在本地校验通过、服务端行为不同；
-// 且超长键会进入幂等记录主键，属可被滥用的输入面。
+// Drift before the fix (this test's RED):
+//   - `maxLength: 128` was **never** enforced — a 129-character key would be accepted;
+//   - `minLength: 8` only took effect for broadcast; build / simulate did not validate at all (even 3 characters were accepted).
+// Consequence: the SDK and the Gateway disagreed on what a "valid idempotency key" is, so a client could pass local validation while the server behaved differently;
+// and over-long keys would enter the idempotency record primary key, an abusable input surface.
 import { afterEach, describe, expect, it } from 'vitest';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
@@ -44,7 +44,7 @@ const UNSIGNED = {
   meta: { encoding: 'hex', requiresNonce: '42' },
 };
 
-/** 记录透传到引擎的键，用于断言"合法键原样透传"。 */
+/** Record the key passed through to the engine, to assert "a valid key is passed through as-is". */
 let seenKeys: (string | undefined)[] = [];
 
 function engine(): TransactionEngine {
@@ -123,17 +123,17 @@ async function post(
   return { status: response.status, body: (await response.json()) as Record<string, unknown> };
 }
 
-describe('Idempotency-Key 长度契约（TODO-007）', () => {
-  it('build：短于 8 字符 → 400 DFR_VALIDATION_FAILED（此前被接受）', async () => {
+describe('Idempotency-Key length contract (TODO-007)', () => {
+  it('build: shorter than 8 characters → 400 DFR_VALIDATION_FAILED (previously accepted)', async () => {
     await start();
     const response = await post('/v1/transactions/build', BUILD_BODY, 'short');
     expect(response.status).toBe(400);
     expect(response.body['dfr_code']).toBe('DFR_VALIDATION_FAILED');
-    // 引擎不得被调用：结构校验先于业务编排。
+    // The engine must not be called: structural validation precedes business orchestration.
     expect(seenKeys).toEqual([]);
   });
 
-  it('build：边界 8 字符通过、边界 128 字符通过（闭区间）', async () => {
+  it('build: boundary 8 characters pass, boundary 128 characters pass (closed interval)', async () => {
     await start();
     const eight = 'a'.repeat(8);
     expect((await post('/v1/transactions/build', BUILD_BODY, eight)).status).toBe(200);
@@ -142,7 +142,7 @@ describe('Idempotency-Key 长度契约（TODO-007）', () => {
     expect(seenKeys).toEqual([eight, max]);
   });
 
-  it('build：129 字符 → 400（此前无上界）', async () => {
+  it('build: 129 characters → 400 (previously no upper bound)', async () => {
     await start();
     const response = await post('/v1/transactions/build', BUILD_BODY, 'c'.repeat(129));
     expect(response.status).toBe(400);
@@ -150,14 +150,14 @@ describe('Idempotency-Key 长度契约（TODO-007）', () => {
     expect(seenKeys).toEqual([]);
   });
 
-  it('build：不带幂等键仍成功（可选头，不得因新校验被误伤）', async () => {
+  it('build: still succeeds without an idempotency key (optional header; must not be hurt by the new validation)', async () => {
     await start();
     const response = await post('/v1/transactions/build', BUILD_BODY);
     expect(response.status).toBe(200);
     expect(seenKeys).toEqual([undefined]);
   });
 
-  it('simulate：短键与超长键都被拒绝，合法键放行', async () => {
+  it('simulate: short and over-long keys are both rejected, valid keys admitted', async () => {
     await start();
     expect((await post('/v1/transactions/simulate', SIMULATE_BODY, 'tiny')).status).toBe(400);
     expect(
@@ -166,14 +166,14 @@ describe('Idempotency-Key 长度契约（TODO-007）', () => {
     expect((await post('/v1/transactions/simulate', SIMULATE_BODY, 'e'.repeat(8))).status).toBe(200);
   });
 
-  it('broadcast：129 字符被拒绝（此前只校验了下界）', async () => {
+  it('broadcast: 129 characters rejected (previously only the lower bound was checked)', async () => {
     await start();
     const response = await post(
       '/v1/transactions/broadcast',
       { transactionId: 'txn_1', signedTransaction: {} },
       'f'.repeat(129),
     );
-    // 键长度校验先于 body 解析：即便 body 不完整也应先报键错误。
+    // Key-length validation precedes body parsing: even with an incomplete body, the key error should come first.
     expect(response.status).toBe(400);
     expect(response.body['dfr_code']).toBe('DFR_VALIDATION_FAILED');
   });

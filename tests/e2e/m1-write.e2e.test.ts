@@ -1,19 +1,19 @@
 /**
- * M1 写路径离线 E2E（DFR-M1-B10）。
+ * M1 write-path offline E2E (DFR-M1-B10).
  *
- * 链路：TypeScript SDK → API Gateway → DFR Core → EVM Adapter → Provider 替身
- *      → TransactionEngine（测试替身 Store）→ 落库记录。
+ * Chain: TypeScript SDK → API Gateway → DFR Core → EVM Adapter → Provider stand-in
+ *      → TransactionEngine (test stand-in Store) → persisted records.
  *
- * 与 `gateway.e2e.test.ts`（M0 只读）的区别：本文件用**真实**
- * `chains.yaml` 配置 + 真实 `TransactionEngine`，因此同时验证：
- *   1. registry 已为 ethereum-sepolia 声明 build/simulate（B10 的能力启用）；
- *   2. nonce 租约 → Adapter 显式 nonce → 载荷 → 落库 `built` 的完整顺序；
- *   3. 幂等键重放不消耗新 nonce；
- *   4. 载荷绑定校验与模拟回滚的真实 HTTP 结果（400 / 422）；
- *   5. 记录里没有 `signedPayload`（M1 不持久化签名原文）。
+ * Difference from `gateway.e2e.test.ts` (M0 read-only): this file uses the **real**
+ * `chains.yaml` config + the real `TransactionEngine`, verifying at the same time:
+ *   1. the registry has declared build/simulate for ethereum-sepolia (B10 capability enablement);
+ *   2. the full order nonce lease → Adapter explicit nonce → payload → persisted `built`;
+ *   3. idempotency-key replay consumes no new nonce;
+ *   4. the real HTTP results of payload binding validation and simulated revert (400 / 422);
+ *   5. the record has no `signedPayload` (M1 does not persist the raw signature).
  *
- * Store 是测试替身（`support/in-memory-transaction-stores.ts`）：M1 刻意没有生产
- * in-memory Store（ADR-014）；真实 PostgreSQL 路径由 `pnpm test:db` 覆盖。
+ * The Store is a test stand-in (`support/in-memory-transaction-stores.ts`): M1 deliberately has no production
+ * in-memory Store (ADR-014); the real PostgreSQL path is covered by `pnpm test:db`.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { AddressInfo } from 'node:net';
@@ -36,7 +36,7 @@ const FROM: AccountRef = { chain: CHAIN, address: '0x111111111111111111111111111
 const TO: AccountRef = { chain: CHAIN, address: '0x2222222222222222222222222222222222222222' };
 const SECRET = 'm1WriteE2eSecret0123456789abcdefgh';
 const PEPPER = 'm1-write-e2e-pepper';
-const KEY_ID = 'M1WriteA'; // 必须是恰好 8 位 [A-Za-z0-9]：dfr_<8>_<20..64>
+const KEY_ID = 'M1WriteA'; // must be exactly 8 chars [A-Za-z0-9]: dfr_<8>_<20..64>
 
 const BLOCK = {
   number: '0x112a880',
@@ -47,7 +47,7 @@ const BLOCK = {
   baseFeePerGas: '0x3b9aca00',
 };
 
-/** `eth_call` 的行为开关：M1 需要区分成功与回滚两种真实结果。 */
+/** Behavior switch for `eth_call`: M1 needs to distinguish the two real outcomes, success and revert. */
 let callMode: 'ok' | 'revert' = 'ok';
 let finalizedAvailable = true;
 let confirmationObservationCalls = 0;
@@ -130,7 +130,7 @@ beforeAll(async () => {
       tracker: stores.tracker,
     },
     chain: createCoreTransactionChainPort(core),
-    // 确定性 ID：断言才能逐字节比较落库记录与响应。
+    // Deterministic IDs: so assertions can compare persisted records and responses byte for byte.
     newTransactionId: () =>
       `txn_01J8Z6W3Q2K9M4ABCDEFGHJK${String(nextTransactionNumber++).padStart(2, '0')}` as TransactionId,
   });
@@ -154,7 +154,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  // beforeAll 失败时 server 可能未赋值：这里必须安全退出，避免掩盖真正的失败原因。
+  // If beforeAll fails, server may be unassigned: exit safely here so the real failure cause is not masked.
   if (!server) return;
   engine.close();
   await new Promise<void>((resolveClose) => server?.close(() => resolveClose()));
@@ -167,8 +167,8 @@ const REQUEST = {
   value: { asset: { kind: 'native' as const, chain: CHAIN }, amount: '1000' as DecimalUint },
 };
 
-describe('M1 写路径离线 E2E（DFR-M1-B10）', () => {
-  it('SDK build → 200 封套，nonce 来自租约、载荷与落库记录一致', async () => {
+describe('M1 write-path offline E2E (DFR-M1-B10)', () => {
+  it('SDK build → 200 envelope, nonce from the lease, payload consistent with the persisted record', async () => {
     const built = await dfr.buildTransaction(REQUEST, { idempotencyKey: 'e2e-build-0001' });
 
     expect(built.transactionId).toBe('txn_01J8Z6W3Q2K9M4ABCDEFGHJK01');
@@ -181,24 +181,24 @@ describe('M1 写路径离线 E2E（DFR-M1-B10）', () => {
     expect(record?.nonce).toBe('42');
     expect(record?.unsignedPayload).toBe(built.unsignedTransaction.payload);
     expect(record?.requestFingerprint).toMatch(/^[0-9a-f]{64}$/u);
-    // M1 不持久化签名原文：记录不得有 signedPayload 字段。
-    // 注意：不能用 `JSON.stringify(record) 不含 "signedPayload"` 做负对照——
-    // 合法的 `unsignedPayload` 恰好包含该子串，会把断言变成恒假的正例。
+    // M1 does not persist the raw signature: the record must have no signedPayload field.
+    // Note: do not use "`JSON.stringify(record)` does not contain "signedPayload"" as a negative control --
+    // a legitimate `unsignedPayload` happens to contain that substring, which would make the assertion always false.
     expect(record).not.toHaveProperty('signedPayload');
     expect(Object.keys(record ?? {})).not.toContain('signedPayload');
   });
 
-  it('同一幂等键重放 → 同一 transactionId，且不消耗新 nonce', async () => {
+  it('same idempotency key replayed → same transactionId, and no new nonce is consumed', async () => {
     const replayed = await dfr.buildTransaction(REQUEST, { idempotencyKey: 'e2e-build-0001' });
     expect(replayed.transactionId).toBe('txn_01J8Z6W3Q2K9M4ABCDEFGHJK01');
 
-    // 不带幂等键的新请求必须拿到下一个 nonce（43），证明重放没有推进水位。
+    // A new request without an idempotency key must get the next nonce (43), proving the replay did not advance the watermark.
     const next = await dfr.buildTransaction(REQUEST, { idempotencyKey: 'e2e-build-0002' });
     const record = await stores.transaction.get(next.transactionId);
     expect(record?.nonce).toBe('43');
   });
 
-  it('同键不同请求体 → 409 DFR_IDEMPOTENCY_CONFLICT，不产生第二笔交易', async () => {
+  it('same key, different request body → 409 DFR_IDEMPOTENCY_CONFLICT, no second transaction is created', async () => {
     const err = await dfr
       .buildTransaction(
         { ...REQUEST, value: { ...REQUEST.value, amount: '2000' as DecimalUint } },
@@ -209,7 +209,7 @@ describe('M1 写路径离线 E2E（DFR-M1-B10）', () => {
     expect(err).toMatchObject({ code: 'DFR_IDEMPOTENCY_CONFLICT', status: 409 });
   });
 
-  it('confirm 到达等待上限返回 reached=false，并继续后台只读观测', async () => {
+  it('confirm reaching the wait limit returns reached=false and continues background read-only observation', async () => {
     const built = await dfr.buildTransaction(REQUEST, { idempotencyKey: 'e2e-confirm-0001' });
     const txHash = `0x${'aa'.repeat(32)}`;
     const current = await stores.transaction.get(built.transactionId);
@@ -240,8 +240,8 @@ describe('M1 写路径离线 E2E（DFR-M1-B10）', () => {
       requiredFinality: 'finalized',
       reached: false,
     });
-    // HTTP 已返回后仍有新的只读 RPC 观测，证明后台循环确实继续；
-    // 测试清理时由 engine.close 中止。
+    // New read-only RPC observations still arrive after the HTTP response, proving the background loop really continues;
+    // it is stopped by engine.close during test cleanup.
     const callsAtResponse = confirmationObservationCalls;
     for (let attempt = 0; attempt < 40 && confirmationObservationCalls === callsAtResponse; attempt += 1) {
       await new Promise((resolveWait) => setTimeout(resolveWait, 25));
@@ -260,7 +260,7 @@ describe('M1 写路径离线 E2E（DFR-M1-B10）', () => {
     });
   });
 
-  it('confirm body 指定未授权链时在调用引擎前拒绝', async () => {
+  it('confirm body naming an unauthorized chain is rejected before the engine is called', async () => {
     const err = await dfr.confirmTransaction({
       chain: 'base-sepolia' as ChainId,
       txHash: `0x${'aa'.repeat(32)}`,
@@ -269,7 +269,7 @@ describe('M1 写路径离线 E2E（DFR-M1-B10）', () => {
     expect(err).toMatchObject({ code: 'DFR_PROJECT_SCOPE_DENIED', status: 403 });
   });
 
-  it('SDK simulate → 200 成功，记录推进到 simulated', async () => {
+  it('SDK simulate → 200 success, record advances to simulated', async () => {
     const built = await dfr.buildTransaction(REQUEST, { idempotencyKey: 'e2e-sim-0001' });
     const simulated = await dfr.simulateTransaction({
       transactionId: built.transactionId,
@@ -281,7 +281,7 @@ describe('M1 写路径离线 E2E（DFR-M1-B10）', () => {
     expect(record?.status).toBe('simulated');
   });
 
-  it('载荷与落库记录不一致 → 400，且不推进状态', async () => {
+  it('payload inconsistent with the persisted record → 400, and the state does not advance', async () => {
     const built = await dfr.buildTransaction(REQUEST, { idempotencyKey: 'e2e-sim-0002' });
     const err = await dfr
       .simulateTransaction({
@@ -295,7 +295,7 @@ describe('M1 写路径离线 E2E（DFR-M1-B10）', () => {
     expect(record?.status).toBe('built');
   });
 
-  it('链上回滚 → 422 DFR_TRANSACTION_REVERTED，记录为 reverted（不是 500）', async () => {
+  it('on-chain revert → 422 DFR_TRANSACTION_REVERTED, record is reverted (not 500)', async () => {
     const built = await dfr.buildTransaction(REQUEST, { idempotencyKey: 'e2e-sim-0003' });
     callMode = 'revert';
     try {
@@ -313,9 +313,9 @@ describe('M1 写路径离线 E2E（DFR-M1-B10）', () => {
     expect(record?.status).toBe('reverted');
   });
 
-  it('未装配写能力的部署 → 422（fail-closed，不是 500）', async () => {
-    // 能力路由由 registry 决定：core.getChainInfo 仍可用，但写端点需要能力声明。
-    // 这里直接验证 Gateway 未传 transactions 时的行为（部署未开放写路径）。
+  it('a deployment without the write capability wired in → 422 (fail-closed, not 500)', async () => {
+    // Capability routing is decided by the registry: core.getChainInfo still works, but the write endpoints need a capability declaration.
+    // This directly verifies the Gateway's behavior when transactions are not passed in (the deployment has not opened the write path).
     const readOnly = createGatewayServer({
       core: { listChains: () => [], startHealthChecks: () => ({ started: [], skipped: [] }), stopHealthChecks: () => undefined } as never,
       auth: {

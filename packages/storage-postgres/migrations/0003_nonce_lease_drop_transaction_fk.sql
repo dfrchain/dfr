@@ -1,20 +1,20 @@
--- DFR-M1-C00：nonce 租约分配先于交易记录创建（ADR-018）。
+-- DFR-M1-C00: nonce lease allocation happens before the transaction record is created (ADR-018).
 --
--- 背景：TransactionEngine.build 的顺序是
+-- Background: TransactionEngine.build runs in the order
 --   read pending nonce → NonceStore.reserve → chain.build → TransactionStore.create
--- 而 0001 给 nonce_leases.transaction_id 加了指向 transactions(id) 的外键，
--- 使 reserve 时交易行"必须已存在"——但此时它必然还不存在。
--- 实测（真实 PostgreSQL）：每次 build 都在 reserve 处失败，SQLSTATE 23503
--- / 应用层 `reserve: 交易 … 不存在`。
+-- while 0001 added a foreign key from nonce_leases.transaction_id to transactions(id),
+-- which made the transaction row "have to exist already" at reserve time — yet at that point it necessarily does not exist yet.
+-- Measured (real PostgreSQL): every build failed at reserve with SQLSTATE 23503
+-- / application-level `reserve: transaction … does not exist`.
 --
--- 决策（ADR-018 方案 B）：租约是"交易创建之前的 nonce 预留"这一事实成立，
--- 因此不能要求交易行先存在。移除该外键，改用三条共同约束：
---   1. nonce_leases_transaction_id_key（0002 唯一索引）：一条交易最多一个租约；
---   2. PostgresTransactionStore.create：落库前校验既有租约的 chain/account 与记录一致，
---      不一致 fail-closed（替代原先写在 reserve 里的那两处校验）；
---   3. next_nonce 水位只增不减，nonce 不回收复用，孤儿租约不会产生重复 nonce。
+-- Decision (ADR-018 option B): the fact stands that a lease is a "nonce reservation made before the transaction is created",
+-- so the transaction row cannot be required to exist first. Remove the foreign key and use three joint constraints instead:
+--   1. nonce_leases_transaction_id_key (0002 unique index): at most one lease per transaction;
+--   2. PostgresTransactionStore.create: before persisting, verify the existing lease's chain/account match the record;
+--      a mismatch fails closed (replacing the two checks previously written in reserve);
+--   3. The next_nonce watermark only increases; nonces are never reclaimed for reuse, so orphaned leases cannot produce duplicate nonces.
 --
--- ON DELETE RESTRICT 一并失效：M1 没有任何删除交易行的路径；
--- 若未来新增删除能力，必须在同一变更里重新引入该约束或等价的清理规则。
+-- ON DELETE RESTRICT lapses along with it: M1 has no path that deletes transaction rows;
+-- if deletion is ever added, the constraint or an equivalent cleanup rule must be reintroduced in the same change.
 ALTER TABLE transaction_data.nonce_leases
   DROP CONSTRAINT nonce_leases_transaction_id_fkey;

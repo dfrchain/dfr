@@ -1,13 +1,13 @@
 /**
- * TransactionEngine simulate 契约测试（DFR-M1-B05）。
+ * TransactionEngine simulate contract test (DFR-M1-B05).
  *
- * 权威来源：transaction-lifecycle 第 4.2/3.1 节、m1-api-contract 第 2 节。
+ * Authoritative sources: transaction-lifecycle sections 4.2/3.1, m1-api-contract section 2.
  *
- * 本任务的两个交付点：
- *   1. 绑定：simulate 的 UnsignedTransaction 必须与 build 落库的载荷逐字节一致；
- *   2. 封锁：模拟失败把交易落到 reverted（终态），此后广播在状态机层面不可达。
+ * This task's two deliverables:
+ *   1. binding: simulate's UnsignedTransaction must match the build-persisted payload byte for byte;
+ *   2. blocking: a failed simulation lands the transaction on reverted (terminal state), after which broadcast is unreachable at the state-machine level.
  *
- * 全部用内存替身：只验证编排与状态事实，不验证 SQL。
+ * All with in-memory test doubles: only orchestration and state facts are verified, not SQL.
  */
 import { describe, expect, it } from 'vitest';
 import { createDfrError } from '@dfr/errors';
@@ -50,13 +50,13 @@ const UNSIGNED: UnsignedTransaction = {
 };
 
 /* ------------------------------------------------------------------ */
-/* 替身：TransactionStore（支持注入 CAS 冲突）                        */
+/* Test doubles: TransactionStore (supports injected CAS conflicts)                        */
 /* ------------------------------------------------------------------ */
 
 class FakeTransactionStore implements TransactionStore {
   records = new Map<TransactionId, TransactionRecord>();
   readonly transitionCalls: TransitionTransactionInput[] = [];
-  /** 让接下来 N 次 transition 先返回一次 version_conflict（模拟并发写入）。 */
+  /** Make the next N transitions return a version_conflict first (simulating a concurrent write). */
   conflictsBeforeApply = 0;
 
   seed(status: TransactionRecord['status']): TransactionRecord {
@@ -100,7 +100,7 @@ class FakeTransactionStore implements TransactionStore {
 
     if (this.conflictsBeforeApply > 0) {
       this.conflictsBeforeApply -= 1;
-      // 模拟"另一个执行者先写入了一版"：版本已前进。
+      // Simulate "another executor wrote a version first": the version has advanced.
       const bumped: TransactionRecord = {
         ...current,
         stateVersion: dec((BigInt(current.stateVersion) + 1n).toString(10)),
@@ -141,7 +141,7 @@ class FakeTransactionStore implements TransactionStore {
 }
 
 /* ------------------------------------------------------------------ */
-/* 替身：链端口                                                       */
+/* Test doubles: chain port                                                       */
 /* ------------------------------------------------------------------ */
 
 class FakeChainPort implements TransactionChainPort {
@@ -150,11 +150,11 @@ class FakeChainPort implements TransactionChainPort {
   error?: Error;
 
   async getPendingNonce(): Promise<never> {
-    throw new Error('B05 不应读取 pending nonce');
+    throw new Error('B05 must not read the pending nonce');
   }
 
   async build(): Promise<never> {
-    throw new Error('B05 不应重新构造交易');
+    throw new Error('B05 must not reconstruct the transaction');
   }
 
   async simulate(input: ChainSimulateInput): Promise<SimulationResult> {
@@ -165,7 +165,7 @@ class FakeChainPort implements TransactionChainPort {
 }
 
 /* ------------------------------------------------------------------ */
-/* 组装                                                               */
+/* Assembly                                                               */
 /* ------------------------------------------------------------------ */
 
 interface Harness {
@@ -182,33 +182,33 @@ function harness(): Harness {
   const engine = new TransactionEngine({
     stores: {
       transaction: store,
-      // B05 不涉及幂等与 nonce；一旦被调用就让测试立刻失败。
+      // B05 does not touch idempotency or nonces; fail the test immediately if it is ever called.
       idempotency: {
         begin: async () => {
-          throw new Error('B05 不应触碰幂等');
+          throw new Error('B05 must not touch idempotency');
         },
         complete: async () => {
-          throw new Error('B05 不应触碰幂等');
+          throw new Error('B05 must not touch idempotency');
         },
         get: async () => null,
         pruneExpired: async () => 0,
       },
       nonce: {
         reserve: async () => {
-          throw new Error('B05 不应触碰 nonce 租约');
+          throw new Error('B05 must not touch the nonce lease');
         },
         markBroadcast: async () => {
-          throw new Error('B05 不应触碰 nonce 租约');
+          throw new Error('B05 must not touch the nonce lease');
         },
         markConsumed: async () => {
-          throw new Error('B05 不应触碰 nonce 租约');
+          throw new Error('B05 must not touch the nonce lease');
         },
         releaseIfSafe: async (ref) => {
           releasedNonces.push(ref.nonce);
           return { kind: 'not_found' as const };
         },
         releaseExpiredOrphaned: async () => {
-          throw new Error('B05 不应触碰 nonce 租约');
+          throw new Error('B05 must not touch the nonce lease');
         },
       },
     },
@@ -218,7 +218,7 @@ function harness(): Harness {
 }
 
 /* ------------------------------------------------------------------ */
-/* 测试                                                               */
+/* Tests                                                               */
 /* ------------------------------------------------------------------ */
 
 describe('AUTH-04 simulation owner isolation', () => {
@@ -254,8 +254,8 @@ describe('AUTH-04 simulation owner isolation', () => {
   });
 });
 
-describe('TransactionEngine.simulate（DFR-M1-B05）', () => {
-  it('模拟成功：built 转 simulated，落库状态与观测结果都更新', async () => {
+describe('TransactionEngine.simulate (DFR-M1-B05)', () => {
+  it('successful simulation: built becomes simulated; both the persisted state and the observation result are updated', async () => {
     const h = harness();
     h.store.seed('built');
 
@@ -270,12 +270,12 @@ describe('TransactionEngine.simulate（DFR-M1-B05）', () => {
     expect(result.simulation.success).toBe(true);
     expect(result.simulation.estimatedCost).toBe('21000');
     expect((await h.store.get(TX_ID))?.status).toBe('simulated');
-    // 端口必须拿到发送方（载荷本身不含 from，EVM 需要它覆盖余额/授权检查）。
+    // The port must receive the sender (the payload itself contains no from; EVM needs it to cover balance/allowance checks).
     expect(h.chain.simulateCalls[0]?.from).toEqual(FROM);
     expect(h.chain.simulateCalls[0]?.unsigned).toEqual(UNSIGNED);
   });
 
-  it('模拟失败：built 转 reverted，抛 DFR_TRANSACTION_REVERTED 且带 revertReason', async () => {
+  it('failed simulation: built becomes reverted, throws DFR_TRANSACTION_REVERTED with revertReason', async () => {
     const h = harness();
     h.store.seed('built');
     h.chain.result = {
@@ -314,7 +314,7 @@ describe('TransactionEngine.simulate（DFR-M1-B05）', () => {
     expect(h.releasedNonces).toEqual(['42']);
   });
 
-  it('reverted 之后广播在状态机层面不可达（封锁广播）', async () => {
+  it('after reverted, broadcast is unreachable at the state-machine level (broadcast blocked)', async () => {
     const h = harness();
     h.store.seed('built');
     h.chain.result = { success: false, revertReason: 'execution reverted' };
@@ -323,13 +323,13 @@ describe('TransactionEngine.simulate（DFR-M1-B05）', () => {
       h.engine.simulate({ transactionId: TX_ID, unsignedTransaction: UNSIGNED }),
     ).rejects.toMatchObject({ code: 'DFR_TRANSACTION_REVERTED' });
 
-    // 这是"模拟失败不得广播"的机制性证据：终态没有出边。
+    // This is the mechanical evidence for "a failed simulation must not broadcast": the terminal state has no outbound edges.
     expect(canTransition({ from: 'reverted', event: 'sign' })).toBe(false);
     expect(canTransition({ from: 'reverted', event: 'broadcast.accepted' })).toBe(false);
     expect(transition({ from: 'reverted', event: 'broadcast.accepted' }).ok).toBe(false);
   });
 
-  it('对已 reverted 的交易再次 simulate 返回 DFR_VALIDATION_FAILED（不调用链）', async () => {
+  it('simulating an already-reverted transaction returns DFR_VALIDATION_FAILED (without calling the chain)', async () => {
     const h = harness();
     h.store.seed('reverted');
 
@@ -339,7 +339,7 @@ describe('TransactionEngine.simulate（DFR-M1-B05）', () => {
     expect(h.chain.simulateCalls).toHaveLength(0);
   });
 
-  it('载荷与 build 落库记录不一致时拒绝，且完全不调用链', async () => {
+  it('reject when the payload differs from the build-persisted record, without calling the chain at all', async () => {
     const h = harness();
     h.store.seed('built');
     const tampered: UnsignedTransaction = { ...UNSIGNED, payload: '0x02f9deadbeef' };
@@ -358,7 +358,7 @@ describe('TransactionEngine.simulate（DFR-M1-B05）', () => {
     expect((await h.store.get(TX_ID))?.status).toBe('built');
   });
 
-  it('载荷 chain 与记录不一致时拒绝', async () => {
+  it('reject when the payload chain differs from the record', async () => {
     const h = harness();
     h.store.seed('built');
     const foreign: UnsignedTransaction = { ...UNSIGNED, chain: 'base-sepolia' as ChainId };
@@ -369,7 +369,7 @@ describe('TransactionEngine.simulate（DFR-M1-B05）', () => {
     expect(h.chain.simulateCalls).toHaveLength(0);
   });
 
-  it('载荷 meta.requiresNonce 与记录 nonce 不一致时拒绝', async () => {
+  it('reject when the payload meta.requiresNonce differs from the record nonce', async () => {
     const h = harness();
     h.store.seed('built');
     const wrongNonce: UnsignedTransaction = {
@@ -386,7 +386,7 @@ describe('TransactionEngine.simulate（DFR-M1-B05）', () => {
     expect(h.chain.simulateCalls).toHaveLength(0);
   });
 
-  it('未知 transactionId 返回 DFR_TRANSACTION_NOT_FOUND', async () => {
+  it('an unknown transactionId returns DFR_TRANSACTION_NOT_FOUND', async () => {
     const h = harness();
     await expect(
       h.engine.simulate({ transactionId: 'txn_missing' as TransactionId, unsignedTransaction: UNSIGNED }),
@@ -394,7 +394,7 @@ describe('TransactionEngine.simulate（DFR-M1-B05）', () => {
     expect(h.chain.simulateCalls).toHaveLength(0);
   });
 
-  it('已进入签名/广播的交易不允许再 simulate', async () => {
+  it('a transaction already in signing/broadcast does not allow simulate again', async () => {
     const h = harness();
     h.store.seed('signed');
     await expect(
@@ -404,7 +404,7 @@ describe('TransactionEngine.simulate（DFR-M1-B05）', () => {
     expect((await h.store.get(TX_ID))?.status).toBe('signed');
   });
 
-  it('重复 simulate（已 simulated）成功不改变状态，只更新观测', async () => {
+  it('repeat simulate (already simulated) succeeds without changing state, only updating the observation', async () => {
     const h = harness();
     h.store.seed('simulated');
     h.chain.result = { success: true, estimatedCost: dec('21500') };
@@ -418,11 +418,11 @@ describe('TransactionEngine.simulate（DFR-M1-B05）', () => {
     expect(result.simulation.estimatedCost).toBe('21500');
     const record = await h.store.get(TX_ID);
     expect(record?.status).toBe('simulated');
-    // 没有状态迁移：不应产生任何 transition 调用。
+    // No state transition: no transition call should be produced.
     expect(h.store.transitionCalls).toHaveLength(0);
   });
 
-  it('重复 simulate（已 simulated）失败转为 reverted，同样封锁广播', async () => {
+  it('repeat simulate (already simulated) failing moves to reverted, equally blocking broadcast', async () => {
     const h = harness();
     h.store.seed('simulated');
     h.chain.result = { success: false, revertReason: 'execution reverted: state changed' };
@@ -435,7 +435,7 @@ describe('TransactionEngine.simulate（DFR-M1-B05）', () => {
     expect(canTransition({ from: 'reverted', event: 'broadcast.accepted' })).toBe(false);
   });
 
-  it('CAS 版本冲突时自动重读并重试，最终成功', async () => {
+  it('on a CAS version conflict, re-read and retry automatically, succeeding in the end', async () => {
     const h = harness();
     h.store.seed('built');
     h.store.conflictsBeforeApply = 1;
@@ -450,7 +450,7 @@ describe('TransactionEngine.simulate（DFR-M1-B05）', () => {
     expect((await h.store.get(TX_ID))?.status).toBe('simulated');
   });
 
-  it('链端口抛非回滚错误时状态保持 built，错误原样上抛', async () => {
+  it('when the chain port throws a non-revert error, the state stays built and the error is rethrown verbatim', async () => {
     const h = harness();
     h.store.seed('built');
     h.chain.error = createDfrError('DFR_PROVIDER_UNAVAILABLE', {
@@ -467,7 +467,7 @@ describe('TransactionEngine.simulate（DFR-M1-B05）', () => {
     expect(h.store.transitionCalls).toHaveLength(0);
   });
 
-  it('simulate 不触碰幂等与 nonce，也不写入 signedPayload', async () => {
+  it('simulate touches neither idempotency nor nonce, and does not write signedPayload', async () => {
     const h = harness();
     h.store.seed('built');
     await h.engine.simulate({ transactionId: TX_ID, unsignedTransaction: UNSIGNED });

@@ -1,11 +1,11 @@
 /**
- * Solana Adapter broadcast 测试（DFR-M3-C01）。
+ * Solana Adapter broadcast test (DFR-M3-C01).
  *
- * 权威来源：m3-taskbook C01、error-spec §5.1、EVM 版 broadcast 的四条红线。
- * 全部离线：mock Provider 固定 sendTransaction 的返回。
+ * Authoritative sources: m3-taskbook C01, error-spec §5.1, the four EVM broadcast red lines.
+ * Fully offline: the mock Provider fixes the sendTransaction response.
  *
- * 变造一笔真实签名交易做"已签名载荷"：取其 message，把签名段替换为非零，
- * 这样 decode/binding 走真实路径，又不依赖任何私钥。
+ * Takes a real signed transaction as the "signed payload", replacing its signature segment with non-zero bytes,
+ * so decode/binding follow the real path without depending on any private key.
  */
 import { describe, expect, it } from 'vitest';
 import { createDfrError } from '@dfr/errors';
@@ -27,7 +27,7 @@ const chain: Chain = {
   capabilities: ['account.balance', 'block.read', 'transaction.read', 'transaction.build', 'transaction.simulate', 'transaction.broadcast'],
 };
 
-/** 现成的真实签名 legacy 交易（离线 ground truth）。 */
+/** An existing real signed legacy transaction (offline ground truth). */
 const signedPayload = SOLANA_DEVNET_LEGACY_SIGNED.signedPayloadBase64;
 const FEE_PAYER = SOLANA_DEVNET_LEGACY_SIGNED.feePayer;
 const TX_HASH = SOLANA_DEVNET_LEGACY_SIGNED.txHash;
@@ -43,14 +43,14 @@ function signed(overrides: Partial<SignedTransaction> = {}): SignedTransaction {
   };
 }
 
-describe('Solana broadcast（M3-C01）', () => {
+describe('Solana broadcast (M3-C01)', () => {
   const adapter = new SolanaAdapter({ chain });
 
-  it('声明 transaction.broadcast', () => {
+  it('declares transaction.broadcast', () => {
     expect(adapter.capabilities().capabilities).toContain('transaction.broadcast');
   });
 
-  it('单次提交：sendTransaction 恰好一次，maxRetries:0，non-idempotent-write', async () => {
+  it('single submission: sendTransaction exactly once, maxRetries:0, non-idempotent-write', async () => {
     const calls: Array<{ method: string; params: unknown; idempotency: string }> = [];
     const ctx = {
       chain: DEVNET,
@@ -72,14 +72,14 @@ describe('Solana broadcast（M3-C01）', () => {
     expect((sends[0]!.params as unknown[])[1]).toMatchObject({ maxRetries: 0, skipPreflight: false });
   });
 
-  it('端点返回的签名与载荷重算不一致 → DFR_PROVIDER_INVALID_RESPONSE', async () => {
+  it('the signature returned by the endpoint disagrees with the payload recomputation → DFR_PROVIDER_INVALID_RESPONSE', async () => {
     const ctx = makeContext(chain, { sendTransaction: () => '1'.repeat(64) });
     await expect(adapter.broadcast(ctx, signed())).rejects.toMatchObject({
       code: 'DFR_PROVIDER_INVALID_RESPONSE',
     });
   });
 
-  it('already processed（真正的 DFR 错误）→ 幂等成功，不抛错', async () => {
+  it('already processed (a genuine DFR error) → idempotent success, no throw', async () => {
     const ctx = makeContext(chain, {
       sendTransaction: () => {
         throw createDfrError('DFR_PROVIDER_INVALID_RESPONSE', {
@@ -95,7 +95,7 @@ describe('Solana broadcast（M3-C01）', () => {
     expect(result.ref).toEqual({ kind: 'hash', hash: TX_HASH });
   });
 
-  it('非幂等的普通错误原样上抛（不被误判为 already known）', async () => {
+  it('a non-idempotent ordinary error is rethrown as-is (not misjudged as already known)', async () => {
     const ctx = makeContext(chain, {
       sendTransaction: () => {
         throw createDfrError('DFR_PROVIDER_UNAVAILABLE', {
@@ -110,7 +110,7 @@ describe('Solana broadcast（M3-C01）', () => {
     });
   });
 
-  it('带记录真值时做完整绑定：fee payer 不符 → 422 DFR_TRANSACTION_REJECTED，且不广播', async () => {
+  it('with record ground truth, full binding: fee payer mismatch → 422 DFR_TRANSACTION_REJECTED, and no broadcast', async () => {
     const calls: string[] = [];
     const ctx = {
       chain: DEVNET,
@@ -132,7 +132,7 @@ describe('Solana broadcast（M3-C01）', () => {
     expect(calls).not.toContain('sendTransaction');
   });
 
-  it('带记录真值时：expectedHash 不符 → 拒绝', async () => {
+  it('with record ground truth: expectedHash mismatch → rejected', async () => {
     const ctx = makeContext(chain, { sendTransaction: () => TX_HASH });
     await expect(
       adapter.broadcast(ctx, signed({ expectedHash: '2'.repeat(64) }), {
@@ -142,7 +142,7 @@ describe('Solana broadcast（M3-C01）', () => {
     ).rejects.toMatchObject({ code: 'DFR_TRANSACTION_REJECTED' });
   });
 
-  it('带记录真值时：未签名载荷与签名载荷不是同一笔 → 拒绝（并给出 reason）', async () => {
+  it('with record ground truth: unsigned payload and signed payload are not the same transaction → rejected (with a reason)', async () => {
     const ctx = makeContext(chain, { sendTransaction: () => TX_HASH });
     const other = SOLANA_DEVNET_FIXTURES.find((f) => f.version === 'v0')!;
     await expect(
@@ -153,7 +153,7 @@ describe('Solana broadcast（M3-C01）', () => {
     ).rejects.toMatchObject({ code: 'DFR_TRANSACTION_REJECTED', details: { reason: 'unsigned_payload_mismatch' } });
   });
 
-  it('半个真值（只给 expectedFrom）→ invalid_expectation，不广播', async () => {
+  it('half a ground truth (only expectedFrom) → invalid_expectation, no broadcast', async () => {
     const calls: string[] = [];
     const ctx = {
       chain: DEVNET,
@@ -173,8 +173,8 @@ describe('Solana broadcast（M3-C01）', () => {
   });
 });
 
-describe('Solana 签名绑定（bindSignedTransaction，M3-C01）', () => {
-  it('真实签名载荷：绑定通过，txHash = 第 0 个签名', () => {
+describe('Solana signature binding (bindSignedTransaction, M3-C01)', () => {
+  it('real signed payload: binding passes, txHash = signature #0', () => {
     const result = bindSignedTransaction(signedPayload, {
       from: FEE_PAYER,
       unsignedPayload: signedPayload,
@@ -184,8 +184,8 @@ describe('Solana 签名绑定（bindSignedTransaction，M3-C01）', () => {
     expect(result.decoded.signed).toBe(true);
   });
 
-  it('未签名（全零签名）→ not_signed', () => {
-    // 把签名段清零：前 1 字节是签名数量（1），其后 64 字节是签名。
+  it('unsigned (all-zero signature) → not_signed', () => {
+    // Zero out the signature segment: the first 1 byte is the signature count (1), followed by 64 bytes of signature.
     const bytes = Buffer.from(signedPayload, 'base64');
     bytes.fill(0, 1, 65);
     const unsigned = bytes.toString('base64');

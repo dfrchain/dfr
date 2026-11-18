@@ -1,18 +1,18 @@
 /**
- * 外部签名测试辅助（DFR-M1-E03 前置）。
+ * External-signer test helper (prerequisite for DFR-M1-E03).
  *
- * 为什么放在 adapter 的 test/ 下：`viem` 只能存在于 `adapters/evm`（ADR-016 §2，
- * 由 tests/contract/module-boundaries.test.ts 的 "只有 adapters/evm 可以依赖 viem" 守卫）。
- * E2E 需要"调用方自己的签名器"来构造真实签名，但不能为此把 viem 加进 `tests` 包。
- * 因此把签名辅助留在 viem 已声明的包内，由 E2E 相对路径引用。
+ * Why it lives under the adapter's test/: `viem` may only exist in `adapters/evm` (ADR-016 §2,
+ * guarded by tests/contract/module-boundaries.test.ts ("only adapters/evm may depend on viem").
+ * E2E needs "the caller's own signer" to build real signatures, but viem must not be added to the `tests` package for that.
+ * So the signing helper stays in the package that already declares viem, referenced by E2E via a relative path.
  *
- * 该文件只被测试引用，不进入生产导出面（`src/index.ts` 不导出它）。
+ * This file is only referenced by tests and is not part of the production export surface (`src/index.ts` does not export it).
  */
 import { keccak256, toBytes } from 'viem';
 import { privateKeyToAddress, signTransaction } from 'viem/accounts';
 import { decodeTransactionPayload } from '../../src/transaction-codec.js';
 
-/** 运行时从标签派生测试私钥：仓库内不出现私钥字面量。 */
+/** Derive the test private key from a label at runtime: no private-key literals appear in the repo. */
 export function deriveTestPrivateKey(label: string): `0x${string}` {
   return keccak256(toBytes(label));
 }
@@ -21,7 +21,7 @@ export function addressOf(privateKey: `0x${string}`): string {
   return privateKeyToAddress(privateKey);
 }
 
-/** `keccak256(已签名载荷)` = 真实端点返回的交易哈希。 */
+/** `keccak256(signed payload)` = the transaction hash a real endpoint returns. */
 export function transactionHashOf(signedPayload: string): string {
   return keccak256(signedPayload as `0x${string}`);
 }
@@ -32,11 +32,11 @@ export interface ExternalSignature {
 }
 
 /**
- * 模拟"调用方自己的签名器"：把 build 产出的未签名 EIP-1559 载荷解回字段，
- * 用给定私钥重新签名。
+ * Simulate "the caller's own signer": decode the unsigned EIP-1559 payload produced by build back into fields,
+ * and re-sign with the given private key.
  *
- * `overrides` 用于构造**绑定不一致**的负对照：签名本身合法，但字段与 DFR 记录不符，
- * 必须被 Adapter 的 `bindSignedTransaction` 拒绝且不发出广播。
+ * `overrides` builds **binding-mismatch** negative controls: the signature itself is valid, but the fields do not match the DFR record,
+ * so the Adapter's `bindSignedTransaction` must reject it without broadcasting.
  */
 export async function signUnsignedPayload(input: {
   readonly unsignedPayload: string;
@@ -46,16 +46,16 @@ export async function signUnsignedPayload(input: {
 }): Promise<ExternalSignature> {
   const decoded = decodeTransactionPayload(input.unsignedPayload);
   if (decoded.signed) {
-    throw new Error('signUnsignedPayload: 期望未签名载荷，但输入已带签名');
+    throw new Error('signUnsignedPayload: expected an unsigned payload, but the input is already signed');
   }
   if (decoded.to === null) {
-    throw new Error('signUnsignedPayload: 测试不支持合约创建（to 为空）');
+    throw new Error('signUnsignedPayload: contract creation is not supported in tests (empty to)');
   }
   const nonce = input.overrides?.nonce ?? BigInt(decoded.nonce);
-  // viem 当前签名入参的 nonce 类型是 number；测试用的 nonce 远小于 2^53，
-  // 但仍显式校验，避免把"静默丢精度"带进测试辅助。
+  // Viem currently types the signing input nonce as number; the test nonce is far below 2^53,
+  // but it is still checked explicitly so "silent precision loss" never leaks into the test helper.
   if (nonce > BigInt(Number.MAX_SAFE_INTEGER)) {
-    throw new Error('signUnsignedPayload: nonce 超出安全整数范围');
+    throw new Error('signUnsignedPayload: nonce exceeds the safe-integer range');
   }
   const signedPayload = await signTransaction({
     privateKey: input.privateKey,

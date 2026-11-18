@@ -1,17 +1,17 @@
 //
-// M1 Trace 全链路传播集成测试（DFR-M1-D06）。
+// M1 Trace end-to-end propagation integration test (DFR-M1-D06).
 //
-// 权威来源：docs/architecture/observability-spec-v0.1.md 第 4 章与第 10 章验收清单
-// （"traceparent 在 Gateway → Core → Adapter → Provider 全链路可追踪"）。
+// Authoritative sources: the acceptance checklist in chapters 4 and 10 of docs/architecture/observability-spec-v0.1.md
+// ("traceparent is traceable across the whole Gateway → Core → Adapter → Provider chain").
 //
-// 本测试用真实 Gateway + Core + EVM Adapter + TransactionEngine，只在最外层替换
-// `fetch`，因此它验证的是**跨模块**的关联字段透传，而不是单个函数的参数：
-//   1. 客户端 traceparent 的 trace-id 必须一路到达 Provider 出口的请求头；
-//   2. Gateway 必须为本地请求新建 span，并在响应头回写同一 trace-id；
-//   3. 全零/非法 traceparent 不可信：Gateway 重建 trace-id 后仍向下游传播。
+// This test uses the real Gateway + Core + EVM Adapter + TransactionEngine, replacing only `fetch` at the outermost layer,
+// so it verifies **cross-module** pass-through of the correlation fields, not a single function's arguments:
+//   1. the client traceparent's trace-id must travel all the way to the Provider egress request headers;
+//   2. the Gateway must create a new span for the local request and write back the same trace-id in the response headers;
+//   3. an all-zero/invalid traceparent is untrusted: the Gateway rebuilds the trace-id and still propagates it downstream.
 //
-// 只断言 trace-id 一致：span-id 是"每一次出站调用"的标识，ProviderManager 会为
-// 每次尝试重新生成 span（provider.test.ts 已单独覆盖），因此不要求与网关 span 相同。
+// Only assert trace-id consistency: a span-id identifies "each outbound call", and the ProviderManager regenerates it for
+// each attempt (covered separately by provider.test.ts), so it is not required to match the gateway span.
 //
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { AddressInfo } from 'node:net';
@@ -34,7 +34,7 @@ const TRACE_ID = 'a'.repeat(32);
 const ZERO_TRACE_ID = '0'.repeat(32);
 const SECRET = 'm1TraceIntegrationSecret0123456789';
 const PEPPER = 'm1-trace-pepper';
-const KEY_ID = 'M1TraceA'; // dfr_<8 位>_<20..64>
+const KEY_ID = 'M1TraceA'; // dfr_<8 chars>_<20..64>
 
 const BLOCK = {
   number: '0x112a880',
@@ -45,7 +45,7 @@ const BLOCK = {
   baseFeePerGas: '0x3b9aca00',
 };
 
-/** 每次出站 RPC 实际携带的 traceparent；由捕获式 fetch 记录。 */
+/** The traceparent actually carried by each outbound RPC; recorded by the capturing fetch. */
 const seenTraceparents: string[] = [];
 
 function resolveValue(method: string, params: readonly unknown[]): unknown {
@@ -177,8 +177,8 @@ function traceIdOf(traceparent: string): string | null {
   return match?.[1] ?? null;
 }
 
-describe('M1 Trace 全链路传播（DFR-M1-D06）', () => {
-  it('客户端 traceparent 的 trace-id 一路到达 Provider 出口，且响应头回写同一 trace-id', async () => {
+describe('M1 Trace end-to-end propagation (DFR-M1-D06)', () => {
+  it('the client traceparent's trace-id travels all the way to the Provider egress, and the response headers write back the same trace-id', async () => {
     seenTraceparents.length = 0;
     const response = await postBuild(`00-${TRACE_ID}-${'b'.repeat(16)}-01`);
     expect(response.status).toBe(200);
@@ -194,7 +194,7 @@ describe('M1 Trace 全链路传播（DFR-M1-D06）', () => {
     }
   });
 
-  it('全零 traceparent 不可信：网关重建 trace-id，并继续向下游传播有效 traceparent', async () => {
+  it('an all-zero traceparent is untrusted: the gateway rebuilds the trace-id and continues propagating a valid traceparent downstream', async () => {
     seenTraceparents.length = 0;
     const response = await postBuild(`00-${ZERO_TRACE_ID}-${'b'.repeat(16)}-01`);
     expect(response.status).toBe(200);

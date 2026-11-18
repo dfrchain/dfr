@@ -1,17 +1,24 @@
-# DFR M1 告警规则（observability-spec 第 8 章）
+# DFR M1 alert rules (observability-spec chapter 8)
 #
-# 设计原则：
-#   1. 每条规则都注明**它依赖哪个指标**，且指标名必须与代码一致 ——
-#      `tests/contract/monitoring-config.test.ts` 会校验"配置里引用的指标在代码中都存在"，
-#      防止看板/告警与实现漂移（指标改名后静默失效是监控最常见的死法）。
-#   2. `for:` 一律显式给出，避免瞬时抖动触发告警。
-#   3. 阈值分两类：**可判定**（如"增量 > 0"，本身就是异常）与**需标定**（如延迟阈值
-#      依赖链特征）。后者在注释里明确写"需标定"，不假装它是权威值。
+# Design principles:
+#   1. Every rule states **which metric it depends on**, and metric names
+#      must match the code — `tests/contract/monitoring-config.test.ts`
+#      verifies that "every metric referenced in the config exists in code",
+#      preventing dashboards/alerts from drifting away from the
+#      implementation (a renamed metric silently going dead is the most
+#      common way monitoring dies).
+#   2. `for:` is always given explicitly, so transient jitter never fires
+#      an alert.
+#   3. Thresholds come in two kinds: **decidable** (e.g. "increment > 0",
+#      which is itself an anomaly) and **needs calibration** (e.g. latency
+#      thresholds depend on chain characteristics). The latter are marked
+#      "needs calibration" in the comment — never presented as an
+#      authoritative value.
 
 groups:
   - name: dfr-api
     rules:
-      # spec §8：API 错误率 5 分钟 > 2%
+      # spec §8: API error rate over 5 minutes > 2%
       - alert: DfrApiErrorRateHigh
         expr: |
           (
@@ -23,10 +30,10 @@ groups:
         labels:
           severity: high
         annotations:
-          summary: "Gateway 5xx 比例超过 2%"
-          description: "最近 5 分钟 5xx 占比 {{ $value | humanizePercentage }}；先看 dfr_gateway_requests_total 的 route 维度定位。"
+          summary: "Gateway 5xx share exceeds 2%"
+          description: "5xx share over the last 5 minutes is {{ $value | humanizePercentage }}; look at the route dimension of dfr_gateway_requests_total first to locate it."
 
-      # spec §8：API 延迟 P95 > 2s 持续 10 分钟（阈值需按部署标定）
+      # spec §8: API latency P95 > 2s for 10 minutes (threshold needs calibration per deployment)
       - alert: DfrApiLatencyDegraded
         expr: |
           histogram_quantile(
@@ -37,58 +44,61 @@ groups:
         labels:
           severity: medium
         annotations:
-          summary: "Gateway P95 延迟超过 2s"
-          description: "阈值 2s 是初始值，需按实际链路标定；用 route 维度区分是上游还是本机。"
+          summary: "Gateway P95 latency exceeds 2s"
+          description: "The 2s threshold is an initial value; calibrate it against the actual chain path; use the route dimension to tell upstream from local."
 
-      # 鉴权失败突增：可能是 Key 轮换失误，也可能是暴力枚举（spec 第 6 章安全默认值）
+      # Auth failure spike: could be a key rotation mistake, or brute-force enumeration (spec chapter 6 security defaults)
       - alert: DfrAuthFailureSpike
         expr: increase(dfr_gateway_auth_failures_total[10m]) > 50
         for: 0m
         labels:
           severity: medium
         annotations:
-          summary: "10 分钟内鉴权失败超过 50 次"
-          description: "按 reason_code 区分：mismatch 多为凭证错误或枚举，missing 多为客户端配置问题。"
+          summary: "More than 50 auth failures in 10 minutes"
+          description: "Split by reason_code: mismatch is usually a credential error or enumeration, missing is usually a client configuration problem."
 
-      # 限流频繁触发说明容量或调用方行为异常（不是故障，但需要知道）
+      # Frequent rate limiting means capacity or caller behavior is abnormal (not a failure, but worth knowing)
       - alert: DfrRateLimitedFrequent
         expr: increase(dfr_gateway_rate_limited_total[15m]) > 100
         for: 0m
         labels:
           severity: low
         annotations:
-          summary: "15 分钟内限流超过 100 次"
-          description: "按 route_class 看是哪一类被限流；read 频繁限流通常意味着调用方需要退避。"
+          summary: "More than 100 rate limits in 15 minutes"
+          description: "Look at route_class to see which category is being limited; frequent read limiting usually means the caller needs to back off."
 
-      # 幂等冲突：调用方复用同一 Idempotency-Key 传了不同请求体（客户端 bug）
+      # Idempotency conflict: the caller reused the same Idempotency-Key with a different request body (client bug)
       - alert: DfrIdempotencyConflictSpike
         expr: increase(dfr_gateway_idempotency_hits_total{outcome="conflict"}[15m]) > 10
         for: 0m
         labels:
           severity: medium
         annotations:
-          summary: "15 分钟内幂等冲突超过 10 次"
-          description: "通常意味着客户端在复用幂等键却改变了请求体；检查 SDK 是否每次生成新键。"
+          summary: "More than 10 idempotency conflicts in 15 minutes"
+          description: "Usually means the client is reusing an idempotency key while changing the request body; check whether the SDK generates a new key each time."
 
-      # 事务存储不可用时 Gateway 会主动拒绝业务流量；这是发布级依赖故障，不应混在通用 5xx 中。
+      # When the transaction store is unavailable, the Gateway actively rejects business traffic; this is a release-grade dependency failure and must not be lumped in with generic 5xx.
       - alert: DfrDependencyRejectingTraffic
         expr: increase(dfr_gateway_dependency_rejected_total[5m]) > 0
         for: 0m
         labels:
           severity: critical
         annotations:
-          summary: "Gateway 因依赖不可用正在拒绝业务流量"
-          description: "按 route_class 查看受影响流量；检查 PostgreSQL/事务存储连通性，恢复后 Gateway 会自动放行。"
+          summary: "Gateway is rejecting business traffic because a dependency is unavailable"
+          description: "Check the affected traffic by route_class; check PostgreSQL/transaction-store connectivity — the Gateway automatically allows traffic again after recovery."
 
   - name: dfr-provider
     rules:
-      # spec §8：某链可用 Provider 数 = 0（紧急）
+      # spec §8: a chain has 0 available Providers (urgent)
       #
-      # 口径说明：这里用"该链**所有** Provider 的读熔断器都打开"来表达"全部不可用"。
-      # 之所以不直接用 availability_ratio == 0：健康窗口无样本时 availability 记为 1
-      # （见 ProviderMetrics 的注释），因此刚注册的 Provider 不会误报；
-      # 而熔断全开是"我们主动停用全部候选"的确定信号 —— 宁可漏报冷启动窗口，
-      # 也不要每天误报新链。
+      # Definition: "the read circuit breakers of **all** Providers for that
+      # chain are open" is used to express "all unavailable". The reason for
+      # not using availability_ratio == 0 directly: with no samples in the
+      # health window, availability is recorded as 1 (see the ProviderMetrics
+      # comment), so a freshly registered Provider never false-alarms; while
+      # all breakers open is a definite signal that "we actively disabled
+      # every candidate" — better to miss the cold-start window than to
+      # false-alarm a new chain every day.
       - alert: DfrProviderAllUnavailable
         expr: |
           min by (chain) (dfr_provider_circuit_state{state="open"}) == 1
@@ -96,96 +106,96 @@ groups:
         labels:
           severity: critical
         annotations:
-          summary: "链 {{ $labels.chain }} 的全部 Provider 读熔断器均打开"
-          description: "所有候选都被熔断，请求会 fail-closed 为 DFR_CHAIN_UNAVAILABLE。检查上游与凭证。"
+          summary: "All Provider read circuit breakers are open for chain {{ $labels.chain }}"
+          description: "Every candidate is circuit-broken, so requests fail closed as DFR_CHAIN_UNAVAILABLE. Check upstream and credentials."
 
-      # spec §8：Provider 降级（可用率 < 0.5 持续 5 分钟）
+      # spec §8: Provider degraded (availability < 0.5 for 5 minutes)
       - alert: DfrProviderDegraded
         expr: dfr_provider_availability_ratio < 0.5
         for: 5m
         labels:
           severity: medium
         annotations:
-          summary: "Provider {{ $labels.provider_id }} 可用率 {{ $value | humanizePercentage }}"
-          description: "低于 50% 持续 5 分钟；结合 dfr_provider_error_ratio 与熔断状态判断是自身还是上游。"
+          summary: "Provider {{ $labels.provider_id }} availability {{ $value | humanizePercentage }}"
+          description: "Below 50% for 5 minutes; combine dfr_provider_error_ratio with circuit state to judge whether it is the provider itself or upstream."
 
-      # spec §8：熔断持续打开
+      # spec §8: circuit breaker stays open
       - alert: DfrProviderCircuitOpen
         expr: dfr_provider_circuit_state{state="open"} == 1
         for: 5m
         labels:
           severity: medium
         annotations:
-          summary: "Provider {{ $labels.provider_id }} 熔断打开超过 5 分钟"
-          description: "如果这是该链最后一个可用 Provider，会同时触发 DfrProviderAllUnavailable。"
+          summary: "Provider {{ $labels.provider_id }} circuit breaker open for over 5 minutes"
+          description: "If this is the chain's last available Provider, DfrProviderAllUnavailable fires at the same time."
 
-      # E5：日配额接近上限。耗尽后 Provider 会被剔除，属于可用性事件；
-      # 在 80% 提前告警，给运维留出切换/扩容/联系上游的时间。
+      # E5: daily quota near its limit. Once exhausted, the Provider is removed, which is an availability event;
+      # alert early at 80% to leave operations time to switch / scale / contact upstream.
       - alert: DfrProviderQuotaNearLimit
         expr: dfr_provider_quota_used_ratio > 0.8
         for: 5m
         labels:
           severity: high
         annotations:
-          summary: "Provider {{ $labels.provider_id }} 日配额已用 {{ $value | humanizePercentage }}"
-          description: "超过 80% 持续 5 分钟；结合 dfr_provider_quota_used_ratio 与配额策略，准备切换备用 Provider 或提升额度。"
+          summary: "Provider {{ $labels.provider_id }} daily quota used {{ $value | humanizePercentage }}"
+          description: "Over 80% for 5 minutes; combine dfr_provider_quota_used_ratio with the quota policy and prepare to switch to a backup Provider or raise the limit."
 
-      # Provider 切换/重试：写路径重试必须恒为 0，因此 method_class="write" 出现重试是**严重异常**
+      # Provider switching/retries: write-path retries must always be 0, so any retry with method_class="write" is a **serious anomaly**
       - alert: DfrWritePathRetryDetected
         expr: increase(dfr_provider_retries_total{reason="write"}[10m]) > 0
         for: 0m
         labels:
           severity: critical
         annotations:
-          summary: "检测到写路径重试（应为 0）"
-          description: "广播是 non-idempotent-write，Provider 层自动重试必须严格为 0；非 0 说明有代码路径绕过该约束，属资金安全级问题。"
+          summary: "Write-path retry detected (should be 0)"
+          description: "Broadcast is a non-idempotent-write; automatic Provider-layer retries must be strictly 0; a non-zero value means some code path bypasses that constraint — a funds-safety-grade issue."
 
   - name: dfr-adapter-core
     rules:
-      # spec §8：registry ⊄ adapter —— 说明启动校验被绕过，紧急
+      # spec §8: registry ⊄ adapter — means the startup check was bypassed; urgent
       - alert: DfrAdapterRegistryMismatch
         expr: increase(dfr_adapter_registry_mismatch_total[10m]) > 0
         for: 0m
         labels:
           severity: critical
         annotations:
-          summary: "链 {{ $labels.chain }} 出现 registry/adapter 不一致"
-          description: "Registry 声明了 Adapter 未实现的能力。正常应恒为 0；非 0 说明校验被绕过，需立即排查配置。"
+          summary: "Chain {{ $labels.chain }} has a registry/adapter mismatch"
+          description: "The registry declares a capability the Adapter has not implemented. Normally always 0; a non-zero value means the check was bypassed — investigate the configuration immediately."
 
-      # Core 层能力不支持：同上，属配置/契约问题
+      # Core-layer capability unsupported: same as above, a configuration/contract problem
       - alert: DfrCoreCapabilityUnsupported
         expr: increase(dfr_core_capability_unsupported_total[10m]) > 0
         for: 0m
         labels:
           severity: high
         annotations:
-          summary: "链 {{ $labels.chain }} 收到未声明能力 {{ $labels.capability }} 的调用"
-          description: "调用方请求了该链未启用的能力；正常应恒为 0。"
+          summary: "Chain {{ $labels.chain }} received a call for undeclared capability {{ $labels.capability }}"
+          description: "The caller requested a capability not enabled for that chain; normally always 0."
 
-      # Adapter 错误率（按 adapter/chain/error_code 维度）
+      # Adapter error rate (by adapter/chain/error_code dimensions)
       - alert: DfrAdapterErrorSpike
         expr: sum by (adapter, chain, error_code) (increase(dfr_adapter_errors_total[10m])) > 20
         for: 0m
         labels:
           severity: medium
         annotations:
-          summary: "Adapter {{ $labels.adapter }} 在 {{ $labels.chain }} 上错误突增（{{ $labels.error_code }}）"
-          description: "结合 Provider 指标判断根因在上游还是编解码层。"
+          summary: "Adapter {{ $labels.adapter }} error spike on {{ $labels.chain }} ({{ $labels.error_code }})"
+          description: "Combine with Provider metrics to judge whether the root cause is upstream or in the codec layer."
 
   - name: dfr-transaction
     rules:
-      # spec §8：发生链重组（增量 > 0 即告警）
+      # spec §8: a chain reorg occurred (any increment > 0 alerts)
       - alert: DfrChainReorgObserved
         expr: increase(dfr_transaction_reorg_total[10m]) > 0
         for: 0m
         labels:
           severity: high
         annotations:
-          summary: "链 {{ $labels.chain }} 观测到交易重组（深度桶 {{ $labels.depth_bucket }}）"
-          description: "被重组掉的 included 交易已按 ADR-021 回退为 pending 并清空区块锚点；确认下游是否受影响。"
+          summary: "Chain {{ $labels.chain }} observed a transaction reorg (depth bucket {{ $labels.depth_bucket }})"
+          description: "Reorged included transactions have been rolled back to pending per ADR-021 with their block anchors cleared; check whether downstream is affected."
 
-      # spec §8：确认等待偏慢（阈值需标定 —— 它测的是"单次 confirm 请求等待目标 finality 的时长"，
-      # 不是创建→最终性的端到端延迟；见 observability-spec §5.5 的语义说明）
+      # spec §8: confirmation wait is slow (threshold needs calibration — it measures "how long a single confirm request waits for the target finality",
+      # not the end-to-end latency from creation to finality; see the observability-spec §5.5 semantics note)
       - alert: DfrFinalityWaitSlow
         expr: |
           histogram_quantile(
@@ -196,10 +206,10 @@ groups:
         labels:
           severity: medium
         annotations:
-          summary: "链 {{ $labels.chain }} 的 confirm 等待 P95 超过 120s"
-          description: "120s 是初始值，需按该链的 FinalityPolicy 标定（例如 confirmations 数 × 出块时间）。"
+          summary: "Chain {{ $labels.chain }} confirm wait P95 exceeds 120s"
+          description: "120s is an initial value; calibrate it against that chain's FinalityPolicy (e.g. confirmations count × block time)."
 
-      # 阶段失败率：用 finalize 之外的状态判断写路径健康（stage_total 是计数器，按 status 分）
+      # Stage failure rate: judge write-path health from states other than finalize (stage_total is a counter, split by status)
       - alert: DfrTransactionStageErrors
         expr: |
           sum by (chain, stage, error_code) (
@@ -209,10 +219,10 @@ groups:
         labels:
           severity: medium
         annotations:
-          summary: "链 {{ $labels.chain }} 的 {{ $labels.stage }} 阶段错误增加（{{ $labels.error_code }}）"
-          description: "按 stage 定位是 build / simulate / broadcast / confirm 哪一段；结合 error_code 分类。"
+          summary: "Chain {{ $labels.chain }} {{ $labels.stage }} stage errors increased ({{ $labels.error_code }})"
+          description: "Locate by stage whether it is build / simulate / broadcast / confirm; classify with error_code."
 
-      # tracker 租约长时间被别人持有：多实例下可能有实例卡住，或单笔交易观测很慢
+      # Tracker lease held by someone else for a long time: in a multi-instance deployment some instance may be stuck, or a single transaction is being observed very slowly
       - alert: DfrTrackerLeaseContention
         expr: |
           sum by (chain) (increase(dfr_transaction_tracker_lease_total{outcome="held_by_other"}[15m])) > 20
@@ -220,5 +230,5 @@ groups:
         labels:
           severity: low
         annotations:
-          summary: "链 {{ $labels.chain }} 的 tracker 租约竞争偏多"
-          description: "多实例部署下属正常竞争；单实例下持续非 0 说明有租约未被释放，检查 owner token 与过期逻辑。"
+          summary: "Chain {{ $labels.chain }} has elevated tracker lease contention"
+          description: "Normal contention in a multi-instance deployment; a persistently non-zero value under a single instance means a lease was not released — check the owner token and expiry logic."

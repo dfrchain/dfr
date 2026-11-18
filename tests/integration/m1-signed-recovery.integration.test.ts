@@ -1,19 +1,19 @@
 /**
- * M1 真实持久化：Solana `signed` 滞留记录的运维对账通道（issue #22 门禁 4，ADR-040）。
+ * M1 real persistence: ops reconciliation channel for stranded Solana `signed` records (issue #22 gate 4, ADR-040).
  *
- * 与 `packages/transaction/test/recovery.test.ts`（内存替身单测）的区别：这里用
- * **真实 PostgreSQL Store** 装配 `RecoveryCoordinator`，验证运维通道在真实
- * CAS / tracker 租约 / 排序租约语义下成立：
+ * Difference from `packages/transaction/test/recovery.test.ts` (in-memory stand-in unit test): this file uses a
+ * **real PostgreSQL Store** to assemble the `RecoveryCoordinator`, verifying the ops channel holds under real
+ * CAS / tracker lease / sequencing lease semantics:
  *
- *   - 陈旧的 Solana `signed` 记录可被人工点名迁移到 `unknown`；
- *   - 新鲜的同种记录被拒绝（`not_stale`），状态不变；
- *   - EVM 记录不归本通道（`not_applicable`），且既有 `recoverStaleSigned`
- *     巡检在真实 PG 上行为不变；
- *   - 通道没有任何广播路径：`RecoveryCoordinator` 的依赖里根本不存在链端口，
- *     迁移后记录 `txHash` 仍为空、状态只到 `unknown`，唯一的外部效应是
- *     只读解析回调（本测试以记录型替身承接并断言其调用）。
+ *   - stale Solana `signed` records can be manually named and moved to `unknown`;
+ *   - fresh records of the same kind are rejected (`not_stale`), state unchanged;
+ *   - EVM records are out of scope for this channel (`not_applicable`), and the existing `recoverStaleSigned`
+ *     sweep behaves the same on real PG;
+ *   - the channel has no broadcast path at all: the `RecoveryCoordinator`'s dependencies contain no chain port,
+ *     after migration the record's `txHash` is still empty and its state only reaches `unknown`; the only external effect is
+ *     a read-only resolution callback (this test receives it with a recording stand-in and asserts the call).
  *
- * 需要 `DFR_TRANSACTION_DATABASE_URL`，因此只在 `pnpm test:db` 下运行。
+ * Requires `DFR_TRANSACTION_DATABASE_URL`, so it only runs under `pnpm test:db`.
  */
 import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -65,7 +65,7 @@ function coordinatorFor(runtime: Runtime, observed: TransactionId[]) {
   });
 }
 
-/** 落库一笔 Solana `signed` 记录：reserve 排序租约 → create(built) → sign。 */
+/** Persist a Solana `signed` record: reserve sequencing lease → create(built) → sign. */
 async function seedSolanaSigned(runtime: Runtime): Promise<{
   transactionId: TransactionId;
   account: AccountRef;
@@ -107,7 +107,7 @@ async function seedSolanaSigned(runtime: Runtime): Promise<{
   return { transactionId, account, signature };
 }
 
-/** 落库一笔 EVM `signed` 记录（B37 同款顺序：reserve nonce → create → sign）。 */
+/** Persist an EVM `signed` record (same B37 order: reserve nonce → create → sign). */
 async function seedEvmSigned(runtime: Runtime): Promise<{ transactionId: TransactionId }> {
   const suffix = randomUUID().replaceAll('-', '');
   const transactionId = `txn_gate4_evm_${suffix}` as TransactionId;
@@ -142,14 +142,14 @@ async function seedEvmSigned(runtime: Runtime): Promise<{ transactionId: Transac
   return { transactionId };
 }
 
-describe.skipIf(!ENABLED)('M1 真实持久化：signed 滞留对账（issue #22 门禁 4 / ADR-040）', () => {
-  it('陈旧 Solana signed 记录可被运维通道迁移到 unknown（真实 CAS + 租约围栏）', async () => {
+describe.skipIf(!ENABLED)('M1 real persistence: signed stranding reconciliation (issue #22 gate 4 / ADR-040)', () => {
+  it('stale Solana signed records can be moved to unknown by the ops channel (real CAS + lease fencing)', async () => {
     const runtime = await openRuntime();
     const { transactionId } = await seedSolanaSigned(runtime);
     const observed: TransactionId[] = [];
     const coordinator = coordinatorFor(runtime, observed);
 
-    // 以注入时钟把记录推过陈旧窗口（updatedAt 为落库时刻，now = +10 分钟）。
+    // Use the injected clock to push the record past the staleness window (updatedAt is the persist time, now = +10 minutes).
     const outcome = await coordinator.reconcileStrandedSigned({
       transactionId, staleAfterMs: 300_000, now: Date.now() + 10 * 60_000,
     });
@@ -157,17 +157,17 @@ describe.skipIf(!ENABLED)('M1 真实持久化：signed 滞留对账（issue #22 
 
     const after = await runtime.stores.transaction.get(transactionId);
     expect(after?.status).toBe('unknown');
-    // 只推进一格：版本 0(built) → 1(sign) → 2(unknown)，且从未经过 broadcast。
+    // Advance only one step: version 0(built) → 1(sign) → 2(unknown), never passing through broadcast.
     expect(after?.stateVersion).toBe('2');
     expect(after?.txHash).toBeUndefined();
-    // 唯一的外部效应是一次只读解析回调；通道不触碰排序租约（记录里的
-    // sequencingRef 保持原样，租约行留给 TTL 回收——本记录属于
-    // "签名后、markConsumed 前崩溃"的变体，租约仍为 reserved）。
+    // The only external effect is one read-only resolution callback; the channel does not touch the sequencing lease (the
+    // sequencingRef in the record stays as-is, and the lease row is left for TTL reclamation -- this record is a variant of
+    // "crashed after signing, before markConsumed", and the lease is still reserved).
     expect(observed).toEqual([transactionId]);
     expect(after?.sequencingRef?.kind).toBe('blockhash');
   });
 
-  it('新鲜 Solana signed 记录被拒绝（not_stale），状态保持 signed', async () => {
+  it('fresh Solana signed records are rejected (not_stale), state stays signed', async () => {
     const runtime = await openRuntime();
     const { transactionId } = await seedSolanaSigned(runtime);
     const observed: TransactionId[] = [];
@@ -184,7 +184,7 @@ describe.skipIf(!ENABLED)('M1 真实持久化：signed 滞留对账（issue #22 
     expect(observed).toEqual([]);
   });
 
-  it('EVM 记录不归运维通道（not_applicable），且既有 recoverStaleSigned 巡检行为不变', async () => {
+  it('EVM records are out of scope for the ops channel (not_applicable), and the existing recoverStaleSigned sweep behaves the same', async () => {
     const runtime = await openRuntime();
     const { transactionId } = await seedEvmSigned(runtime);
     const observed: TransactionId[] = [];
@@ -196,8 +196,8 @@ describe.skipIf(!ENABLED)('M1 真实持久化：signed 滞留对账（issue #22 
     })).resolves.toBe('not_applicable');
     expect((await runtime.stores.transaction.get(transactionId))?.status).toBe('signed');
 
-    // 同一条记录随后由既有 EVM 巡检按原语义修复：signed → unknown + 只读解析。
-    // 共享 runner 库里可能有其他套件留下的陈旧 EVM 记录，只断言本条被修复。
+    // The same record is then repaired by the existing EVM sweep with the original semantics: signed → unknown + read-only resolution.
+    // The shared runner library may contain stale EVM records left by other suites; only assert that this record is repaired.
     const repaired = await coordinator.recoverStaleSigned({
       limit: 10, staleAfterMs: 300_000, now: future,
     });

@@ -1,13 +1,13 @@
 /**
- * SDK 读路径契约测试（DFR-M1-E02 补强）。
+ * SDK read-path contract tests (DFR-M1-E02 reinforcement).
  *
- * 为什么单独成文件：`write.test.ts` 只覆盖 build/simulate/broadcast/confirm。
- * 读方法此前仅在 `tests/e2e/*` 里被**间接**驱动（真实 Gateway + 替身 RPC），
- * 一旦查询串构造写错（例如把 `consistency` 拼成 `consistent`），E2E 会整体失败
- * 但不会指出是哪条 URL 契约破了；这里对每条读方法做点对点的请求断言。
+ * Why a separate file: `write.test.ts` only covers build/simulate/broadcast/confirm.
+ * Read methods were previously driven only **indirectly** in `tests/e2e/*` (real Gateway + stand-in RPC),
+ * so a misbuilt query string (e.g. spelling `consistency` as `consistent`) would fail E2E as a whole
+ * without saying which URL contract broke; here, each read method gets point-to-point request assertions.
  *
- * 权威来源：docs/api/openapi.yaml 的 GET /v1/chains、/v1/chains/{chainId}、
- * /v1/balances、/v1/blocks/{blockRef}、/v1/transactions/{txHash}。
+ * Authoritative source: docs/api/openapi.yaml GET /v1/chains, /v1/chains/{chainId},
+ * /v1/balances, /v1/blocks/{blockRef}, /v1/transactions/{txHash}.
  */
 import { describe, expect, it } from 'vitest';
 import { DFR, isDfrApiError, type DfrApiError } from '../src/index.js';
@@ -57,8 +57,8 @@ const BLOCK = {
   observedAt: '2026-10-06T00:00:00.000Z',
 };
 
-describe('SDK 读路径请求契约', () => {
-  it('listChains：GET /v1/chains，解包 items', async () => {
+describe('SDK read-path request contract', () => {
+  it('listChains: GET /v1/chains, unpacking items', async () => {
     const seen: Captured[] = [];
     const dfr = client(capture(() => jsonResponse(200, { items: [], requestId: 'req_x' }), seen));
     await expect(dfr.listChains()).resolves.toEqual([]);
@@ -66,7 +66,7 @@ describe('SDK 读路径请求契约', () => {
     expect(seen[0]!.method).toBe('GET');
   });
 
-  it('getChain：链 ID 做 URL 编码，返回封套（含 requestId）', async () => {
+  it('getChain: chain ID is URL-encoded, returning the envelope (with requestId)', async () => {
     const seen: Captured[] = [];
     const dfr = client(
       capture(
@@ -79,7 +79,7 @@ describe('SDK 读路径请求契约', () => {
     expect(info.requestId).toBe('req_y');
   });
 
-  it('getBalance：chain 与 account 必填，解包 balance（不返回封套）', async () => {
+  it('getBalance: chain and account are required, unpacking balance (no envelope returned)', async () => {
     const seen: Captured[] = [];
     const dfr = client(
       capture(
@@ -96,7 +96,7 @@ describe('SDK 读路径请求契约', () => {
     expect(balance.amount).toBe('1');
   });
 
-  it('getBalance：可选 assetId / consistency / blockRef 都进入查询串', async () => {
+  it('getBalance: optional assetId / consistency / blockRef all enter the query string', async () => {
     const seen: Captured[] = [];
     const dfr = client(capture(() => jsonResponse(200, { balance: { amount: '0' } }), seen));
     await dfr.getBalance({
@@ -112,7 +112,7 @@ describe('SDK 读路径请求契约', () => {
     expect(url.searchParams.get('blockRef')).toBe('tag:finalized');
   });
 
-  it('getBlock：blockRef 作为路径段并编码冒号', async () => {
+  it('getBlock: blockRef is a path segment with the colon encoded', async () => {
     const seen: Captured[] = [];
     const dfr = client(capture(() => jsonResponse(200, { block: BLOCK }), seen));
     const block = await dfr.getBlock({ chain: CHAIN, blockRef: 'tag:finalized' });
@@ -120,7 +120,7 @@ describe('SDK 读路径请求契约', () => {
     expect(block.hash).toBe(BLOCK.hash);
   });
 
-  it('getTransaction：默认不带 includeReceipt；显式 true 才带上', async () => {
+  it('getTransaction: includeReceipt omitted by default; only included when explicitly true', async () => {
     const seen: Captured[] = [];
     const dfr = client(capture(() => jsonResponse(200, { transaction: { chain: CHAIN } }), seen));
     const txHash = `0x${'b'.repeat(64)}`;
@@ -130,7 +130,7 @@ describe('SDK 读路径请求契约', () => {
     expect(new URL(seen[1]!.url).searchParams.get('includeReceipt')).toBe('true');
   });
 
-  it('getReceipt：始终请求 includeReceipt=true，缺 receipt 时返回 null（不是 undefined）', async () => {
+  it('getReceipt: always requests includeReceipt=true, returning null when receipt is missing (not undefined)', async () => {
     const seen: Captured[] = [];
     const txHash = `0x${'c'.repeat(64)}`;
     const dfr = client(capture(() => jsonResponse(200, { transaction: { chain: CHAIN } }), seen));
@@ -138,14 +138,14 @@ describe('SDK 读路径请求契约', () => {
     expect(new URL(seen[0]!.url).searchParams.get('includeReceipt')).toBe('true');
   });
 
-  it('getReceipt：有 receipt 时返回该对象', async () => {
+  it('getReceipt: returns the receipt object when present', async () => {
     const receipt = { txHash: `0x${'c'.repeat(64)}`, status: 'success' };
     const dfr = client(capture(() => jsonResponse(200, { receipt }), []));
     await expect(dfr.getReceipt({ chain: CHAIN, txHash: receipt.txHash })).resolves.toEqual(receipt);
   });
 
-  it('读路径的错误同样映射为 DfrApiError，并保留 requestId 与 retryable', async () => {
-    // wire 格式是 snake_case（RFC 9457 + DFR 扩展），不是 TS 侧的 camelCase。
+  it('read-path errors likewise map to DfrApiError, keeping requestId and retryable', async () => {
+    // The wire format is snake_case (RFC 9457 + DFR extensions), not the TS-side camelCase.
     const dfr = client(
       capture(
         () =>
@@ -154,7 +154,7 @@ describe('SDK 读路径请求契约', () => {
             title: 'Not Found',
             status: 404,
             dfr_code: 'DFR_NOT_FOUND',
-            detail: '链不存在',
+            detail: 'Chain not found',
             request_id: 'req_notfound',
             retryable: false,
             safe_to_retry: false,
@@ -172,12 +172,12 @@ describe('SDK 读路径请求契约', () => {
     expect(error.status).toBe(404);
     expect(error.requestId).toBe('req_notfound');
     expect(error.retryable).toBe(false);
-    expect(error.message).toBe('链不存在');
+    expect(error.message).toBe('Chain not found');
   });
 });
 
-describe('SDK getLogs（ADR-034）', () => {
-  it('POST /v1/logs?chain=，带 fromBlock/toBlock，解包 logs', async () => {
+describe('SDK getLogs (ADR-034)', () => {
+  it('POST /v1/logs?chain=, with fromBlock/toBlock, unpacking logs', async () => {
     const seen: Captured[] = [];
     const dfr = client(capture(
       () => jsonResponse(200, { logs: [{ address: '0xabc', index: '1', blockRef: { kind: 'number', number: '100' } }], requestId: 'req_1' }),
@@ -191,8 +191,8 @@ describe('SDK getLogs（ADR-034）', () => {
   });
 });
 
-describe('SDK readContract / getAccount（ADR-035/036）', () => {
-  it('readContract：POST /v1/contracts/read?chain=，解包 result', async () => {
+describe('SDK readContract / getAccount (ADR-035/036)', () => {
+  it('readContract: POST /v1/contracts/read?chain=, unpacking result', async () => {
     const seen: Captured[] = [];
     const dfr = client(capture(
       () => jsonResponse(200, { result: { data: '0x2a', decoded: '42' }, requestId: 'req_1' }),
@@ -205,7 +205,7 @@ describe('SDK readContract / getAccount（ADR-035/036）', () => {
     expect(seen[0]!.method).toBe('POST');
   });
 
-  it('getAccount：GET /v1/accounts/{addr}?chain=，解包 account', async () => {
+  it('getAccount: GET /v1/accounts/{addr}?chain=, unpacking account', async () => {
     const seen: Captured[] = [];
     const dfr = client(capture(
       () => jsonResponse(200, { account: { ref: { chain: CHAIN, address: '0xabc' }, kind: 'contract', exists: true }, requestId: 'req_1' }),

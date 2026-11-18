@@ -1,15 +1,15 @@
 /**
- * `unknown` 超时判 `dropped` 与 `dropped` 收敛（ADR-023 / TODO-011）。
+ * `unknown` timing out into `dropped`, and `dropped` convergence (ADR-023 / TODO-011).
  *
- * 背景：ADR-019 把 `unknown → dropped` 指派给 D03，但 D03 未实现，导致这条边
- * **没有任何代码路径触发**。后果是广播结果不确定且链上始终查不到的交易永远停在
- * `unknown`：一直在恢复扫描集合里被反复查询，nonce 租约也永不释放。
+ * Background: ADR-019 assigned `unknown → dropped` to D03, but D03 never implemented it, so this edge had
+ * **no code path triggering it at all**. The consequence: a transaction whose broadcast result is indeterminate and never found on-chain stays in
+ * `unknown` forever: queried again and again inside the recovery scan set, and its nonce lease is never released.
  *
- * 本文件锁定 ADR-023 的四条规则：
- *   1. 观测为 `absent` 且静默未达 `dropTimeoutMs` → **保持 `unknown`**（不得提前判丢弃）；
- *   2. 观测为 `absent` 且已超时 → 转 `dropped`；
- *   3. 观测为 `included`/`pending`/`replaced` → **观测优先**，即使已超时也不判丢弃；
- *   4. `dropped` 记录在宽限窗内可被后续观测纠正回 `included`/`pending`/`replaced`。
+ * This file locks ADR-023's four rules:
+ *   1. observation `absent` with silence not yet at `dropTimeoutMs` → **stay `unknown`** (never judge dropped early);
+ *   2. observation `absent` with the timeout passed → move to `dropped`;
+ *   3. observation `included`/`pending`/`replaced` → **observation wins**: even after the timeout, never judge dropped;
+ *   4. a `dropped` record can be corrected back to `included`/`pending`/`replaced` by later observations inside the grace window.
  */
 import { describe, expect, it } from 'vitest';
 import { TransactionEngine, type ChainBroadcastObservation } from '../src/index.js';
@@ -19,7 +19,7 @@ const CHAIN = 'ethereum-sepolia' as never;
 const TX_ID = 'txn_drop_test' as never;
 const EXPECTED_HASH = `0x${'aa'.repeat(32)}`;
 
-/** 可控时钟：`dropClock` 决定"现在"，从而决定是否跨过 dropTimeoutMs。 */
+/** A controllable clock: `dropClock` decides "now", and therefore whether dropTimeoutMs has been crossed. */
 function harness(options: { nowMs: number; dropTimeoutMs?: number; observation: ChainBroadcastObservation | (() => ChainBroadcastObservation) }) {
   const stores = createInMemoryTransactionStores();
   let clockMs = options.nowMs;
@@ -44,7 +44,7 @@ function harness(options: { nowMs: number; dropTimeoutMs?: number; observation: 
   return { engine, stores, setClock: (ms: number) => { clockMs = ms; } };
 }
 
-/** 直接构造一条 `unknown` 记录：避免依赖广播路径，聚焦超时语义本身。 */
+/** Construct a `unknown` record directly: avoid depending on the broadcast path and focus on the timeout semantics themselves. */
 async function seedUnknown(stores: ReturnType<typeof createInMemoryTransactionStores>, updatedAt: string) {
   await stores.transaction.create({
     record: {
@@ -66,8 +66,8 @@ async function seedUnknown(stores: ReturnType<typeof createInMemoryTransactionSt
 const T0 = Date.parse('2026-10-05T00:00:00.000Z');
 const ABSENT: ChainBroadcastObservation = { kind: 'absent' };
 
-describe('unknown 超时判 dropped（ADR-023）', () => {
-  it('观测 absent 但未达 dropTimeoutMs → 保持 unknown（不得提前判丢弃）', async () => {
+describe('unknown timing out into dropped (ADR-023)', () => {
+  it('observation absent but dropTimeoutMs not reached → stay unknown (never judge dropped early)', async () => {
     const h = harness({ nowMs: T0 + 60_000, dropTimeoutMs: 1_800_000, observation: ABSENT });
     await seedUnknown(h.stores, new Date(T0).toISOString());
 
@@ -76,7 +76,7 @@ describe('unknown 超时判 dropped（ADR-023）', () => {
     expect(record?.status).toBe('unknown');
   });
 
-  it('观测 absent 且已超时 → 转 dropped', async () => {
+  it('observation absent with the timeout passed → move to dropped', async () => {
     const h = harness({ nowMs: T0 + 1_800_000, dropTimeoutMs: 1_800_000, observation: ABSENT });
     await seedUnknown(h.stores, new Date(T0).toISOString());
 
@@ -85,7 +85,7 @@ describe('unknown 超时判 dropped（ADR-023）', () => {
     expect(record?.status).toBe('dropped');
   });
 
-  it('观测 included 优先于超时：即使已超时也判 included，绝不判 dropped', async () => {
+  it('observation included wins over the timeout: even after the timeout, judge included, never dropped', async () => {
     const h = harness({
       nowMs: T0 + 10_000_000,
       dropTimeoutMs: 1_800_000,
@@ -102,7 +102,7 @@ describe('unknown 超时判 dropped（ADR-023）', () => {
     expect(record?.status).toBe('included');
   });
 
-  it('观测 pending 优先于超时 → pending', async () => {
+  it('observation pending wins over the timeout → pending', async () => {
     const h = harness({
       nowMs: T0 + 10_000_000,
       dropTimeoutMs: 1_800_000,
@@ -115,7 +115,7 @@ describe('unknown 超时判 dropped（ADR-023）', () => {
     expect(record?.status).toBe('pending');
   });
 
-  it('观测不可用（observe 抛错）→ 保持 unknown，不误判 dropped', async () => {
+  it('observation unavailable (observe throws) → stay unknown; do not misjudge dropped', async () => {
     const stores = createInMemoryTransactionStores();
     const engine = new TransactionEngine({
       stores,
@@ -136,7 +136,7 @@ describe('unknown 超时判 dropped（ADR-023）', () => {
   });
 });
 
-describe('dropped 收敛（ADR-023，修正误判）', () => {
+describe('dropped convergence (ADR-023, correcting misjudgments)', () => {
   async function seedDropped(stores: ReturnType<typeof createInMemoryTransactionStores>, updatedAt: string) {
     await seedUnknown(stores, updatedAt);
     await stores.transaction.transition({
@@ -149,7 +149,7 @@ describe('dropped 收敛（ADR-023，修正误判）', () => {
     });
   }
 
-  it('dropped + 观测 included → 纠正为 included（否则会对已确认交易报告"已丢弃"）', async () => {
+  it('dropped + observation included → correct to included (otherwise a confirmed transaction would be reported as "dropped")', async () => {
     const h = harness({
       nowMs: T0 + 3_600_000,
       observation: {
@@ -165,7 +165,7 @@ describe('dropped 收敛（ADR-023，修正误判）', () => {
     expect(record?.status).toBe('included');
   });
 
-  it('dropped + 观测 pending → 纠正为 pending', async () => {
+  it('dropped + observation pending → correct to pending', async () => {
     const h = harness({
       nowMs: T0 + 3_600_000,
       observation: { kind: 'pending', txHash: EXPECTED_HASH },
@@ -177,7 +177,7 @@ describe('dropped 收敛（ADR-023，修正误判）', () => {
     expect(record?.status).toBe('pending');
   });
 
-  it('dropped + 观测 replaced → 纠正为 replaced', async () => {
+  it('dropped + observation replaced → correct to replaced', async () => {
     const h = harness({
       nowMs: T0 + 3_600_000,
       observation: { kind: 'replaced', nonce: '7' },
@@ -189,7 +189,7 @@ describe('dropped 收敛（ADR-023，修正误判）', () => {
     expect(record?.status).toBe('replaced');
   });
 
-  it('dropped + 观测 absent → 保持 dropped（不重复写状态）', async () => {
+  it('dropped + observation absent → stay dropped (do not rewrite state repeatedly)', async () => {
     const h = harness({ nowMs: T0 + 3_600_000, observation: ABSENT });
     await seedDropped(h.stores, new Date(T0).toISOString());
 
@@ -198,7 +198,7 @@ describe('dropped 收敛（ADR-023，修正误判）', () => {
     expect(record?.status).toBe('dropped');
   });
 
-  it('终态不受影响：非 unknown/dropped 记录原样返回', async () => {
+  it('terminal states are unaffected: non-unknown/dropped records are returned as-is', async () => {
     const h = harness({ nowMs: T0, observation: ABSENT });
     await h.stores.transaction.create({
       record: {

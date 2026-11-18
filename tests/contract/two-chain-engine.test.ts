@@ -1,13 +1,13 @@
 /**
- * M3-D01：两链共用引擎状态机对照。
+ * M3-D01: two-chain shared engine state-machine comparison.
  *
- * 完成门（roadmap M3）："EVM/Solana 共用 Transaction Engine 状态机"。
+ * Completion gate (roadmap M3): "EVM/Solana share the Transaction Engine state machine".
  *
- * 本测试**不**再跑一遍 Adapter，而是证明：同一个 `TransactionEngine` 在
- * EVM 形态与 Solana 形态的 chain port 下，走的是**同一套**状态机与断言；
- * 链差异只体现为"排序前提的 kind"（nonce vs blockhash）。
+ * This test does **not** run the Adapters again; it proves the same `TransactionEngine` follows the **same**
+ * state machine and assertions under an EVM-shaped and a Solana-shaped chain port; the only chain difference
+ * is the "ordering prerequisite kind" (nonce vs blockhash).
  *
- * 与 M2-D01（只读对照）同构：差异通过数据表达，而不是 `if (family === ...)`。
+ * Isomorphic to M2-D01 (read-only comparison): differences are expressed through data, not `if (family === ...)`.
  */
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -24,13 +24,13 @@ import { SOLANA_DEVNET_LEGACY_SIGNED } from '../../adapters/solana/test/support/
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-/** 两条链的引擎端口差异**只用数据表达**：EVM 有 getPendingNonce，Solana 用 getSequencingToken。 */
+/** The engine-port differences between the two chains are expressed **only as data**: EVM has getPendingNonce; Solana uses getSequencingToken. */
 interface EngineFixture {
   readonly chain: ChainId;
   readonly family: 'evm' | 'solana';
   readonly from: { chain: ChainId; address: string };
   readonly to: { chain: ChainId; address: string };
-  /** 期望的排序前提 kind。 */
+  /** The expected ordering-prerequisite kind. */
   readonly expectedTokenKind: 'nonce' | 'blockhash';
   readonly port: TransactionChainPort;
 }
@@ -73,7 +73,7 @@ function evmPort(): TransactionChainPort {
       payload: '0x02f8',
       meta: { encoding: 'hex', requiresNonce: request.nonce ?? ('0' as never) },
     }),
-    // 用于确认观测的端口：与 Solana 共用同一套断言。
+    // Port for confirmation observation: shares the same assertions as Solana.
     confirm: async () => ({
       ref: { kind: 'hash', hash: `0x${'a'.repeat(64)}` },
       status: 'confirmed',
@@ -87,7 +87,7 @@ function evmPort(): TransactionChainPort {
   } as unknown as TransactionChainPort;
 }
 
-/** Solana 端口：真实使用 B01/B02/C01/C02 的实现（经由 Core 的接线等价物）。 */
+/** Solana port: really uses the B01/B02/C01/C02 implementations (via Core's wiring equivalent). */
 function solanaPort(): TransactionChainPort {
   return {
     getSequencingToken: async (): Promise<SequencingToken> => ({
@@ -133,23 +133,23 @@ const FIXTURES: readonly EngineFixture[] = [
   },
 ];
 
-describe('M3-D01 两链共用引擎状态机', () => {
-  it('引擎不按链族分叉（同一套断言；差异由 token kind 表达）', () => {
+describe('M3-D01 two chains share the engine state machine', () => {
+  it('the engine does not branch on chain family (same assertions; differences expressed by token kind)', () => {
     const source = readFileSync(resolve(here, '../../packages/transaction/src/engine.ts'), 'utf8');
     const code = source.replace(/\/\*[\s\S]*?\*\//gu, '').replace(/\/\/[^\n]*/gu, '');
     const familyBranches = code.match(/family\s*===\s*['"][a-z]+['"]/gu) ?? [];
-    expect(familyBranches, `引擎不得按链族分叉，发现：${familyBranches.join(', ')}`).toEqual([]);
-    // 分派依据是 token 的 kind。
+    expect(familyBranches, `The engine must not branch on chain family; found: ${familyBranches.join(', ')}`).toEqual([]);
+    // Dispatch is based on the token's kind.
     expect(source).toContain("pendingToken.kind === 'nonce'");
   });
 
   for (const fixture of FIXTURES) {
-    it(`${fixture.family}：build 走同一套状态机，排序前提 kind = ${fixture.expectedTokenKind}`, async () => {
+    it(`${fixture.family}: build follows the same state machine, ordering-prerequisite kind = ${fixture.expectedTokenKind}`, async () => {
       const stores = createInMemoryTransactionStores();
       const engine = new TransactionEngine({
         stores: {
           ...stores,
-          // Solana 需要 sequencing store；EVM 也装配（不写它，只是统一装配）。
+          // Solana needs a sequencing store; EVM gets one too (it is not written to — uniform assembly).
           sequencing: solanaSequencingStore(),
         },
         chain: fixture.port,
@@ -164,7 +164,7 @@ describe('M3-D01 两链共用引擎状态机', () => {
         } as never,
       });
 
-      // 同一套状态机：两者都以 built 开始、版本为 0。
+      // Same state machine: both start as built, version 0.
       expect(result.status).toBe('built' as TransactionStatus);
       expect(result.sequencingToken?.kind).toBe(fixture.expectedTokenKind);
 
@@ -172,17 +172,17 @@ describe('M3-D01 两链共用引擎状态机', () => {
       expect(record?.status).toBe('built');
       expect(record?.stateVersion).toBe('0');
       expect(record?.sequencingRef?.kind).toBe(fixture.expectedTokenKind);
-      // EVM 记录有 nonce 列，Solana 没有 —— 这是**唯一**的差异，且是数据而非分支。
+      // The EVM record has a nonce column, Solana does not — this is the **only** difference, and it is data, not a branch.
       if (fixture.family === 'evm') expect(record?.nonce).toBe('7');
       else expect(record?.nonce).toBeUndefined();
     });
   }
 
-  it('两链的 confirm 走同一套引擎路径（同一断言，不同数据）', async () => {
+  it('confirm on both chains follows the same engine path (same assertion, different data)', async () => {
     for (const fixture of FIXTURES) {
       const stores = createInMemoryTransactionStores();
       const engine = new TransactionEngine({ stores, chain: fixture.port });
-      // 直接驱动端口层：引擎不区分链族地搬运确认结果。
+      // Drive the port layer directly: the engine carries confirmation results across without distinguishing chain family.
       const confirmation = await fixture.port.confirm!({
         chain: fixture.chain,
         txHash: fixture.family === 'evm' ? `0x${'a'.repeat(64)}` : SOLANA_DEVNET_LEGACY_SIGNED.txHash,
@@ -194,7 +194,7 @@ describe('M3-D01 两链共用引擎状态机', () => {
     }
   });
 
-  it('两个 Adapter 都实现了写路径能力（registry ⊆ adapter 的 M3 形态）', () => {
+  it('both Adapters implement the write-path capabilities (registry ⊆ adapter in its M3 form)', () => {
     const evmAdapter = new EvmAdapter({
       chain: {
         id: EVM_CHAIN, displayName: 'x', family: 'evm', network: 'testnet',
@@ -219,7 +219,7 @@ describe('M3-D01 两链共用引擎状态机', () => {
   });
 });
 
-/** 与 packages/transaction/test/solana-build.test.ts 同构的最小 SequencingStore。 */
+/** Minimal SequencingStore isomorphic to packages/transaction/test/solana-build.test.ts. */
 function solanaSequencingStore() {
   const rows = new Map<string, SequencingLease>();
   return {

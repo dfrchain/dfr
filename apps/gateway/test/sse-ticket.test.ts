@@ -1,8 +1,8 @@
 /**
- * SSE 一次性票据测试（M2-C02，ADR-029）。
+ * SSE single-use ticket test (M2-C02, ADR-029).
  *
- * 这是**安全边界**测试：票据一旦可重放、可跨 Key 使用、或 TTL 可被静默放大，
- * 就等于把长期凭证的能力泄漏给了 URL。每条断言对应 ADR-029 的一条硬约束。
+ * This is a **security boundary** test: once a ticket becomes replayable, usable across Keys, or its TTL silently enlargeable,
+ * it is equivalent to leaking a long-lived credential's power to a URL. Each assertion corresponds to one hard constraint in ADR-029.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -35,8 +35,8 @@ function store(options: { now?: () => number; max?: number } = {}): {
 
 const FILTER = { chain: 'solana-devnet' as never };
 
-describe('SseTicketStore 签发（M2-C02）', () => {
-  it('默认 TTL 30s，返回不透明票据与 ISO8601 过期时间', () => {
+describe('SseTicketStore issuance (M2-C02)', () => {
+  it('default TTL 30s, returns an opaque ticket and an ISO8601 expiry time', () => {
     const { store: s } = store();
     const issued = s.issue({ projectId: 'test-project', apiKeyId: KEY, ip: IP, filter: FILTER })!;
     expect(issued.ticket).toMatch(/^ticket_\d+$/u);
@@ -44,7 +44,7 @@ describe('SseTicketStore 签发（M2-C02）', () => {
     expect(ttl).toBe(SSE_TICKET_DEFAULT_TTL_MS);
   });
 
-  it('票据生成值碰撞时 fail-closed，不能覆盖其他 Key 尚未消费的票据', () => {
+  it('a ticket generation-value collision fails closed, and cannot overwrite another Key's unconsumed ticket', () => {
     const s = new SseTicketStore({ now: () => 1_000_000, newTicket: () => 'same_ticket' });
     const first = s.issue({ projectId: 'test-project', apiKeyId: KEY, ip: IP, filter: FILTER })!;
     expect(first.ticket).toBe('same_ticket');
@@ -53,7 +53,7 @@ describe('SseTicketStore 签发（M2-C02）', () => {
     expect(s.consume({ projectId: 'test-project', ticket: first.ticket, apiKeyId: KEY, ip: IP, filter: FILTER }).kind).toBe('ok');
   });
 
-  it('TTL 超过上限 → RangeError（不静默截断）', () => {
+  it('TTL above the cap → RangeError (no silent truncation)', () => {
     const { store: s } = store();
     expect(() => s.issue({ projectId: 'test-project', apiKeyId: KEY, ip: IP, filter: FILTER, ttlMs: SSE_TICKET_MAX_TTL_MS + 1 }))
       .toThrow(RangeError);
@@ -61,37 +61,37 @@ describe('SseTicketStore 签发（M2-C02）', () => {
     expect(() => s.issue({ projectId: 'test-project', apiKeyId: KEY, ip: IP, filter: FILTER, ttlMs: -1 })).toThrow(RangeError);
   });
 
-  it('边界值 60s 允许', () => {
+  it('the boundary value 60s is allowed', () => {
     const { store: s } = store();
     expect(s.issue({ projectId: 'test-project', apiKeyId: KEY, ip: IP, filter: FILTER, ttlMs: SSE_TICKET_MAX_TTL_MS })).not.toBeNull();
   });
 
-  it('单 Key 未消费票据超限 → 签发失败（null），由调用方映射为限流', () => {
+  it('a single Key exceeding the unconsumed ticket cap → issuance fails (null), mapped to rate limiting by the caller', async () => {
     const { store: s } = store({ max: 2 });
     expect(s.issue({ projectId: 'test-project', apiKeyId: KEY, ip: IP, filter: FILTER })).not.toBeNull();
     expect(s.issue({ projectId: 'test-project', apiKeyId: KEY, ip: IP, filter: FILTER })).not.toBeNull();
-    expect(s.issue({ projectId: 'test-project', apiKeyId: KEY, ip: IP, filter: FILTER }), '超出上限应失败').toBeNull();
-    // 其他 Key 不受影响。
+    expect(s.issue({ projectId: 'test-project', apiKeyId: KEY, ip: IP, filter: FILTER }), 'exceeding the cap should fail').toBeNull();
+    // Other Keys are unaffected.
     expect(s.issue({ projectId: 'test-project', apiKeyId: OTHER_KEY, ip: IP, filter: FILTER })).not.toBeNull();
   });
 });
 
-describe('SseTicketStore 消费（单次 + 绑定）', () => {
-  it('正常消费返回签发时的 filter', () => {
+describe('SseTicketStore consumption (single-use + binding)', () => {
+  it('normal consumption returns the filter from issuance', () => {
     const { store: s } = store();
     const issued = s.issue({ projectId: 'test-project', apiKeyId: KEY, ip: IP, filter: FILTER })!;
     const result = s.consume({ projectId: 'test-project', ticket: issued.ticket, apiKeyId: KEY, ip: IP, filter: FILTER });
     expect(result).toMatchObject({ kind: 'ok', ticket: { apiKeyId: KEY, filter: FILTER } });
   });
 
-  it('同一票据第二次使用 → invalid（单次消费）', () => {
+  it('using the same ticket a second time → invalid (single-use)', () => {
     const { store: s } = store();
     const issued = s.issue({ projectId: 'test-project', apiKeyId: KEY, ip: IP, filter: FILTER })!;
     expect(s.consume({ projectId: 'test-project', ticket: issued.ticket, apiKeyId: KEY, ip: IP, filter: FILTER }).kind).toBe('ok');
-    expect(s.consume({ projectId: 'test-project', ticket: issued.ticket, apiKeyId: KEY, ip: IP, filter: FILTER }).kind, '重放必须失败').toBe('invalid');
+    expect(s.consume({ projectId: 'test-project', ticket: issued.ticket, apiKeyId: KEY, ip: IP, filter: FILTER }).kind, 'replay must fail').toBe('invalid');
   });
 
-  it('并发消费只有一个赢家（原子性）', () => {
+  it('concurrent consumption has only one winner (atomicity)', () => {
     const { store: s } = store();
     const issued = s.issue({ projectId: 'test-project', apiKeyId: KEY, ip: IP, filter: FILTER })!;
     const results = [
@@ -103,26 +103,26 @@ describe('SseTicketStore 消费（单次 + 绑定）', () => {
     expect(results.filter((r) => r === 'invalid')).toHaveLength(2);
   });
 
-  it('换 Key 使用同一票据 → invalid（绑定 apiKeyId）', () => {
+  it('using the same ticket with a different Key → invalid (bound to apiKeyId)', () => {
     const { store: s } = store();
     const issued = s.issue({ projectId: 'test-project', apiKeyId: KEY, ip: IP, filter: FILTER })!;
     expect(s.consume({ projectId: 'test-project', ticket: issued.ticket, apiKeyId: OTHER_KEY, ip: IP, filter: FILTER }).kind).toBe('invalid');
   });
 
-  it('换 IP 使用同一票据 → invalid（绑定客户端 IP）', () => {
+  it('using the same ticket from a different IP → invalid (bound to client IP)', () => {
     const { store: s } = store();
     const issued = s.issue({ projectId: 'test-project', apiKeyId: KEY, ip: IP, filter: FILTER })!;
     expect(s.consume({ projectId: 'test-project', ticket: issued.ticket, apiKeyId: KEY, ip: '198.51.100.9', filter: FILTER }).kind).toBe('invalid');
   });
 
-  it('扩大 filter 无法消费（绑定 filter 摘要，只能原样）', () => {
+  it('a widened filter cannot consume (bound to the filter digest; only as-is)', () => {
     const { store: s } = store();
     const issued = s.issue({ projectId: 'test-project', apiKeyId: KEY, ip: IP, filter: FILTER })!;
     const widened = { ...FILTER, types: ['tx.finalized' as never] };
     expect(s.consume({ projectId: 'test-project', ticket: issued.ticket, apiKeyId: KEY, ip: IP, filter: widened }).kind).toBe('invalid');
   });
 
-  it('过期票据 → invalid，且已被回收', () => {
+  it('an expired ticket → invalid, and already reclaimed', () => {
     let clock = 1_000_000;
     const s = new SseTicketStore({ now: () => clock, newTicket: () => 'ticket_x' });
     const issued = s.issue({ projectId: 'test-project', apiKeyId: KEY, ip: IP, filter: FILTER, ttlMs: 1_000 })!;
@@ -131,28 +131,28 @@ describe('SseTicketStore 消费（单次 + 绑定）', () => {
     expect(s.size).toBe(0);
   });
 
-  it('未知票据 → invalid（不区分未找到/过期/已用，避免枚举）', () => {
+  it('an unknown ticket → invalid (not distinguishing not-found / expired / used, to avoid enumeration)', () => {
     const { store: s } = store();
     expect(s.consume({ projectId: 'test-project', ticket: 'nope', apiKeyId: KEY, ip: IP, filter: FILTER }).kind).toBe('invalid');
   });
 });
 
-describe('filter 摘要与客户端 IP', () => {
-  it('摘要与键顺序无关，但对内容变化敏感', () => {
+describe('filter digests and client IPs', () => {
+  it('the digest is independent of key order, but sensitive to content changes', () => {
     const a = digestFilter({ chain: 'solana-devnet' as never, types: ['tx.finalized' as never] });
     const b = digestFilter({ types: ['tx.finalized' as never], chain: 'solana-devnet' as never });
     expect(a).toBe(b);
     expect(digestFilter({ chain: 'solana-devnet' as never })).not.toBe(a);
   });
 
-  it('默认不信任 X-Forwarded-For（取直连对端）', () => {
+  it('X-Forwarded-For is not trusted by default (take the direct peer)', () => {
     expect(clientIp({ remoteAddress: IP, forwardedFor: '1.2.3.4', trustedProxies: [] })).toBe(IP);
   });
 
-  it('可信代理存在时取 XFF 最后一跳；直连对端不可信时仍取直连', () => {
+  it('when a trusted proxy exists, take the last XFF hop; when the direct peer is untrusted, still take the direct peer', () => {
     expect(clientIp({ remoteAddress: '10.0.0.1', forwardedFor: '9.9.9.9, 8.8.8.8', trustedProxies: ['10.0.0.1'] }))
       .toBe('8.8.8.8');
-    expect(clientIp({ remoteAddress: IP, forwardedFor: '9.9.9.9', trustedProxies: ['10.0.0.1'] }), '直连不可信则不采信 XFF')
+    expect(clientIp({ remoteAddress: IP, forwardedFor: '9.9.9.9', trustedProxies: ['10.0.0.1'] }), 'an untrusted direct peer means XFF is not trusted')
       .toBe(IP);
   });
 });

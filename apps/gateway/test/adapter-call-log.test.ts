@@ -1,8 +1,8 @@
-// Adapter 调用结构化日志契约测试（DFR-M1-E02 观测补充）。
+// Adapter call structured-log contract test (DFR-M1-E02 observability supplement).
 //
-// 与 provider-call-log.test.ts 同构：白名单护栏 + 真实 composition root 端到端接线。
-// Core 的 11 个 Adapter 调用点已统一收敛到 `callAdapter` 包装，因此这里只需证明
-// "真实请求会产生 adapter call 日志"，以及"新增字段会被迫使归类"。
+// Isomorphic to provider-call-log.test.ts: allowlist guardrail + real composition-root end-to-end wiring.
+// Core's 11 Adapter call sites have all converged on the `callAdapter` wrapper, so here we only need to prove
+// "a real request produces an adapter call log", and "new fields are forced to be classified".
 import { createServer } from 'node:http';
 import { describe, expect, it, vi } from 'vitest';
 import type { AdapterCallRecord } from '@dfr/core';
@@ -28,8 +28,8 @@ const RECORD: AdapterCallRecord = {
   latencyMs: 12,
 };
 
-describe('Adapter 调用结构化日志（DFR-M1-E02）', () => {
-  it('字段名符合 observability-spec 第 3 章统一命名', () => {
+describe('Adapter call structured logging (DFR-M1-E02)', () => {
+  it('field names follow the unified naming in observability-spec chapter 3', () => {
     const fields = adapterCallLogFields(RECORD);
     expect(fields['request_id']).toBe(RECORD.requestId);
     expect(fields['trace_id']).toBe(RECORD.traceId);
@@ -44,7 +44,7 @@ describe('Adapter 调用结构化日志（DFR-M1-E02）', () => {
     expect(fields['level']).toBe('info');
   });
 
-  it('每个记录字段都必须被归类为"可入日志"或"有意排除"（新增字段会让本测试失败）', () => {
+  it('every record field must be classified as "loggable" or "deliberately excluded" (a new field fails this test)', () => {
     const allowlisted = new Set(Object.keys(ADAPTER_CALL_LOG_FIELDS));
     const excluded = new Set<string>(ADAPTER_CALL_LOG_EXCLUDED);
     const unclassified = Object.keys(RECORD).filter(
@@ -52,11 +52,11 @@ describe('Adapter 调用结构化日志（DFR-M1-E02）', () => {
     );
     expect(
       unclassified,
-      'AdapterCallRecord 新增了未归类字段：请判断它是否可写日志，并更新白名单或排除列表',
+      'AdapterCallRecord has an unclassified field: judge whether it may be logged, and update the allowlist or exclusion list',
     ).toEqual([]);
   });
 
-  it('失败调用以 warn 记录并携带稳定错误码', () => {
+  it('failed calls are recorded as warn with a stable error code', () => {
     const fields = adapterCallLogFields({
       ...RECORD,
       status: 'error',
@@ -66,8 +66,8 @@ describe('Adapter 调用结构化日志（DFR-M1-E02）', () => {
     expect(fields['error_code']).toBe('DFR_CHAIN_UNAVAILABLE');
   });
 
-  it('调用参数 / 载荷 / 地址绝不进入日志（白名单负对照）', () => {
-    // 模拟未来把参数或载荷塞进记录的后果。
+  it('call arguments / payloads / addresses never enter logs (allowlist negative control)', () => {
+    // Simulate the consequence of stuffing arguments or payloads into records in the future.
     const polluted = {
       ...RECORD,
       params: ['0xdeadbeef', '0x1111111111111111111111111111111111111111'],
@@ -82,14 +82,14 @@ describe('Adapter 调用结构化日志（DFR-M1-E02）', () => {
     expect(serialized).not.toContain('0xabcdef');
   });
 
-  it('日志出口不抛错', () => {
+  it('the log outlet does not throw', () => {
     const logger = createAdapterCallLogger(() => {
       throw new Error('stdout closed');
     });
     expect(() => logger(RECORD)).not.toThrow();
   });
 
-  it('真实 startGateway：一次链上读会同时产生 adapter call 与 provider call 日志', async () => {
+  it('real startGateway: one on-chain read produces both adapter call and provider call logs', async () => {
     const rpcServer = createServer((req, res) => {
       let body = '';
       req.on('data', (chunk: Buffer) => {
@@ -168,7 +168,7 @@ describe('Adapter 调用结构化日志（DFR-M1-E02）', () => {
       expect(record['adapter']).toBe('evm');
       expect(record['method']).toBe('getInfo');
       expect(record['latency_ms']).toBeTypeOf('number');
-      // 脱敏：日志不得出现 RPC 端点。
+      // Redaction: logs must not contain RPC endpoints.
       expect(JSON.stringify(record)).not.toContain('127.0.0.1');
     } finally {
       await app?.close();
@@ -178,9 +178,9 @@ describe('Adapter 调用结构化日志（DFR-M1-E02）', () => {
     }
   }, 20_000);
 
-  it('失败路径：adapter call 记录稳定错误码，且日志不含原始异常文本', async () => {
-    // Provider 返回 503（含可疑内部文本），Adapter 抛错，Core 归一化后记录。
-    // 关键断言：日志里只有 DFR_ 错误码，不含端点或原始 message。
+  it('failure path: adapter call records a stable error code, and logs contain no raw exception text', async () => {
+    // The Provider returns 503 (with suspicious internal text), the Adapter throws, and Core records it after normalization.
+    // Key assertion: logs contain only DFR_ error codes, no endpoints or raw messages.
     const rpcServer = createServer((req, res) => {
       req.on('data', () => undefined);
       req.on('end', () => {

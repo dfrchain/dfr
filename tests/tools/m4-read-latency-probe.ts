@@ -1,22 +1,22 @@
 /**
- * M4 只读延迟探针（DFR 侧完成门"延迟/错误/成本对照"的一半）。
+ * M4 read-only latency probe (the DFR side's half of the "latency/error/cost comparison" completion gate).
  *
- * M4 完成门要求 BEX 迁移后产出延迟/错误/成本对照。DFR 侧能自证的只有
- * "经 DFR 公开面做这些只读动作要多久"；BEX 侧旧实现（`cast`）的数字必须由 BEX 提供，
- * 这里**不伪造**对照结论，只产出可直接对照的数字。
+ * The M4 completion gate requires a latency/error/cost comparison after the BEX migration. All the DFR side can prove on its own is
+ * "how long these read-only actions take via DFR's public surface"; the numbers for the BEX side's old implementation (`cast`) must come from BEX,
+ * and this probe **does not fabricate** a comparison conclusion, it only produces numbers that can be compared directly.
  *
- * 只读、无资金、无签名。默认打 Base Sepolia 的 WETH 合约，可覆盖链与地址。
+ * Read-only, no funds, no signing. By default it hits the Base Sepolia WETH contract; the chain and address can be overridden.
  *
- * 为什么放在 tests/tools：它需要 workspace 的 @dfr/* 解析（scripts/ 不在 workspace 内）。
+ * Why it lives in tests/tools: it needs the workspace's @dfr/* resolution (scripts/ is not inside the workspace).
  *
- * 用法：
+ * Usage:
  *   DFR_PROVIDER_BASE_SEPOLIA_PRIMARY_URL=https://sepolia.base.org \
  *   node --experimental-strip-types --experimental-transform-types \
  *     --import ./scripts/ts-runtime/register.mjs tests/tools/m4-read-latency-probe.ts
  *
- * 可选环境变量：
- *   DFR_PROBE_CHAIN（默认 base-sepolia）、DFR_PROBE_ADDRESS（默认 WETH）、
- *   DFR_PROBE_ITERATIONS（默认 20，去掉每类预热 2 次）
+ * Optional environment variables:
+ *   DFR_PROBE_CHAIN (default base-sepolia), DFR_PROBE_ADDRESS (default WETH),
+ *   DFR_PROBE_ITERATIONS (default 20, minus 2 warmups per category)
  */
 import { performance } from 'node:perf_hooks';
 import { EvmAdapter } from '@dfr/adapter-evm';
@@ -48,7 +48,7 @@ const registry = ChainRegistry.load({ env });
 const core = new DfrCore({
   registry,
   adapters: [{ id: 'evm', version: '0.1.0', create: (chain: Chain) => new EvmAdapter({ chain }) }],
-  // 只读探针不需要真实持久化；用内存 Store 满足 DfrCore 的 M1+ 前置检查。
+  // A read-only probe needs no real persistence; an in-memory Store satisfies DfrCore's M1+ preconditions.
   milestone: 'M1',
   transactionStores: createInMemoryTransactionStores(),
 });
@@ -102,14 +102,14 @@ async function measure(sample: Sample): Promise<void> {
     } catch (err) {
       errors += 1;
       const message = err instanceof Error ? err.message : String(err);
-      process.stderr.write(`  ! ${sample.name} 第 ${i} 次失败：${message}\n`);
+      process.stderr.write(`  ! ${sample.name} attempt ${i} failed: ${message}\n`);
     }
   }
   const sorted = [...latencies].sort((a, b) => a - b);
   const fmt = (n: number) => (Number.isNaN(n) ? '  n/a' : n.toFixed(1).padStart(7));
   process.stdout.write(
     `${sample.name}\n` +
-      `  n=${latencies.length}/${ITERATIONS} 错误=${errors}  ` +
+      `  n=${latencies.length}/${ITERATIONS} errors=${errors}  ` +
       `min=${fmt(sorted[0] as number)}  p50=${fmt(percentile(sorted, 50))}  ` +
       `p95=${fmt(percentile(sorted, 95))}  max=${fmt(sorted[sorted.length - 1] as number)} ms\n`,
   );
@@ -117,14 +117,14 @@ async function measure(sample: Sample): Promise<void> {
 
 async function main(): Promise<void> {
   process.stdout.write(
-    `M4 只读延迟探针\n  chain=${CHAIN}  address=${ADDRESS}  iterations=${ITERATIONS}（各 +${WARMUP} 预热）\n\n`,
+    `M4 read-only latency probe\n  chain=${CHAIN}  address=${ADDRESS}  iterations=${ITERATIONS}(each +${WARMUP} warmups)\n\n`,
   );
   for (const sample of samples) {
     await measure(sample);
   }
   process.stdout.write(
-    '\n注：这些是"开发机 → 公共 RPC"的单次观测，不是生产 SLA。\n' +
-      '对照 BEX 旧实现（cast 子进程）时，两边必须在同一网络/同一时间段测量。\n',
+    '\nNote: these are single observations from "dev machine → public RPC", not a production SLA.\n' +
+      'When comparing against the old BEX implementation (cast subprocess), both sides must be measured on the same network in the same time window.\n',
   );
 }
 

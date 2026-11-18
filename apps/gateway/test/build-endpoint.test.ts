@@ -1,14 +1,14 @@
 /**
- * build HTTP 端点契约测试（DFR-M1-B07）。
+ * build HTTP endpoint contract test (DFR-M1-B07).
  *
- * 权威来源：docs/api/openapi.yaml `/v1/transactions/build`、
- * docs/architecture/m1-api-contract.md 第 1/2 节。
+ * Authoritative sources: docs/api/openapi.yaml `/v1/transactions/build`,
+ * docs/architecture/m1-api-contract.md sections 1/2.
  *
- * 用假引擎（`TransactionEngine` 替身）测 Gateway 的职责：
- *   - 契约封套 `{ transactionId, unsignedTransaction, requestId }`（成功码 200）；
- *   - `Idempotency-Key` 头透传给引擎（可选，缺失也要能工作）；
- *   - 结构校验在 Gateway（领域校验在 Adapter / 引擎）；
- *   - 引擎错误按错误码映射状态码，不被包装成 500。
+ * Tests the Gateway's responsibilities with a fake engine (a `TransactionEngine` stand-in):
+ *   - contract envelope `{ transactionId, unsignedTransaction, requestId }` (success code 200);
+ *   - the `Idempotency-Key` header is passed through to the engine (optional; must also work when missing);
+ *   - structural validation lives in the Gateway (domain validation in the Adapter / engine);
+ *   - engine errors map to status codes by error code, never wrapped as 500.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AddressInfo } from 'node:net';
@@ -99,8 +99,8 @@ const OK_RESULT: BuiltTransactionResult = {
   replayable: true,
 };
 
-describe('POST /v1/transactions/build（DFR-M1-B07）', () => {
-  it('接受有效 traceparent，响应创建本地 span，并把关联字段传给引擎', async () => {
+describe('POST /v1/transactions/build (DFR-M1-B07)', () => {
+  it('accepts a valid traceparent, creates a local span for the response, and passes correlation fields to the engine', async () => {
     let received: BuildTransactionInput | undefined;
     await start(fakeEngine(async (input) => { received = input; return OK_RESULT; }));
     const response = await fetch(`${baseUrl}/v1/transactions/build`, {
@@ -119,7 +119,7 @@ describe('POST /v1/transactions/build（DFR-M1-B07）', () => {
     expect(received?.spanId).toBe(outgoing?.split('-')[2]);
   });
 
-  it('/metrics 需要有效 API Key，且只输出 Prometheus 指标', async () => {
+  it('/metrics requires a valid API Key and only outputs Prometheus metrics', async () => {
     await start(fakeEngine(async () => OK_RESULT));
     const unauthorized = await fetch(`${baseUrl}/metrics`);
     expect(unauthorized.status).toBe(401);
@@ -131,7 +131,7 @@ describe('POST /v1/transactions/build（DFR-M1-B07）', () => {
     expect(await response.text()).toBe('');
   });
 
-  it('成功返回 200 + 契约封套（transactionId / unsignedTransaction / requestId）', async () => {
+  it('returns 200 + contract envelope (transactionId / unsignedTransaction / requestId) on success', async () => {
     await start(fakeEngine(async () => OK_RESULT));
     const response = await post(VALID_BODY);
 
@@ -144,7 +144,7 @@ describe('POST /v1/transactions/build（DFR-M1-B07）', () => {
     expect(JSON.stringify(response.body)).not.toContain('signedPayload');
   });
 
-  it('把 Idempotency-Key 头透传给引擎；缺失时传 undefined（可选）', async () => {
+  it('passes the Idempotency-Key header through to the engine; passes undefined when missing (optional)', async () => {
     const seen: (string | undefined)[] = [];
     await start(
       fakeEngine(async (input) => {
@@ -153,14 +153,14 @@ describe('POST /v1/transactions/build（DFR-M1-B07）', () => {
       }),
     );
 
-    // 键必须满足 OpenAPI 的 8..128 长度契约（TODO-007 起由 Gateway 强制）。
-    // 本用例只关心"合法键原样透传 + 缺失时为 undefined"，故用一个合规键。
+    // The key must satisfy OpenAPI's 8..128 length contract (enforced by the Gateway since TODO-007).
+    // This case only cares about "a valid key is passed through as-is + undefined when missing", so it uses a compliant key.
     await post(VALID_BODY, { 'idempotency-key': 'key-abcdef' });
     await post(VALID_BODY);
     expect(seen).toEqual(['key-abcdef', undefined]);
   });
 
-  it('结构校验在 Gateway：缺少 from → 400，且不调用引擎', async () => {
+  it('structural validation lives in the Gateway: missing from → 400, and the engine is not called', async () => {
     const build = vi.fn(async () => OK_RESULT);
     await start(fakeEngine(build));
 
@@ -170,7 +170,7 @@ describe('POST /v1/transactions/build（DFR-M1-B07）', () => {
     expect(build).not.toHaveBeenCalled();
   });
 
-  it('chain 缺失 / 非字符串 → 400', async () => {
+  it('missing / non-string chain → 400', async () => {
     await start(fakeEngine(async () => OK_RESULT));
     for (const body of [{ from: VALID_BODY.from }, { chain: 42, from: VALID_BODY.from }]) {
       const response = await post(body as Record<string, unknown>);
@@ -178,13 +178,13 @@ describe('POST /v1/transactions/build（DFR-M1-B07）', () => {
     }
   });
 
-  it('请求体带 nonce → 引擎拒绝并映射为 400（nonce 由服务端分配）', async () => {
+  it('request body carries a nonce → the engine rejects it and maps to 400 (nonces are allocated by the server)', async () => {
     await start(
       fakeEngine(async () => {
         throw createDfrError('DFR_VALIDATION_FAILED', {
           requestId: 'req_01J8Z6W3Q2K9M4ABCDEFGHJKMN' as never,
           chain: CHAIN as never,
-          message: 'nonce 由服务端分配',
+          message: 'nonce is allocated by the server',
           details: { fields: ['nonce'] },
         });
       }),
@@ -194,14 +194,14 @@ describe('POST /v1/transactions/build（DFR-M1-B07）', () => {
     expect(response.body).toMatchObject({ dfr_code: 'DFR_VALIDATION_FAILED' });
   });
 
-  it('引擎的幂等冲突 / nonce 冲突按错误码映射（409），不被包装成 500', async () => {
+  it('engine idempotency / nonce conflicts map by error code (409), not wrapped as 500', async () => {
     for (const code of ['DFR_IDEMPOTENCY_CONFLICT', 'DFR_NONCE_CONFLICT'] as const) {
       await start(
         fakeEngine(async () => {
           throw createDfrError(code, {
             requestId: 'req_01J8Z6W3Q2K9M4ABCDEFGHJKMN' as never,
             chain: CHAIN as never,
-            message: '冲突',
+            message: 'Conflict',
           });
         }),
       );
@@ -211,7 +211,7 @@ describe('POST /v1/transactions/build（DFR-M1-B07）', () => {
     }
   });
 
-  it('未装配引擎 → 422（写路径未启用，不是 500）', async () => {
+  it('no engine assembled → 422 (write path not enabled, not 500)', async () => {
     server = createGatewayServer({ core, auth: auth(), allowWrite: true });
     await new Promise<void>((resolve) => server?.listen(0, '127.0.0.1', resolve));
     baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -221,7 +221,7 @@ describe('POST /v1/transactions/build（DFR-M1-B07）', () => {
     expect(response.body).toMatchObject({ dfr_code: 'DFR_UNSUPPORTED_CAPABILITY' });
   });
 
-  it('沿用客户端 X-Request-Id（合法时），并在响应封套中回写同一个值', async () => {
+  it('reuses the client X-Request-Id (when valid) and echoes the same value in the response envelope', async () => {
     await start(fakeEngine(async () => OK_RESULT));
     const rid = 'req_01J8Z6W3Q2K9M4ABCDEFGHJKMN';
     const response = await post(VALID_BODY, { 'x-request-id': rid });

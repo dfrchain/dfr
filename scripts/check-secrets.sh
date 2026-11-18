@@ -1,41 +1,49 @@
 #!/usr/bin/env bash
-# DFR 密钥扫描（自包含，不依赖任何第三方 action 或外部脚本）
+# DFR secret scanner (self-contained; depends on no third-party action or external script)
 #
-# 见 docs/adr/ADR-007-signing-model.md 与需求第 24 章。
-# 目的：阻止私钥、助记词、API Key、Token 进入版本库。
+# See docs/adr/ADR-007-signing-model.md and chapter 24 of the requirements.
+# Purpose: keep private keys, mnemonics, API keys, and tokens out of the
+# repository.
 #
-# 兼容 macOS 自带的 bash 3.2：
-#   - 不使用 mapfile / 关联数组
-#   - 变量名紧邻中文标点时必须写成 ${VAR}，否则 bash 3.2 在多字节环境下
-#     会把标点误并入变量名（曾导致 unbound variable 错误）
+# Compatible with macOS's bundled bash 3.2:
+#   - No mapfile / associative arrays
+#   - A variable name next to Chinese punctuation must be written as ${VAR},
+#     otherwise bash 3.2 in a multibyte locale merges the punctuation into
+#     the variable name (this once caused an unbound variable error)
 #
-# 扫描范围：
-#   - 在 git 工作树中：只扫描会被提交的文件（已跟踪 + 未跟踪但未被 .gitignore 排除）
-#   - 不在 git 工作树中：以当前目录为根扫描全部文件（用于 tar 包部署场景）
-#     这是必要的，否则安全扫描会静默通过 —— 假阴性比报错更危险
+# Scan scope:
+#   - Inside a git work tree: scan only files that would be committed
+#     (tracked + untracked but not excluded by .gitignore)
+#   - Outside a git work tree: scan all files rooted at the current
+#     directory (for tarball deployment scenarios)
+#     This is necessary; otherwise the security scan would silently pass —
+#     a false negative is more dangerous than an error
 #
-# 退出码：0 = 干净；1 = 命中可疑模式，或无法确定安全的扫描范围。
+# Exit codes: 0 = clean; 1 = a suspicious pattern matched, or the safe scan
+# scope could not be determined.
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
-# 目录解析：绝不盲目对脚本位置做 ".."，避免误扫到仓库之外的目录
+# Directory resolution: never blindly apply ".." to the script location, to
+# avoid accidentally scanning directories outside the repository
 # ---------------------------------------------------------------------------
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 
 if REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null); then
   cd "${REPO_ROOT}"
   USE_GIT=1
-  SCAN_SCOPE="git 跟踪范围"
+  SCAN_SCOPE="git tracked scope"
 else
-  # 不在 git 工作树中。要求当前目录看起来像仓库根（含 package.json），
-  # 否则拒绝运行，而不是猜测并可能扫描无关目录。
+  # Not inside a git work tree. Require the current directory to look like
+  # a repository root (contains package.json); otherwise refuse to run
+  # instead of guessing and possibly scanning unrelated directories.
   if [ ! -f "./package.json" ]; then
-    echo "check-secrets: 不在 git 工作树中，且当前目录没有 package.json。" >&2
-    echo "check-secrets: 请在仓库根目录运行，或先 git clone/checkout。" >&2
+    echo "check-secrets: not in a git work tree, and the current directory has no package.json." >&2
+    echo "check-secrets: run from the repository root, or git clone/checkout first." >&2
     exit 1
   fi
   USE_GIT=0
-  SCAN_SCOPE="当前目录全量（非 git 工作树）"
+  SCAN_SCOPE="full current directory (not a git work tree)"
 fi
 
 EXCLUDE_RE='\.(png|jpg|jpeg|gif|ico|webp|woff2?|ttf|eot|pdf|zip|gz|tgz|apk|jar|lock)$'
@@ -52,30 +60,35 @@ else
     | sed 's|^\./||' | grep -Ev "${EXCLUDE_RE}" || true)
 fi
 
-# 扫描器自身必然包含模式文本与例外标记语法，不能自我扫描。
-# 这是唯一被无条件排除的文件，且排除是硬编码的、可 review 的。
+# The scanner itself necessarily contains pattern text and exception-marker
+# syntax, so it cannot scan itself. This is the only unconditionally excluded
+# file, and the exclusion is hardcoded and reviewable.
 file_list=$(printf '%s\n' "${file_list}" | grep -v '^scripts/check-secrets.sh$' || true)
 
 if [ -z "${file_list}" ]; then
-  echo "check-secrets: 未找到可扫描的文件（范围：${SCAN_SCOPE}）。" >&2
-  echo "check-secrets: 为避免安全假阴性，此处判定为失败。" >&2
+  echo "check-secrets: no scannable files found (scope: ${SCAN_SCOPE})." >&2
+  echo "check-secrets: to avoid a security false negative, this counts as failure." >&2
   exit 1
 fi
 
 count=$(printf '%s\n' "${file_list}" | wc -l | tr -d ' ')
 
-# 显式例外标记。
+# Explicit exception markers.
 #
-# 例外必须是**逐行、显式、带理由**的：`secret-scan:allow <reason>`。
-# 无条件整行跳过会让扫描退化成"看着像通过"，因此标记后必须跟 >=3 字符的理由，
-# 否则该行仍然按命中处理（见下方 ALLOW_WITHOUT_REASON 检查）。
+# An exception must be **per-line, explicit, and reasoned**:
+# `secret-scan:allow <reason>`. Unconditional whole-line skipping would let
+# the scan degenerate into "looks like a pass", so a marker must be followed
+# by a reason of >= 3 characters; otherwise the line is still treated as a
+# hit (see the ALLOW_WITHOUT_REASON check below).
 #
-# 使用场景仅限：公开链上哈希（区块/交易）、以及专门为"脱敏回归"构造的假凭证。
+# Use cases only: public on-chain hashes (block/transaction), and fake
+# credentials constructed specifically for "redaction regression" tests.
 ALLOW_RE='secret-scan:allow[[:space:]]+[A-Za-z0-9_-]{3,}'
 MARKER_RE='secret-scan:allow'
 
-# 在待扫描文件集合中搜索模式，输出 "行号:内容"。
-# 带合法例外标记的行被排除 —— 例外因此是可 grep、可 review 的。
+# Search the file set for a pattern, printing "line number:content".
+# Lines carrying a valid exception marker are excluded — so exceptions are
+# greppable and reviewable.
 scan() {
   printf '%s\n' "${file_list}" | while IFS= read -r f; do
     [ -f "${f}" ] || continue
@@ -85,10 +98,11 @@ scan() {
 
 MAX_HITS=20
 
-# 例外标记必须带理由：只写 secret-scan:allow 而没有理由 → 判定为失败。
+# Exception markers must carry a reason: a bare secret-scan:allow with no
+# reason → failure.
 marker_without_reason=$(scan "${MARKER_RE}" | grep -Ev "${ALLOW_RE}" || true)
 if [ -n "${marker_without_reason}" ]; then
-  echo "✗ 发现缺少理由的 secret-scan:allow 标记（必须写成 'secret-scan:allow <reason>'）：" >&2
+  echo "✗ Found secret-scan:allow markers without a reason (must be written as 'secret-scan:allow <reason>'):" >&2
   printf '%s\n' "${marker_without_reason}" | head -"${MAX_HITS}" >&2
   exit 1
 fi
@@ -99,29 +113,29 @@ failed=0
 
 hits=$(scan "${patterns}")
 if [ -n "${hits}" ]; then
-  echo "✗ 命中可疑密钥模式：" >&2
+  echo "✗ Matched suspicious secret patterns:" >&2
   printf '%s\n' "${hits}" | head -"${MAX_HITS}" >&2
   total=$(printf '%s\n' "${hits}" | wc -l | tr -d ' ')
   if [ "${total}" -gt "${MAX_HITS}" ]; then
-    echo "  ...（共 ${total} 处，仅显示前 ${MAX_HITS} 处）" >&2
+    echo "  ... (${total} total, showing first ${MAX_HITS})" >&2
   fi
   failed=1
 fi
 
-# 密钥类字段被赋了具体值（排除明显的占位符）
+# Secret-type fields assigned a concrete value (excluding obvious placeholders)
 assign_pattern='(private[_-]?key|mnemonic|seed[_-]?phrase|secret[_-]?key|api[_-]?key)[[:space:]]*[:=][[:space:]]*["'"'"'][^"'"'"']{12,}["'"'"']'
 assign_hits=$(scan "${assign_pattern}" \
   | grep -viE 'placeholder|example|redacted|xxx|your[-_]|dummy|fake|CHANGEME|test test test' || true)
 if [ -n "${assign_hits}" ]; then
-  echo "✗ 命中带具体值的密钥类字段：" >&2
+  echo "✗ Matched secret-type fields with concrete values:" >&2
   printf '%s\n' "${assign_hits}" | head -"${MAX_HITS}" >&2
   failed=1
 fi
 
 if [ "${failed}" -ne 0 ]; then
   echo >&2
-  echo "check-secrets: 失败。请移除上述内容，或改用 env:/vault: 引用（见 packages/registry/config/README.md）。" >&2
+  echo "check-secrets: FAILED. Remove the content above, or use an env:/vault: reference instead (see packages/registry/config/README.md)." >&2
   exit 1
 fi
 
-echo "check-secrets: 通过（${count} 个文件，范围：${SCAN_SCOPE}）"
+echo "check-secrets: passed (${count} files, scope: ${SCAN_SCOPE})"

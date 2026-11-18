@@ -1,8 +1,8 @@
 /**
- * chains.schema.json 的加载与编译。
+ * Loading and compiling chains.schema.json.
  *
- * 规范（packages/registry/config/README.md）：启动校验（DFR-005）与 CI 必须
- * 对**同一份** schema 求值，避免规则随实现漂移（评审修正 R-13）。
+ * Rule (packages/registry/config/README.md): startup validation (DFR-005) and CI must
+ * evaluate the **same** schema, so rules cannot drift with the implementation (review fix R-13).
  */
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -11,28 +11,28 @@ import { createRequire } from 'node:module';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import type { FormatsPlugin } from 'ajv-formats';
 
-/** ajv-formats 是 CJS 包，在 NodeNext + verbatimModuleSyntax 下必须显式 require。 */
+/** ajv-formats is a CJS package and must be explicitly required under NodeNext + verbatimModuleSyntax. */
 const requireCjs = createRequire(import.meta.url);
 const addFormats = requireCjs('ajv-formats') as FormatsPlugin;
 
-/** 本包 config 目录的绝对路径。 */
+/** Absolute path of this package's config directory. */
 export const CONFIG_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../config');
 
-/** 默认注册表文件路径。 */
+/** Default registry file path. */
 export const DEFAULT_REGISTRY_FILE = resolve(CONFIG_DIR, 'chains.yaml');
 
-/** schema 文件路径。 */
+/** Schema file path. */
 export const REGISTRY_SCHEMA_FILE = resolve(CONFIG_DIR, 'chains.schema.json');
 
-/** 读取并解析 schema（JSON）。 */
+/** Read and parse the schema (JSON). */
 export function loadSchema(path: string = REGISTRY_SCHEMA_FILE): object {
   return JSON.parse(readFileSync(path, 'utf8')) as object;
 }
 
 /**
- * 编译校验器。
+ * Compile the validator.
  *
- * `strict: true` 是刻意的：schema 写错时应当启动失败，而不是被静默忽略。
+ * `strict: true` is deliberate: a bad schema should fail startup, not be silently ignored.
  */
 export function compileSchema(path: string = REGISTRY_SCHEMA_FILE) {
   const ajv = new Ajv2020({ allErrors: true, strict: true });

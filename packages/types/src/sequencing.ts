@@ -1,32 +1,32 @@
 /**
- * 排序前提（SequencingToken，ADR-032）。
+ * Ordering precondition (SequencingToken, ADR-032).
  *
- * 为什么需要它：EVM 的 nonce 与 Solana 的 recent blockhash 都是"让交易可被链接受的前提"，
- * 但语义完全不同：
+ * Why it is needed: the EVM nonce and the Solana recent blockhash are both "preconditions for a transaction to be accepted by the chain",
+ * but their semantics are completely different:
  *
- * | 维度 | EVM nonce | Solana blockhash |
+ * | Dimension | EVM nonce | Solana blockhash |
  * |---|---|---|
- * | 作用域 | 账户级 | **全链共用** |
- * | 取值 | 单调递增整数，用掉即消耗 | 哈希串，**多笔交易可共用** |
- * | 失效 | 被更高 nonce 消耗 | **按区块高度**过期（非时间） |
+ * | Scope | per-account | **shared chain-wide** |
+ * | Value | monotonically increasing integer, consumed when used | hash string, **shareable across many transactions** |
+ * | Expiry | consumed by a higher nonce | expires **by block height** (not time) |
  *
- * 把后者塞进 `NonceLease.nonce`（`DecimalUint`，语义是"序号"）会让同一字段在两条链上
- * 有互不相容的含义。因此这里用**判别联合**显式区分，由 Adapter 决定取值形状，
- * Store 只做持久化与并发（不解释内容）。
+ * Stuffing the latter into `NonceLease.nonce` (`DecimalUint`, whose semantics is "sequence number") would give the same field
+ * incompatible meanings on the two chains. So a **discriminated union** distinguishes them explicitly; the Adapter decides the value shape,
+ * and the Store only persists and handles concurrency (it does not interpret the content).
  */
 import type { DecimalUint } from './primitives.js';
 
-/** EVM 的排序前提（M3 暂未使用，保留以表达完整模型）。 */
+/** The EVM ordering precondition (unused in M3 for now, kept to express the full model). */
 export interface NonceSequencingToken {
   readonly kind: 'nonce';
   readonly value: DecimalUint;
 }
 
 /**
- * Solana 的排序前提。
+ * The Solana ordering precondition.
  *
- * `lastValidBlockHeight` 是**区块高度**而不是时间戳：过期判定必须比对链高
- * （实测 devnet 有效窗口约 166 个 block，≈60–90 秒）。
+ * `lastValidBlockHeight` is a **block height**, not a timestamp: expiry must be decided by comparing chain height
+ * (measured devnet window is about 166 blocks, ≈60–90 seconds).
  */
 export interface BlockhashSequencingToken {
   readonly kind: 'blockhash';
@@ -36,5 +36,5 @@ export interface BlockhashSequencingToken {
 
 export type SequencingToken = NonceSequencingToken | BlockhashSequencingToken;
 
-/** 排序租约的状态。`expired` 由过期回收写入，与 `released` 区分开以便审计。 */
+/** Sequencing lease state. `expired` is written by expiry reclamation, kept distinct from `released` for audit. */
 export type SequencingLeaseStatus = 'reserved' | 'consumed' | 'released' | 'expired';

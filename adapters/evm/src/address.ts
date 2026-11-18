@@ -1,5 +1,5 @@
 /**
- * EVM 地址校验（Adapter 职责，Core 不做格式假设 —— domain-model 第 4.2 节）。
+ * EVM address validation (an Adapter responsibility; Core makes no format assumptions — domain-model Section 4.2).
  */
 import { createDfrError } from '@dfr/errors';
 import type { ChainId } from '@dfr/types';
@@ -15,7 +15,7 @@ export function isEvmTxHash(value: string): boolean {
   return TX_HASH_RE.test(value);
 }
 
-/** 非法地址 → DFR_INVALID_ACCOUNT（422，不可重试）。 */
+/** Invalid address → DFR_INVALID_ACCOUNT (422, not retryable). */
 export function assertEvmAddress(
   value: string,
   chain: ChainId,
@@ -24,13 +24,13 @@ export function assertEvmAddress(
   if (!isEvmAddress(value)) {
     throw createDfrError('DFR_INVALID_ACCOUNT', {
       requestId: requestId as never,
-      message: `不是合法的 EVM 地址（期望 0x + 40 位十六进制）`,
+      message: `not a valid EVM address (expected 0x + 40 hex digits)`,
       chain,
     });
   }
 }
 
-/** 非法交易哈希 → DFR_INVALID_REQUEST（哈希是路径参数，不是账户）。 */
+/** Invalid transaction hash → DFR_INVALID_REQUEST (the hash is a path parameter, not an account). */
 export function assertEvmTxHash(
   value: string,
   chain: ChainId,
@@ -39,7 +39,7 @@ export function assertEvmTxHash(
   if (!isEvmTxHash(value)) {
     throw createDfrError('DFR_INVALID_REQUEST', {
       requestId: requestId as never,
-      message: '不是合法的 EVM 交易哈希（期望 0x + 64 位十六进制）',
+      message: 'not a valid EVM transaction hash (expected 0x + 64 hex digits)',
       chain,
     });
   }

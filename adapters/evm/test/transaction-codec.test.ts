@@ -1,17 +1,17 @@
 /**
- * EVM 交易编解码纯函数契约测试（DFR-M1-B01）。
+ * EVM transaction codec pure-function contract tests (DFR-M1-B01).
  *
- * 权威来源：ADR-016（Viem 纯工具函数）、docs/architecture/m1-api-contract.md。
+ * Authoritative sources: ADR-016 (Viem pure utilities), docs/architecture/m1-api-contract.md.
  *
- * 本测试的三类证据：
- *   1. **公开规范向量**：EIP-155 示例必须逐字节一致（外部可独立复核）；
- *   2. **独立结构重建**：EIP-2930 / EIP-1559 的期望字节用 `toRlp` 从字段原始
- *      顺序重建，而不是复用 `serializeTransaction`，避免"实现与断言同源"；
- *   3. **负对照**：JS number、十六进制字符串、前导零、非法地址/数据、费用字段缺失
- *      或多余、篡改字段都必须被拒绝。
+ * Three kinds of evidence in these tests:
+ *   1. **Public spec vectors**: EIP-155 examples must match byte for byte (independently verifiable externally);
+ *   2. **Independent structural reconstruction**: expected bytes for EIP-2930 / EIP-1559 are rebuilt with `toRlp` from the raw fields
+ *      in order, instead of reusing `serializeTransaction`, to avoid "implementation and assertion sharing the same origin";
+ *   3. **Negative controls**: JS numbers, hex strings, leading zeros, invalid addresses/data, missing fee fields
+ *      or extra ones, and tampered fields must all be rejected.
  *
- * 另有两项安全断言：codec 不发网络请求，且源码只允许导入 Viem 的纯工具函数
- * （不得出现 client / transport / account / wallet）。
+ * Two more security assertions: the codec makes no network requests, and its source may only import Viem pure utilities
+ * (no client / transport / account / wallet).
  */
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -36,10 +36,10 @@ const TO = '0x2222222222222222222222222222222222222222';
 const DATA = '0xdeadbeef';
 
 /* ------------------------------------------------------------------ */
-/* 1. 公开规范向量：EIP-155                                           */
+/* 1. Public spec vectors: EIP-155                                           */
 /* ------------------------------------------------------------------ */
 
-/** EIP-155 规范示例（chainId 1，nonce 9，gasPrice 20 gwei，21000 gas，1 ETH）。 */
+/** EIP-155 spec example (chainId 1, nonce 9, gasPrice 20 gwei, 21000 gas, 1 ETH). */
 const EIP155_INTENT: EvmUnsignedIntent = {
   type: 'legacy',
   chainId: dec('1'),
@@ -57,14 +57,14 @@ const EIP155_UNSIGNED_HASH =
 const EIP155_SIGNED =
   '0xf86c098504a817c800825208943535353535353535353535353535353535353535880de0b6b3a76400008025a028ef61340bd939bc2195fe537567866003e1a15d3c71ff63e1590620aa636276a067cbe9d8997f761aecb703304b3800ccf555c9f3dc64214b297fb1966a3b6d83';
 
-describe('EIP-155 legacy 公开规范向量（ADR-016 验收 1）', () => {
-  it('pre-EIP-155 的零签名槽不能把 v=27 当作 chainId', () => {
+describe('EIP-155 legacy public spec vectors (ADR-016 acceptance 1)', () => {
+  it('pre-EIP-155 zero signature slots must not treat v=27 as chainId', () => {
     const payload = toRlp(['0x', '0x01', '0x5208', TO, '0x', '0x', '0x1b', '0x', '0x']);
     const decoded = decodeTransactionPayload(payload);
     expect(decoded.signed).toBe(false);
     expect(decoded.chainId).toBeNull();
   });
-  it('encode 逐字节等于 EIP-155 规范示例，signingHash 等于规范哈希', () => {
+  it('encode matches the EIP-155 spec example byte for byte, signingHash equals the spec hash', () => {
     const encoded = encodeUnsignedTransaction(EIP155_INTENT);
     expect(encoded.payload).toBe(EIP155_UNSIGNED);
     expect(encoded.type).toBe('legacy');
@@ -75,7 +75,7 @@ describe('EIP-155 legacy 公开规范向量（ADR-016 验收 1）', () => {
     expect(encoded.signingHash).toBe(keccak256(EIP155_UNSIGNED));
   });
 
-  it('decode 未签名载荷返回规范字段且 signed=false', () => {
+  it('decode of an unsigned payload returns the spec fields with signed=false', () => {
     const decoded = decodeTransactionPayload(EIP155_UNSIGNED);
     expect(decoded.type).toBe('legacy');
     expect(decoded.chainId).toBe('1');
@@ -89,7 +89,7 @@ describe('EIP-155 legacy 公开规范向量（ADR-016 验收 1）', () => {
     expect(decoded.hash).toBe(EIP155_UNSIGNED_HASH);
   });
 
-  it('decode 已签名载荷返回 signed=true 且字段与未签名原文一致', () => {
+  it('decode of a signed payload returns signed=true with fields matching the unsigned original', () => {
     const decoded = decodeTransactionPayload(EIP155_SIGNED);
     expect(decoded.signed).toBe(true);
     expect(decoded.type).toBe('legacy');
@@ -102,7 +102,7 @@ describe('EIP-155 legacy 公开规范向量（ADR-016 验收 1）', () => {
 });
 
 /* ------------------------------------------------------------------ */
-/* 2. EIP-2930 / EIP-1559：独立结构重建                                */
+/* 2. EIP-2930 / EIP-1559: independent structural reconstruction                                */
 /* ------------------------------------------------------------------ */
 
 const SEPOLIA_CHAIN_ID = dec('11155111');
@@ -114,8 +114,8 @@ const BASE = {
   gas: dec('21000'),
 } as const;
 
-describe('EIP-2930 与 EIP-1559 编码（独立 toRlp 重建）', () => {
-  it('typed 交易全零或部分零签名槽不能算已签名', () => {
+describe('EIP-2930 and EIP-1559 encoding (independent toRlp reconstruction)', () => {
+  it('typed transactions with all-zero or partly-zero signature slots do not count as signed', () => {
     const prefix = ['0xaa36a7', '0x01', '0x01', '0x02', '0x5208', TO, '0x', '0x', []] as const;
     for (const type of ['0x01', '0x02'] as const) {
       const body = type === '0x01' ? prefix.slice(0, 8) : prefix;
@@ -126,7 +126,7 @@ describe('EIP-2930 与 EIP-1559 编码（独立 toRlp 重建）', () => {
       }
     }
   });
-  it('EIP-2930 空 accessList 的字节与结构重建一致', () => {
+  it('EIP-2930 bytes with an empty accessList match the structural reconstruction', () => {
     const expected =
       '0x01ec83aa36a72a843b9aca00825208942222222222222222222222222222222222222222872386f26fc1000080c0';
     const rebuilt =
@@ -143,7 +143,7 @@ describe('EIP-2930 与 EIP-1559 编码（独立 toRlp 重建）', () => {
     expect(encoded.signingHash).toBe(keccak256(expected));
   });
 
-  it('EIP-1559 空 accessList 的字节与结构重建一致', () => {
+  it('EIP-1559 bytes with an empty accessList match the structural reconstruction', () => {
     const expected =
       '0x02f183aa36a72a843b9aca008477359400825208942222222222222222222222222222222222222222872386f26fc1000080c0';
     const rebuilt =
@@ -171,7 +171,7 @@ describe('EIP-2930 与 EIP-1559 编码（独立 toRlp 重建）', () => {
     expect(encoded.signingHash).toBe(keccak256(expected));
   });
 
-  it('EIP-2930 带 accessList 与 data 时序列化后可完整还原（round-trip）', () => {
+  it('EIP-2930 with accessList and data round-trips fully after serialization (round-trip)', () => {
     const encoded = encodeUnsignedTransaction({
       ...BASE,
       type: 'eip2930',
@@ -196,7 +196,7 @@ describe('EIP-2930 与 EIP-1559 编码（独立 toRlp 重建）', () => {
     expect(decoded.signed).toBe(false);
   });
 
-  it('三种类型都能 encode → decode → 与 intent 比较通过', () => {
+  it('all three types pass encode → decode → comparison with the intent', () => {
     const intents: EvmUnsignedIntent[] = [
       EIP155_INTENT,
       { ...BASE, type: 'eip2930', gasPrice: dec('1000000000') },
@@ -210,7 +210,7 @@ describe('EIP-2930 与 EIP-1559 编码（独立 toRlp 重建）', () => {
     }
   });
 
-  it('缺省 type 时使用 eip1559，缺省 data 时使用 0x', () => {
+  it('missing type defaults to eip1559, missing data defaults to 0x', () => {
     const withDefaults = encodeUnsignedTransaction({
       ...BASE,
       maxPriorityFeePerGas: dec('1000000000'),
@@ -229,33 +229,33 @@ describe('EIP-2930 与 EIP-1559 编码（独立 toRlp 重建）', () => {
 });
 
 /* ------------------------------------------------------------------ */
-/* 3. 负对照：数值与字段校验                                            */
+/* 3. Negative controls: value and field validation                                            */
 /* ------------------------------------------------------------------ */
 
 function expectCodecError(fn: () => unknown, reason: string): void {
   try {
     fn();
-    throw new Error('期望抛出 EvmCodecError，但调用成功');
+    throw new Error('expected EvmCodecError to be thrown, but the call succeeded');
   } catch (err) {
-    expect(err, `期望 EvmCodecError(${reason})，实际 ${String(err)}`).toBeInstanceOf(EvmCodecError);
+    expect(err, `expected EvmCodecError(${reason}), got ${String(err)}`).toBeInstanceOf(EvmCodecError);
     expect((err as EvmCodecError).reason).toBe(reason);
   }
 }
 
-describe('SEC-CODEC: RLP 反序列化必须拒绝非法链上交易字段', () => {
+describe('SEC-CODEC: RLP deserialization must reject invalid on-chain transaction fields', () => {
   const typed = (fields: readonly unknown[]) => (
     `0x01${toRlp(fields as Parameters<typeof toRlp>[0]).slice(2)}`
   );
   const base = ['0x01', '0x', '0x01', '0x5208', TO, '0x', '0x', []] as const;
 
-  it('拒绝带 0x00 或前导零的 nonce，而不是当作另一个等价交易意图', () => {
+  it('rejects a nonce with 0x00 or leading zeros instead of treating it as another equivalent transaction intent', () => {
     for (const nonce of ['0x00', '0x0001']) {
       const malformed = typed([...base.slice(0, 1), nonce, ...base.slice(2)]);
       expectCodecError(() => decodeTransactionPayload(malformed), 'invalid_payload');
     }
   });
 
-  it('拒绝畸形接收地址、accessList 地址、storage key 及多余元组字段', () => {
+  it('rejects malformed recipient addresses, accessList addresses, storage keys, and extra tuple fields', () => {
     const invalid = [
       typed([base[0], base[1], base[2], base[3], '0x1234', base[5], base[6], []]),
       typed([base[0], base[1], base[2], base[3], TO, base[5], base[6], [['0x1234', []]]]),
@@ -268,8 +268,8 @@ describe('SEC-CODEC: RLP 反序列化必须拒绝非法链上交易字段', () =
   });
 });
 
-describe('数值边界：一律十进制字符串，禁止 JS number（ADR-016 验收 2）', () => {
-  it('拒绝 JS number（即使值看起来合法）', () => {
+describe('Value boundaries: always decimal strings, no JS number (ADR-016 acceptance 2)', () => {
+  it('rejects JS number (even when the value looks valid)', () => {
     expectCodecError(
       () => encodeUnsignedTransaction({ ...BASE, nonce: 42 as unknown as DecimalUint, type: 'eip1559', maxFeePerGas: dec('1'), maxPriorityFeePerGas: dec('1') }),
       'number_not_allowed',
@@ -280,7 +280,7 @@ describe('数值边界：一律十进制字符串，禁止 JS number（ADR-016 �
     );
   });
 
-  it('拒绝十六进制字符串、负数、空串、小数与科学计数法', () => {
+  it('rejects hex strings, negatives, empty strings, fractions, and scientific notation', () => {
     for (const bad of ['0x2a', '-1', '', '4.2', '1e3', ' 42 ', 'abc']) {
       expectCodecError(
         () => encodeUnsignedTransaction({ ...EIP155_INTENT, nonce: bad as DecimalUint }),
@@ -289,35 +289,35 @@ describe('数值边界：一律十进制字符串，禁止 JS number（ADR-016 �
     }
   });
 
-  it('拒绝前导零（要求规范十进制形式）', () => {
+  it('rejects leading zeros (canonical decimal form required)', () => {
     expectCodecError(
       () => encodeUnsignedTransaction({ ...EIP155_INTENT, nonce: '09' as DecimalUint }),
       'invalid_decimal',
     );
-    // '0' 本身合法。
+    // '0' itself is valid.
     expect(encodeUnsignedTransaction({ ...EIP155_INTENT, nonce: dec('0') }).nonce).toBe('0');
   });
 
-  it('拒绝非 EVM 地址的 to', () => {
+  it('rejects a non-EVM-address to', () => {
     for (const bad of ['0x1234', '2222222222222222222222222222222222222222', '0xzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz']) {
       expectCodecError(() => encodeUnsignedTransaction({ ...EIP155_INTENT, to: bad }), 'invalid_address');
     }
   });
 
-  it('拒绝非法 data（非 0x 前缀或奇数长度）', () => {
+  it('rejects invalid data (non-0x prefix or odd length)', () => {
     for (const bad of ['deadbeef', '0xabc', '0xzz']) {
       expectCodecError(() => encodeUnsignedTransaction({ ...EIP155_INTENT, data: bad }), 'invalid_hex_data');
     }
   });
 
-  it('拒绝未知交易类型', () => {
+  it('rejects unknown transaction types', () => {
     expectCodecError(
       () => encodeUnsignedTransaction({ ...EIP155_INTENT, type: 'eip4844' as never }),
       'unsupported_transaction_type',
     );
   });
 
-  it('费用字段必须与交易类型匹配：缺失拒绝', () => {
+  it('fee fields must match the transaction type: missing ones rejected', () => {
     expectCodecError(() => encodeUnsignedTransaction({ ...BASE, type: 'legacy' }), 'missing_fee_field');
     expectCodecError(() => encodeUnsignedTransaction({ ...BASE, type: 'eip2930' }), 'missing_fee_field');
     expectCodecError(
@@ -326,7 +326,7 @@ describe('数值边界：一律十进制字符串，禁止 JS number（ADR-016 �
     );
   });
 
-  it('费用字段必须与交易类型匹配：多余拒绝', () => {
+  it('fee fields must match the transaction type: extra ones rejected', () => {
     expectCodecError(
       () => encodeUnsignedTransaction({ ...EIP155_INTENT, maxFeePerGas: dec('1') }),
       'unexpected_fee_field',
@@ -343,7 +343,7 @@ describe('数值边界：一律十进制字符串，禁止 JS number（ADR-016 �
     );
   });
 
-  it('拒绝 maxPriorityFeePerGas > maxFeePerGas 的矛盾输入', () => {
+  it('rejects conflicting input with maxPriorityFeePerGas > maxFeePerGas', () => {
     expectCodecError(
       () => encodeUnsignedTransaction({
         ...BASE,
@@ -355,7 +355,7 @@ describe('数值边界：一律十进制字符串，禁止 JS number（ADR-016 �
     );
   });
 
-  it('拒绝非法 accessList 项', () => {
+  it('rejects invalid accessList entries', () => {
     expectCodecError(
       () => encodeUnsignedTransaction({
         ...BASE,
@@ -378,7 +378,7 @@ describe('数值边界：一律十进制字符串，禁止 JS number（ADR-016 �
     );
   });
 
-  it('拒绝非法载荷（非十六进制 / 截断 / 未知类型前缀）', () => {
+  it('rejects invalid payloads (non-hex / truncated / unknown type prefix)', () => {
     expectCodecError(() => decodeTransactionPayload('deadbeef'), 'invalid_payload');
     expectCodecError(() => decodeTransactionPayload('0x02f1'), 'invalid_payload');
     expectCodecError(() => decodeTransactionPayload('0x05c0'), 'unsupported_transaction_type');
@@ -387,10 +387,10 @@ describe('数值边界：一律十进制字符串，禁止 JS number（ADR-016 �
 });
 
 /* ------------------------------------------------------------------ */
-/* 4. 负对照：篡改字段必须被 intent 比较拒绝（ADR-016 验收 3）          */
+/* 4. Negative controls: tampered fields must be rejected by the intent comparison (ADR-016 acceptance 3)          */
 /* ------------------------------------------------------------------ */
 
-describe('assertDecodedMatchesIntent 拒绝被篡改的字段', () => {
+describe('assertDecodedMatchesIntent rejects tampered fields', () => {
   const intent: EvmUnsignedIntent = {
     type: 'eip1559',
     chainId: SEPOLIA_CHAIN_ID,
@@ -402,12 +402,12 @@ describe('assertDecodedMatchesIntent 拒绝被篡改的字段', () => {
     maxFeePerGas: dec('2000000000'),
   };
 
-  it('未篡改时通过', () => {
+  it('passes when untampered', () => {
     const decoded = decodeTransactionPayload(encodeUnsignedTransaction(intent).payload);
     expect(() => assertDecodedMatchesIntent(decoded, intent)).not.toThrow();
   });
 
-  it('逐一篡改 chainId / nonce / to / value / gas / data / fee 都被拒绝', () => {
+  it('tampering with chainId / nonce / to / value / gas / data / fee one by one is rejected', () => {
     const decoded = decodeTransactionPayload(encodeUnsignedTransaction(intent).payload);
     const tampered: Array<Partial<typeof decoded>> = [
       { chainId: dec('1') },
@@ -425,7 +425,7 @@ describe('assertDecodedMatchesIntent 拒绝被篡改的字段', () => {
     }
   });
 
-  it('篡改后的签名载荷与原 intent 比较失败（模拟签名绑定检查）', () => {
+  it('a tampered signed payload fails comparison with the original intent (simulating the signature-binding check)', () => {
     const decoded = decodeTransactionPayload(EIP155_SIGNED);
     expect(() => assertDecodedMatchesIntent(decoded, EIP155_INTENT)).not.toThrow();
     expectCodecError(
@@ -436,20 +436,20 @@ describe('assertDecodedMatchesIntent 拒绝被篡改的字段', () => {
 });
 
 /* ------------------------------------------------------------------ */
-/* 5. 安全：不发网络、不产生钱包客户端                                  */
+/* 5. Security: no network requests, no wallet clients created                                  */
 /* ------------------------------------------------------------------ */
 
-describe('codec 安全边界（ADR-016 验收 4）', () => {
+describe('codec security boundary (ADR-016 acceptance 4)', () => {
   const originalFetch = globalThis.fetch;
   afterEach(() => {
     globalThis.fetch = originalFetch;
   });
 
-  it('encode/decode 期间不调用 fetch', () => {
+  it('fetch is not called during encode/decode', () => {
     let calls = 0;
     globalThis.fetch = (() => {
       calls += 1;
-      throw new Error('codec 不应发网络请求');
+      throw new Error('codec must not make network requests');
     }) as unknown as typeof fetch;
 
     const encoded = encodeUnsignedTransaction(EIP155_INTENT);
@@ -458,11 +458,11 @@ describe('codec 安全边界（ADR-016 验收 4）', () => {
     expect(calls).toBe(0);
   });
 
-  it('源码只导入 Viem 纯工具与 DFR 类型，不出现 client / transport / account / wallet', () => {
+  it('source only imports Viem pure utilities and DFR types, with no client / transport / account / wallet', () => {
     const specifiers = [...codecSource.matchAll(/from\s+'([^']+)'/g)].map((m) => m[1]);
     const allowed = new Set(['viem', '@dfr/types', '@dfr/errors', './address.js', './hex.js']);
     for (const specifier of specifiers) {
-      expect(allowed.has(specifier as string), `不允许导入 ${specifier}`).toBe(true);
+      expect(allowed.has(specifier as string), `import not allowed: ${specifier}`).toBe(true);
     }
     for (const banned of [
       'createPublicClient',
@@ -476,7 +476,7 @@ describe('codec 安全边界（ADR-016 验收 4）', () => {
       'signTransaction',
       'sendRawTransaction',
     ]) {
-      expect(codecSource.includes(banned), `codec 不得出现 ${banned}`).toBe(false);
+      expect(codecSource.includes(banned), `codec must not contain ${banned}`).toBe(false);
     }
   });
 });

@@ -1,11 +1,11 @@
 /**
- * `dropped` 有界观测与收敛（ADR-023）。
+ * Bounded `dropped` observation and convergence (ADR-023).
  *
- * `RecoveryCoordinator.reconcileDropped` 负责在有界宽限窗内继续观测 `dropped` 记录，
- * 以便纠正误判。本文件锁定：
- *   1. 窗口内的 dropped 会被观测，且能从 dropped 收敛到 included；
- *   2. 窗口外的 dropped **不进入扫描**（否则重新制造"扫描集合只增不减、白跑 RPC"）；
- *   3. `absent` 观测不改变 dropped（不重复写状态）。
+ * `RecoveryCoordinator.reconcileDropped` keeps observing `dropped` records inside a bounded grace window,
+ * so misjudgments can be corrected. This file locks:
+ *   1. a dropped record inside the window is observed and can converge from dropped to included;
+ *   2. a dropped record outside the window **does not enter the scan** (otherwise the "scan set only grows, RPCs run for nothing" problem returns);
+ *   3. an `absent` observation does not change dropped (no repeated state writes).
  */
 import { describe, expect, it } from 'vitest';
 import { RecoveryCoordinator, type ChainBroadcastObservation } from '../src/index.js';
@@ -45,7 +45,7 @@ async function seedDropped(
     trackerLeases: stores.tracker,
     resolveUnknown: async (transactionId) => {
       observed.push(String(transactionId));
-      // 真实实现由 Engine 完成观测；这里用注入端口模拟"观测到 included"。
+      // The real implementation observes via the Engine; here an injected port simulates "observed included".
       const obs = typeof observation === 'function' ? observation() : observation;
       if (obs.kind === 'included') {
         await stores.transaction.transition({
@@ -65,8 +65,8 @@ async function seedDropped(
   return { coordinator, observed };
 }
 
-describe('dropped 有界观测与收敛（ADR-023）', () => {
-  it('窗口内的 dropped 会被观测，并能收敛到 included', async () => {
+describe('dropped bounded observation and convergence (ADR-023)', () => {
+  it('a dropped record inside the window is observed and can converge to included', async () => {
     const stores = createInMemoryTransactionStores();
     const { coordinator, observed } = await seedDropped(
       stores,
@@ -81,9 +81,9 @@ describe('dropped 有界观测与收敛（ADR-023）', () => {
     expect((await stores.transaction.get(TX_ID))?.status).toBe('included');
   });
 
-  it('窗口外的 dropped 不进入扫描（避免扫描集合只增不减）', async () => {
+  it('a dropped record outside the window does not enter the scan (avoiding a scan set that only grows)', async () => {
     const stores = createInMemoryTransactionStores();
-    // updatedAt = 10 小时前，宽限窗为 6 小时 → 应被查询条件排除。
+    // updatedAt = 10 hours ago, grace window is 6 hours → it should be excluded by the query condition.
     const { coordinator, observed } = await seedDropped(
       stores,
       new Date(T0 - 10 * HOUR).toISOString(),
@@ -97,7 +97,7 @@ describe('dropped 有界观测与收敛（ADR-023）', () => {
     expect((await stores.transaction.get(TX_ID))?.status).toBe('dropped');
   });
 
-  it('观测为 absent 时保持 dropped，不计入收敛数', async () => {
+  it('an absent observation keeps dropped and is not counted as a convergence', async () => {
     const stores = createInMemoryTransactionStores();
     const { coordinator, observed } = await seedDropped(stores, new Date(T0).toISOString(), {
       kind: 'absent',
@@ -110,7 +110,7 @@ describe('dropped 有界观测与收敛（ADR-023）', () => {
     expect((await stores.transaction.get(TX_ID))?.status).toBe('dropped');
   });
 
-  it('非法 limit fail-closed', async () => {
+  it('an illegal limit fails closed', async () => {
     const stores = createInMemoryTransactionStores();
     const { coordinator } = await seedDropped(stores, new Date(T0).toISOString(), {
       kind: 'absent',

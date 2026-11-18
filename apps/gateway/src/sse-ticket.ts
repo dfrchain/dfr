@@ -1,33 +1,33 @@
 /**
- * SSE 一次性票据（M2-C02，ADR-029）。
+ * SSE single-use tickets (M2-C02, ADR-029).
  *
- * 为什么需要：浏览器原生 `EventSource` 无法设置自定义 header，长期 API Key 放进
- * query 会进入访问日志、Referer 与浏览器历史。因此签发**短时、单次、绑定**的票据，
- * 只在内存中保存，TTL 到期即回收。
+ * Why they are needed: the browser's native `EventSource` cannot set custom headers, and putting a long-lived API Key in a
+ * query would enter access logs, Referer, and browser history. So short-lived, single-use, bound tickets are issued instead,
+ * kept only in memory and reclaimed when the TTL expires.
  *
- * ADR-029 的硬约束（逐条落实）：
- *  1. TTL 默认 30s，上限 60s（超过拒绝，不静默截断）；
- *  2. 单次消费（CAS），并发只有一个赢家；重复使用 → `DFR_INVALID_TICKET`；
- *  3. 绑定 apiKeyId / filter 摘要 / 客户端 IP；
- *  4. IP 默认取直连对端；仅当配置了可信代理时看 `X-Forwarded-For` 最后一跳；
- *  5. 失败语义统一 `DFR_INVALID_TICKET`（不区分过期/已用/未找到，避免枚举）；
- *  6. 票据不落库、不落盘、不进日志（含 trace/span 与错误响应）。
+ * ADR-029's hard constraints (implemented one by one):
+ *  1. TTL defaults to 30s, capped at 60s (exceeding it is refused, never silently truncated);
+ *  2. Single use (CAS): exactly one winner under concurrency; reuse → `DFR_INVALID_TICKET`;
+ *  3. Bound to apiKeyId / filter digest / client IP;
+ *  4. IP defaults to the direct peer; `X-Forwarded-For`'s last hop is only used when trusted proxies are configured;
+ *  5. Failure semantics are uniformly `DFR_INVALID_TICKET` (expired/used/not-found are not distinguished, to prevent enumeration);
+ *  6. Tickets are never persisted, never written to disk, and never logged (including traces/spans and error responses).
  */
 import { createHash, randomBytes } from 'node:crypto';
 import type { EventFilter, Iso8601 } from '@dfr/types';
 
-/** 默认 TTL（毫秒）。 */
+/** Default TTL (milliseconds). */
 export const SSE_TICKET_DEFAULT_TTL_MS = 30_000;
-/** 上限（毫秒）：ADR-029 规定 TTL ≤ 60s。 */
+/** Cap (milliseconds): ADR-029 requires TTL ≤ 60s. */
 export const SSE_TICKET_MAX_TTL_MS = 60_000;
 
 export interface IssuedTicket {
-  /** 一次性票据串。**不包含任何凭证**，仅是不透明随机值。 */
+  /** Single-use ticket string. **Contains no credentials**, only an opaque random value. */
   readonly ticket: string;
   readonly expiresAt: Iso8601;
 }
 
-/** 消费成功时返回的订阅描述（filter 只能等于签发时的 filter，不能扩大）。 */
+/** Subscription description returned on successful consumption (the filter must equal the issued filter; it cannot be widened). */
 export interface ConsumedTicket {
   readonly apiKeyId: string;
   readonly filter: EventFilter;
@@ -35,14 +35,14 @@ export interface ConsumedTicket {
 
 export type ConsumeTicketResult =
   | { readonly kind: 'ok'; readonly ticket: ConsumedTicket }
-  /** 过期 / 已用 / 未找到 / 绑定不匹配——**统一**返回此值，不区分原因。 */
+  /** Expired / used / not found / binding mismatch — **uniformly** return this value, without distinguishing the reason. */
   | { readonly kind: 'invalid' };
 
 export interface SseTicketStoreOptions {
-  /** 注入点（测试用）。 */
+  /** Injection point (for tests). */
   readonly now?: () => number;
   readonly newTicket?: () => string;
-  /** 单 Key 未消费票据上限；超出时签发失败（由调用方映射为限流）。 */
+  /** Per-key cap on unconsumed tickets; exceeding it fails issuance (mapped to rate limiting by the caller). */
   readonly maxOutstandingPerKey?: number;
 }
 
@@ -68,8 +68,8 @@ export class SseTicketStore {
   }
 
   /**
-   * 签发。TTL 非法（非正整数或超过上限）时抛 RangeError —— 不静默截断。
-   * 同一 Key 未消费票据超限时返回 `null`（调用方按既有流控语义处理）。
+   * Issue. An illegal TTL (a non-positive integer or over the cap) throws RangeError — never silently truncated.
+   * When one Key's unconsumed tickets exceed the cap, return `null` (the caller handles it per the existing flow-control semantics).
    */
   issue(input: {
     readonly projectId: string;
@@ -80,7 +80,7 @@ export class SseTicketStore {
   }): IssuedTicket | null {
     const ttl = input.ttlMs ?? SSE_TICKET_DEFAULT_TTL_MS;
     if (!Number.isInteger(ttl) || ttl <= 0 || ttl > SSE_TICKET_MAX_TTL_MS) {
-      throw new RangeError(`ticket TTL 必须是 1..${SSE_TICKET_MAX_TTL_MS} 毫秒`);
+      throw new RangeError(`ticket TTL must be 1..${SSE_TICKET_MAX_TTL_MS} ms`);
     }
     this.prune();
     if (this.countFor(input.projectId, input.apiKeyId) >= this.maxOutstanding) return null;
@@ -102,15 +102,15 @@ export class SseTicketStore {
   }
 
   /**
-   * 一次性消费。**原子**：先检查再删除，两次调用只有一个成功。
+   * Single-use consumption. **Atomic**: check-then-delete, so only one of two calls succeeds.
    *
-   * 校验绑定维度：IP、filter 摘要，以及（**若提供**）apiKeyId。
+   * Verify the binding dimensions: IP, filter digest, and (**if provided**) apiKeyId.
    *
-   * 为什么 apiKeyId 可选：浏览器 `EventSource` 场景下调用方只有票据、没有 header，
-   * 服务端无法得知"调用者的 Key 是谁"。此时票据**本身就是唯一凭证**，
-   * "换 Key 消费"这条攻击路径不存在。但若调用方同时提供了 header，
-   * 就必须与签发者一致——否则等于用一个 Key 的权限消费了另一个 Key 的票据。
-   * 无论哪种情况，IP 与 filter 都必须匹配（它们与调用方身份无关，恒可校验）。
+   * Why apiKeyId is optional: in the browser `EventSource` scenario the caller has only the ticket and no header,
+   * so the server cannot know "whose Key the caller is". In that case the ticket **itself is the only credential**,
+   * and the "consume with a different Key" attack path does not exist. But if the caller also provides a header,
+   * it must match the issuer — otherwise one Key's permissions would consume another Key's ticket.
+   * Either way, IP and filter must match (they do not depend on caller identity and are always verifiable).
    */
   consume(input: {
     readonly projectId: string;
@@ -123,7 +123,7 @@ export class SseTicketStore {
     const entry = this.entries.get(input.ticket);
     if (entry === undefined) return { kind: 'invalid' };
 
-    // 立即删除（单次消费）。即使后续绑定校验失败也不保留——票据已暴露过。
+    // Delete immediately (single use). Even if later binding checks fail, it is not kept — the ticket has already been exposed.
     this.entries.delete(input.ticket);
 
     if (entry.projectId !== input.projectId) return { kind: 'invalid' };
@@ -133,7 +133,7 @@ export class SseTicketStore {
     return { kind: 'ok', ticket: { apiKeyId: entry.apiKeyId, filter: entry.filter } };
   }
 
-  /** 当前未消费票据数（诊断/测试用）。 */
+  /** Current count of unconsumed tickets (for diagnostics/tests). */
   get size(): number {
     this.prune();
     return this.entries.size;
@@ -147,7 +147,7 @@ export class SseTicketStore {
     return count;
   }
 
-  /** 回收过期票据（TTL 到期即删，不留痕迹）。 */
+  /** Reclaim expired tickets (deleted when the TTL expires, leaving no trace). */
   private prune(): void {
     const now = this.now();
     for (const [ticket, entry] of this.entries) {
@@ -157,8 +157,8 @@ export class SseTicketStore {
 }
 
 /**
- * filter 的规范化摘要：只有**完全一致**的 filter 才能消费票据（ADR-029 第 6 点：
- * 只能收窄不能扩大）。用稳定序列化（键排序、数组保留顺序）避免键序不同导致的假不等。
+ * Canonical digest of a filter: only an **exactly identical** filter can consume a ticket (ADR-029 point 6:
+ * it may only be narrowed, never widened). Stable serialization (sorted keys, arrays keep order) avoids false inequality from different key orders.
  */
 export function digestFilter(filter: EventFilter): string {
   return createHash('sha256').update(canonicalJson(filter)).digest('hex');
@@ -177,10 +177,10 @@ function canonicalJson(value: unknown): string {
 }
 
 /**
- * 取客户端 IP（ADR-029 第 5 点）。
+ * Get the client IP (ADR-029 point 5).
  *
- * 默认取**直连对端**；仅当 `trustedProxies` 非空且直连对端在其中时，
- * 才采信 `X-Forwarded-For` 的**最后一跳**。否则不信任该头（可伪造）。
+ * By default take the **direct peer**; only when `trustedProxies` is non-empty and the direct peer is in it,
+ * trust `X-Forwarded-For`'s **last hop**. Otherwise the header is not trusted (it can be forged).
  */
 export function clientIp(input: {
   readonly remoteAddress: string | undefined;

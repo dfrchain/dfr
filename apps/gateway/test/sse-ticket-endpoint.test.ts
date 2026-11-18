@@ -1,8 +1,8 @@
 /**
- * `POST /v1/events/tickets` HTTP 端点测试（M2-C02，ADR-029）。
+ * `POST /v1/events/tickets` HTTP endpoint test (M2-C02, ADR-029).
  *
- * 用真实 `createGatewayServer` 驱动，验证票据签发经过真实的鉴权、限流与 scope 闸门，
- * 而不是只测一个孤立的 store。
+ * Drives with the real `createGatewayServer`, verifying ticket issuance passes real auth, rate-limit, and scope gates,
+ * rather than only testing an isolated store.
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import type { AddressInfo } from 'node:net';
@@ -61,8 +61,8 @@ function post(base: string, body: unknown, headers: Record<string, string> = {})
   });
 }
 
-describe('POST /v1/events/tickets（M2-C02）', () => {
-  it('受限链 Key 不能签发无 chain 的全局事件票据', async () => {
+describe('POST /v1/events/tickets (M2-C02)', () => {
+  it('a restricted-chain Key cannot issue a global event ticket with no chain', async () => {
     const store = new SseTicketStore();
     const base = await start({ tickets: store, chains: ['solana-devnet' as never] });
     const res = await post(base, { filter: {} });
@@ -71,7 +71,7 @@ describe('POST /v1/events/tickets（M2-C02）', () => {
     expect(store.size).toBe(0);
   });
 
-  it('签发返回 201 + ticket/expiresAt/requestId，且 ticket 不含 Key', async () => {
+  it('issuance returns 201 + ticket/expiresAt/requestId, and the ticket contains no Key', async () => {
     const base = await start({ tickets: new SseTicketStore() });
     const res = await post(base, { filter: { chain: 'solana-devnet' } });
     expect(res.status).toBe(201);
@@ -79,12 +79,12 @@ describe('POST /v1/events/tickets（M2-C02）', () => {
     expect(body.ticket).toBeTruthy();
     expect(body.expiresAt).toBeTruthy();
     expect(body.requestId).toBeTruthy();
-    // 票据不得包含 API Key 的任何片段（它是独立的不透明随机值）。
+    // A ticket must not contain any fragment of an API Key (it is an independent opaque random value).
     expect(body.ticket).not.toContain(SECRET);
     expect(body.ticket).not.toContain(KEY_ID);
   });
 
-  it('AUTH-02：受限 Key 不得签发其他链或全链的 SSE 票据', async () => {
+  it('AUTH-02: a restricted Key may not issue SSE tickets for other chains or all chains', async () => {
     const store = new SseTicketStore();
     const base = await start({
       tickets: store,
@@ -106,7 +106,7 @@ describe('POST /v1/events/tickets（M2-C02）', () => {
     expect(store.size).toBe(1);
   });
 
-  it('未携带 Key → 401（与其他端点一致）', async () => {
+  it('no Key carried → 401 (consistent with other endpoints)', async () => {
     const base = await start({ tickets: new SseTicketStore() });
     const res = await fetch(`${base}/v1/events/tickets`, {
       method: 'POST',
@@ -116,25 +116,25 @@ describe('POST /v1/events/tickets（M2-C02）', () => {
     expect(res.status).toBe(401);
   });
 
-  it('未装配票据存储的部署 → 404（该部署无 SSE），不是 500', async () => {
+  it('a deployment without an assembled ticket store → 404 (this deployment has no SSE), not 500', async () => {
     const base = await start();
     const res = await post(base, { filter: {} });
     expect(res.status).toBe(404);
   });
 
-  it('ttlMs 超上限 → 400（不静默截断）', async () => {
+  it('ttlMs above the cap → 400 (no silent truncation)', async () => {
     const base = await start({ tickets: new SseTicketStore() });
     expect((await post(base, { filter: {}, ttlMs: 60_001 })).status).toBe(400);
     expect((await post(base, { filter: {}, ttlMs: 0 })).status).toBe(400);
   });
 
-  it('签发的票据可被同一 Key/IP/filter 消费，换 filter 则失败', async () => {
+  it('an issued ticket can be consumed by the same Key/IP/filter, and fails with a different filter', async () => {
     const store = new SseTicketStore();
     const base = await start({ tickets: store });
     const res = await post(base, { filter: { chain: 'solana-devnet' } });
     const { ticket } = (await res.json()) as { ticket: string };
 
-    // 直连对端是 127.0.0.1（未配置可信代理，且未带 XFF）。
+    // The direct peer is 127.0.0.1 (no trusted proxy configured, and no XFF carried).
     expect(store.consume({ projectId: 'sse-ticket',
       ticket, apiKeyId: KEY_ID, ip: '127.0.0.1', filter: { chain: 'solana-devnet' as never },
     }).kind).toBe('ok');
@@ -143,16 +143,16 @@ describe('POST /v1/events/tickets（M2-C02）', () => {
     const { ticket: ticket2 } = (await res2.json()) as { ticket: string };
     expect(store.consume({ projectId: 'sse-ticket',
       ticket: ticket2, apiKeyId: KEY_ID, ip: '127.0.0.1', filter: { chain: 'ethereum-sepolia' as never },
-    }).kind, '扩大/改变 filter 必须失败').toBe('invalid');
+    }).kind, 'widening/changing the filter must fail').toBe('invalid');
   });
 
-  it('默认不信任 X-Forwarded-For（IP 绑定取直连对端）', async () => {
+  it('X-Forwarded-For is not trusted by default (IP binding takes the direct peer)', async () => {
     const store = new SseTicketStore();
     const base = await start({ tickets: store });
-    // 每次签发的票据只能消费一次，因此用两张票据分别验证。
+    // Each issued ticket can only be consumed once, so two tickets are used to verify separately.
     const res1 = await post(base, { filter: {} }, { 'x-forwarded-for': '1.2.3.4' });
     const { ticket: t1 } = (await res1.json()) as { ticket: string };
-    // 未配置可信代理：绑定的是直连 127.0.0.1，伪造的 XFF 无法消费。
+    // No trusted proxy configured: the binding is the direct 127.0.0.1, and a forged XFF cannot consume it.
     expect(store.consume({ projectId: 'sse-ticket', ticket: t1, apiKeyId: KEY_ID, ip: '1.2.3.4', filter: {} }).kind).toBe('invalid');
 
     const res2 = await post(base, { filter: {} }, { 'x-forwarded-for': '1.2.3.4' });

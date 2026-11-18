@@ -1,11 +1,11 @@
 /**
- * HTTP 层 DTO（见 docs/api/openapi.yaml、ADR-009）。
+ * HTTP-layer DTOs (see docs/api/openapi.yaml, ADR-009).
  *
- * JSON 字段一律 camelCase；金额与数值一律十进制字符串。
+ * JSON fields are always camelCase; amounts and numbers are always decimal strings.
  *
- * 响应封套规则（审计修正 A-16）：**每个**成功响应都必须携带 `requestId`，
- * 便于跨日志与 trace 检索。旧版本只有 balance / block / transaction 三类响应带
- * `requestId`，列表类响应缺失，导致排障时无法把响应关联到请求。
+ * Response envelope rule (audit fix A-16): **every** success response must carry `requestId`,
+ * so responses can be correlated with requests across logs and traces. Older versions only attached
+ * `requestId` to the balance / block / transaction response types; list responses lacked it, leaving troubleshooting unable to link a response to its request.
  */
 import type { ChainId, Cursor, DecimalUint, Iso8601, RequestId, TransactionId } from './primitives.js';
 import type { Chain } from './chain.js';
@@ -23,12 +23,12 @@ import type { DfrError, DfrErrorCode, ErrorCategory } from './errors.js';
 
 export interface Page<T> {
   items: readonly T[];
-  /** 不透明游标，客户端不得解析。 */
+  /** Opaque cursor; clients must not parse it. */
   nextCursor?: Cursor;
   hasMore: boolean;
 }
 
-/** RFC 9457 Problem Details + DFR 扩展字段。 */
+/** RFC 9457 Problem Details + DFR extension fields. */
 export interface DfrErrorResponse {
   type: string;
   title: string;
@@ -68,59 +68,59 @@ export interface GetTransactionResponse {
 }
 
 /**
- * M1 写端点请求体（见 docs/architecture/m1-api-contract.md 第 2 节）。
+ * M1 write-endpoint request body (see docs/architecture/m1-api-contract.md section 2).
  */
 export interface ConfirmTransactionRequest {
-  /** 与 path 上的 txHash 共同定位交易；chain 只在请求体出现一次。 */
+  /** Together with the txHash in the path, locates the transaction; chain appears only once, in the request body. */
   chain: ChainId;
-  /** 最低可接受的最终性；省略时由该 chain 的 Registry 策略决定。 */
+  /** Minimum acceptable finality; when omitted, the Registry policy for that chain decides. */
   minFinality?: FinalityLevel;
-  /** 最长等待毫秒数；省略时取默认值，上界由 Gateway 强制。 */
+  /** Maximum wait in milliseconds; when omitted, the default applies, with the upper bound enforced by the Gateway. */
   timeoutMs?: number;
 }
 
 export interface BroadcastTransactionRequest {
-  /** build 返回的内部执行标识 txn_<ULID>，用于定位已保存的 unsigned transaction。 */
+  /** The internal execution identifier txn_<ULID> returned by build, used to locate the saved unsigned transaction. */
   transactionId: TransactionId;
   signedTransaction: SignedTransaction;
-  /** 默认 false；仅 dropped 状态显式传 true 才重播。 */
+  /** Default false; replay only when explicitly true for the dropped state. */
   rebroadcast?: boolean;
 }
 
 /**
- * M1 写端点成功响应封套（见 docs/architecture/m1-api-contract.md 第 1 节）。
+ * M1 write-endpoint success response envelope (see docs/architecture/m1-api-contract.md section 1).
  *
- * 规则：写端点**不得**直接返回裸领域对象。每个成功响应都必须携带 `requestId`，
- * 并用 `transactionId` 暴露 DFR 内部执行标识（build/simulate/broadcast）；
- * confirm 由 path hash 定位，因此封套内不重复携带 transactionId。
+ * Rule: write endpoints must **not** return a bare domain object directly. Every success response must carry `requestId`,
+ * and expose the DFR internal execution identifier via `transactionId` (build/simulate/broadcast);
+ * confirm is located by the path hash, so the envelope does not repeat transactionId.
  */
 export interface BuildTransactionResponse {
-  /** DFR 内部执行标识 txn_<ULID>，与链上 txHash 分离。 */
+  /** DFR internal execution identifier txn_<ULID>, separate from the on-chain txHash. */
   transactionId: TransactionId;
   unsignedTransaction: UnsignedTransaction;
   requestId: RequestId;
 }
 
 /**
- * `POST /v1/transactions/preflight` 的成功响应（ADR-037 方案 B）。
+ * Success response for `POST /v1/transactions/preflight` (ADR-037 option B).
  *
- * `unsignedTransaction` 是**预览**：它建立在只读的 pending nonce 之上，没有租约保护，
- * 因此**不可用于签名与广播**。要真正提交必须另走 build → simulate → 签名 → broadcast。
+ * `unsignedTransaction` is a **preview**: it is built on a read-only pending nonce, with no lease protection,
+ * so it **must not be used for signing or broadcast**. A real submission must go through build → simulate → sign → broadcast.
  *
- * `observedNonce` 是本次预检**未**占用的 pending nonce，仅供展示。
+ * `observedNonce` is the pending nonce **not** occupied by this preflight, for display only.
  */
 export interface PreflightTransactionResponse {
   unsignedTransaction: UnsignedTransaction;
-  /** 只读模拟结果；回滚以 `success=false` 表达，不抛错（与 simulate 一致）。 */
+  /** Read-only simulation result; a revert is expressed as `success=false`, not thrown (same as simulate). */
   simulation: SimulationResult;
   observedNonce?: DecimalUint;
   requestId: RequestId;
 }
 
 /**
- * `POST /v1/transactions/{transactionId}/abandon` 的成功响应（ADR-037 方案 A）。
+ * Success response for `POST /v1/transactions/{transactionId}/abandon` (ADR-037 option A).
  *
- * `leaseReleased` 表示**本次**是否真的释放了 nonce 租约；幂等重放时为 `false`。
+ * `leaseReleased` says whether **this** call actually released the nonce lease; it is `false` on an idempotent replay.
  */
 export interface AbandonTransactionResponse {
   transactionId: TransactionId;
@@ -137,10 +137,10 @@ export interface SimulateTransactionResponse {
 }
 
 /**
- * simulate 的 HTTP 请求体（DFR-M1-B08；见 m1-api-contract 第 2 节）。
+ * HTTP request body for simulate (DFR-M1-B08; see m1-api-contract section 2).
  *
- * 必须携带 build 返回的 `transactionId` 与 `UnsignedTransaction`：服务端据此定位
- * 已保存记录并做逐字节绑定校验。**不接受**"另带一个与记录不一致的载荷"。
+ * Must carry the `transactionId` and `UnsignedTransaction` returned by build: the server uses them to locate
+ * the saved record and run a byte-for-byte binding check. It does **not** accept "bringing another payload that disagrees with the record".
  */
 export interface SimulateTransactionRequest {
   transactionId: TransactionId;
@@ -154,24 +154,24 @@ export interface BroadcastTransactionResponse {
 }
 
 /**
- * broadcast 成功封套内的广播结果（DFR-M1-E03 契约修正）。
+ * Broadcast result inside the broadcast success envelope (DFR-M1-E03 contract fix).
  *
- * 为什么不是 `BroadcastResult`：`BroadcastResult` 是 **Adapter 能力**的返回类型
- * （携带 `ref` 与 `providerId`）。HTTP 响应暴露的是 **TransactionEngine 的公开结果**，
- * 它刻意不返回 `providerId`（Provider 身份属内部实现细节），并把 `txHash` 直接放在顶层
- * ——confirm 端点的 path 参数就是 `txHash`，调用方拿到响应即可继续确认，无需再解一层 `ref`。
+ * Why not `BroadcastResult`: `BroadcastResult` is the return type of the **Adapter capability**
+ * (carrying `ref` and `providerId`). The HTTP response exposes the **TransactionEngine's public result**,
+ * which deliberately does not return `providerId` (Provider identity is an internal implementation detail), and puts `txHash` directly at the top level
+ * — the confirm endpoint's path parameter is `txHash`, so the caller can continue confirming from the response without unwrapping another `ref`.
  *
- * 该类型必须与 `@dfr/transaction` 的 `BroadcastTransactionResult` 一致；Gateway handler
- * 以本类型标注响应体，因此不一致会在 `pnpm typecheck` 直接失败（见 handlers/write.ts）。
- * 修正前 OpenAPI/SDK 声明的是 `BroadcastResult`，与实现漂移且无测试覆盖（E03 发现）。
+ * This type must match `BroadcastTransactionResult` in `@dfr/transaction`; the Gateway handler
+ * annotates the response body with this type, so a mismatch fails `pnpm typecheck` directly (see handlers/write.ts).
+ * Before the fix, OpenAPI/SDK declared `BroadcastResult`, which had drifted from the implementation with no test coverage (found in E03).
  */
 export interface BroadcastTransactionOutcome {
   transactionId: TransactionId;
   status: TransactionStatus;
-  /** 链上交易哈希；即使广播回执异常也回退为签名的 expectedHash。 */
+  /** On-chain transaction hash; falls back to the signed expectedHash even when the broadcast receipt is abnormal. */
   txHash: string;
   accepted: boolean;
-  /** 仅在显式 rebroadcast 时为 true（dropped→broadcast 回边）。 */
+  /** Only true on an explicit rebroadcast (dropped→broadcast back edge). */
   rebroadcast?: boolean;
   observedAt: Iso8601;
 }
@@ -181,7 +181,7 @@ export interface ConfirmTransactionResponse {
   requestId: RequestId;
 }
 
-/** 内部使用的错误包装，HTTP 层负责转换为 DfrErrorResponse。 */
+/** Internal error wrapper; the HTTP layer converts it into a DfrErrorResponse. */
 export interface DfrErrorEnvelope {
   error: DfrError;
   status: number;

@@ -1,13 +1,13 @@
 /**
- * Store 端口契约测试（DFR-M1-A06）。
+ * Store port contract test (DFR-M1-A06).
  *
- * 权威来源：docs/architecture/m1-storage-model.md 第 8 节。
+ * Authoritative source: docs/architecture/m1-storage-model.md, section 8.
  *
- * 本文件做两件事：
- *   1. 用 `implements` 写出一组**最小内存实现**，证明四个端口可被实现、签名可用
- *      ——如果端口不可实现，`pnpm typecheck` 会直接失败；
- *   2. 断言失败路径一律通过 `kind` 判别，不以 `undefined` 表达多种失败原因
- *      （m1-storage-model 第 8 节的明文要求）。
+ * This file does two things:
+ *   1. write a set of **minimal in-memory implementations** with `implements`, proving the four ports can be implemented and their signatures are usable
+ *      — if a port cannot be implemented, `pnpm typecheck` fails directly;
+ *   2. assert that failure paths are always discriminated by `kind`, never expressing multiple failure reasons with `undefined`
+ *      (an explicit requirement of m1-storage-model section 8).
  */
 import { describe, expect, it } from 'vitest';
 import type {
@@ -83,7 +83,7 @@ function record(overrides: Partial<TransactionRecord> = {}): TransactionRecord {
 }
 
 /* ------------------------------------------------------------------ */
-/* 最小内存实现：`implements` 就是端口可实现性的编译期证明            */
+/* Minimal in-memory implementations: `implements` is the compile-time proof that the ports are implementable            */
 /* ------------------------------------------------------------------ */
 
 class FakeTransactionStore implements TransactionStore {
@@ -160,7 +160,7 @@ class FakeIdempotencyStore implements IdempotencyStore {
       this.rows.set(k, created);
       return { kind: 'acquired', record: created };
     }
-    // 不同指纹永不覆盖原记录。
+    // Different fingerprints never overwrite the original record.
     if (existing.fingerprint !== input.fingerprint) {
       return { kind: 'conflict', record: existing };
     }
@@ -245,7 +245,7 @@ class FakeNonceStore implements NonceStore {
     const lease = this.leases.get(k);
     if (lease === undefined) return { kind: 'not_found' };
     if (lease.transactionId !== ref.transactionId) return { kind: 'forbidden', lease, reason: 'not_owner' };
-    // 已签名或已广播的 nonce 不允许自动释放复用（m1-storage-model §3.4）。
+    // A signed or broadcast nonce must not be auto-released for reuse (m1-storage-model §3.4).
     if (lease.status !== 'reserved') {
       return { kind: 'forbidden', lease, reason: 'signed_or_broadcast' };
     }
@@ -315,7 +315,7 @@ class FakeTrackerLeaseStore implements TrackerLeaseStore {
   }
 }
 
-describe('端口可实现性（编译期由 implements 保证）', () => {
+describe('Port implementability (guaranteed at compile time by implements)', () => {
   const stores = {
     transaction: new FakeTransactionStore(),
     idempotency: new FakeIdempotencyStore(),
@@ -323,22 +323,22 @@ describe('端口可实现性（编译期由 implements 保证）', () => {
     tracker: new FakeTrackerLeaseStore(),
   };
 
-  it('四个端口都能被最小内存实现实例化', () => {
+  it('all four ports can be instantiated from the minimal in-memory implementations', () => {
     for (const [name, impl] of Object.entries(stores)) {
-      expect(impl, `${name} 端口未实现`).toBeTruthy();
+      expect(impl, `${name} port is not implemented`).toBeTruthy();
     }
   });
 });
 
-describe('TransactionStore 端口', () => {
-  it('create → get 往返；未找到返回 null 而不是 undefined', async () => {
+describe('TransactionStore port', () => {
+  it('create → get round trip; not found returns null instead of undefined', async () => {
     const store = new FakeTransactionStore();
     expect((await store.create({ record: record() })).kind).toBe('created');
     expect(await store.get(txnId)).toEqual(record());
     expect(await store.get('txn_missing' as TransactionId)).toBeNull();
   });
 
-  it('重复 create 返回 already_exists 且不覆盖既有记录', async () => {
+  it('a repeated create returns already_exists without overwriting the existing record', async () => {
     const store = new FakeTransactionStore();
     await store.create({ record: record({ status: 'built' }) });
     const again = await store.create({ record: record({ status: 'finalized' }) });
@@ -346,7 +346,7 @@ describe('TransactionStore 端口', () => {
     if (again.kind === 'already_exists') expect(again.record.status).toBe('built');
   });
 
-  it('版本不匹配时返回 version_conflict 并回带当前记录（禁止 last-write-wins）', async () => {
+  it('on a version mismatch, return version_conflict with the current record (no last-write-wins)', async () => {
     const store = new FakeTransactionStore();
     await store.create({ record: record({ stateVersion: num('7') }) });
     const result = await store.transition({
@@ -360,7 +360,7 @@ describe('TransactionStore 端口', () => {
     if (result.kind === 'version_conflict') expect(result.current.stateVersion).toBe(num('7'));
   });
 
-  it('状态不匹配时返回 status_conflict（旧快照上的状态边已失效）', async () => {
+  it('on a state mismatch, return status_conflict (the edge on the old snapshot no longer applies)', async () => {
     const store = new FakeTransactionStore();
     await store.create({ record: record({ status: 'built', stateVersion: num('7') }) });
     const result = await store.transition({
@@ -373,7 +373,7 @@ describe('TransactionStore 端口', () => {
     expect(result.kind).toBe('status_conflict');
   });
 
-  it('版本与状态都匹配时推进状态并把 stateVersion +1', async () => {
+  it('when version and state both match, advance the state and increment stateVersion by 1', async () => {
     const store = new FakeTransactionStore();
     await store.create({ record: record({ stateVersion: num('7') }) });
     const result = await store.transition({
@@ -390,7 +390,7 @@ describe('TransactionStore 端口', () => {
     }
   });
 
-  it('未知交易返回 not_found，与冲突类失败可区分', async () => {
+  it('an unknown transaction returns not_found, distinguishable from conflict failures', async () => {
     const store = new FakeTransactionStore();
     const result = await store.transition({
       transactionId: 'txn_nope' as TransactionId,
@@ -402,7 +402,7 @@ describe('TransactionStore 端口', () => {
     expect(result.kind).toBe('not_found');
   });
 
-  it('listRecoverable 遵守每批上限（规范要求分页，禁止无界扫描）', async () => {
+  it('listRecoverable respects the per-batch cap (the spec requires paging; unbounded scans are forbidden)', async () => {
     const store = new FakeTransactionStore();
     for (let i = 0; i < 10; i += 1) {
       await store.create({ record: record({ transactionId: `txn_${i}` as TransactionId }) });
@@ -411,10 +411,10 @@ describe('TransactionStore 端口', () => {
   });
 });
 
-describe('IdempotencyStore 端口', () => {
+describe('IdempotencyStore port', () => {
   const scope: IdempotencyScope = { projectId: 'default', chain, key: 'idem-key-0001' };
 
-  it('首次 begin 为 acquired；并发同键同体为 in_flight；完成后重放；异体冲突', async () => {
+  it('first begin is acquired; concurrent same key + same body is in_flight; replay after completion; different body conflicts', async () => {
     const store = new FakeIdempotencyStore();
     expect((await store.begin({ scope, fingerprint: 'f1', ownerToken: 'o1', leaseTtlMs: 30_000 })).kind).toBe(
       'acquired',
@@ -445,27 +445,27 @@ describe('IdempotencyStore 端口', () => {
       leaseTtlMs: 30_000,
     });
     expect(conflicting.kind).toBe('conflict');
-    // 不同指纹永不覆盖原记录。
+    // Different fingerprints never overwrite the original record.
     expect((await store.get(scope))?.fingerprint).toBe('f1');
   });
 
-  it('complete 校验 owner token，失去所有权时返回 lost_ownership', async () => {
+  it('complete validates the owner token; lost_ownership is returned when ownership is lost', async () => {
     const store = new FakeIdempotencyStore();
     await store.begin({ scope, fingerprint: 'f1', ownerToken: 'o1', leaseTtlMs: 30_000 });
     const result = await store.complete({ scope, ownerToken: 'stale', statusCode: 202 });
     expect(result.kind).toBe('lost_ownership');
   });
 
-  it('未找到记录返回 null', async () => {
+  it('not found returns null', async () => {
     const store = new FakeIdempotencyStore();
     expect(await store.get(scope)).toBeNull();
   });
 });
 
-describe('NonceStore 端口', () => {
+describe('NonceStore port', () => {
   const ref = (nonce: string): NonceLeaseRef => ({ chain, account, nonce: num(nonce), transactionId: txnId });
 
-  it('同一 transactionId 重放返回 reused，不递增 nonce', async () => {
+  it('replaying the same transactionId returns reused without incrementing the nonce', async () => {
     const store = new FakeNonceStore();
     const input: ReserveNonceInput = {
       chain,
@@ -478,7 +478,7 @@ describe('NonceStore 端口', () => {
     expect((await store.reserve(input)).kind).toBe('reused');
   });
 
-  it('同一 nonce 被其他交易占用时返回 conflict', async () => {
+  it('when the same nonce is occupied by another transaction, return conflict', async () => {
     const store = new FakeNonceStore();
     await store.reserve({
       chain,
@@ -497,7 +497,7 @@ describe('NonceStore 端口', () => {
     expect(other.kind).toBe('conflict');
   });
 
-  it('已广播的 nonce 不允许自动释放复用（forbidden，而非静默复用）', async () => {
+  it('a broadcast nonce must not be auto-released for reuse (forbidden, not silently reused)', async () => {
     const store = new FakeNonceStore();
     await store.reserve({
       chain,
@@ -512,7 +512,7 @@ describe('NonceStore 端口', () => {
     if (released.kind === 'forbidden') expect(released.reason).toBe('signed_or_broadcast');
   });
 
-  it('仅 reserved 的 nonce 可安全释放', async () => {
+  it('only a reserved nonce can be safely released', async () => {
     const store = new FakeNonceStore();
     await store.reserve({
       chain,
@@ -526,21 +526,21 @@ describe('NonceStore 端口', () => {
     if (released.kind === 'released') expect(released.lease.status).toBe('released');
   });
 
-  it('markConsumed 对未知 nonce 返回 not_found', async () => {
+  it('markConsumed returns not_found for an unknown nonce', async () => {
     const store = new FakeNonceStore();
     expect((await store.markConsumed(ref('404'))).kind).toBe('not_found');
   });
 });
 
 /* ------------------------------------------------------------------ */
-/* SequencingStore：ADR-032 的核心语义——token 不是身份              */
+/* SequencingStore: the core ADR-032 semantics — the token is not the identity              */
 /* ------------------------------------------------------------------ */
 
 /**
- * 最小内存实现。刻意体现 A01 的关键不变式：
- *   - 行身份是 `(transactionId)`；一个 blockhash 可被多笔交易共用；
- *   - `consumed` 是审计事实、幂等，且**不**影响别的共享同一 token 的租约；
- *   - 过期回收按租约 TTL，只碰 `reserved`。
+ * Minimal in-memory implementation. Deliberately showing A01's key invariants:
+ *   - the row identity is `(transactionId)`; one blockhash can be shared by many transactions;
+ *   - `consumed` is an audit record, idempotent, and does **not** affect other leases sharing the same token;
+ *   - expiry reclamation follows the lease TTL and only touches `reserved`.
  */
 class FakeSequencingStore implements SequencingStore {
   private readonly rows = new Map<string, SequencingLease>();
@@ -609,7 +609,7 @@ class FakeSequencingStore implements SequencingStore {
   }
 }
 
-describe('SequencingStore 端口（ADR-032）', () => {
+describe('SequencingStore port (ADR-032)', () => {
   const blockhash = {
     kind: 'blockhash' as const,
     value: '1'.repeat(48) + '2345', // secret-scan:allow public-blockhash-placeholder
@@ -626,7 +626,7 @@ describe('SequencingStore 端口（ADR-032）', () => {
     };
   }
 
-  it('同一 blockhash 可被多笔交易各自 reserve（token 不是互斥量）', async () => {
+  it('the same blockhash can be reserved by many transactions (the token is not a mutex)', async () => {
     const store = new FakeSequencingStore();
     const first = await store.reserve(seq('txn_seq_a'));
     const second = await store.reserve(seq('txn_seq_b'));
@@ -636,13 +636,13 @@ describe('SequencingStore 端口（ADR-032）', () => {
     expect(first.lease.transactionId).not.toBe(second.lease.transactionId);
   });
 
-  it('同一 transactionId 重放返回 reused，不产生第二行', async () => {
+  it('replaying the same transactionId returns reused without creating a second row', async () => {
     const store = new FakeSequencingStore();
     await store.reserve(seq('txn_seq_replay'));
     expect((await store.reserve(seq('txn_seq_replay'))).kind).toBe('reused');
   });
 
-  it('B40：测试存储同样拒绝释放后重放、终态复活以及不同 blockhash 重放', async () => {
+  it('B40: the test storage equally refuses release-then-replay, terminal-state resurrection, and replay with a different blockhash', async () => {
     const store = new FakeSequencingStore();
     const input = seq('txn_seq_b40_fake');
     await store.reserve(input);
@@ -656,7 +656,7 @@ describe('SequencingStore 端口（ADR-032）', () => {
     expect((await store.markConsumed(ref)).kind).toBe('not_found');
   });
 
-  it('markConsumed 幂等，且不影响共享同一 token 的其它租约', async () => {
+  it('markConsumed is idempotent and does not affect other leases sharing the same token', async () => {
     const store = new FakeSequencingStore();
     await store.reserve(seq('txn_seq_consume'));
     await store.reserve(seq('txn_seq_other'));
@@ -670,7 +670,7 @@ describe('SequencingStore 端口（ADR-032）', () => {
     expect(released.kind).toBe('released');
   });
 
-  it('consumed 租约拒绝释放（already_consumed）', async () => {
+  it('a consumed lease refuses release (already_consumed)', async () => {
     const store = new FakeSequencingStore();
     await store.reserve(seq('txn_seq_consumed'));
     const ref = { chain, account, transactionId: 'txn_seq_consumed' as TransactionId, tokenValue: blockhash.value };
@@ -680,7 +680,7 @@ describe('SequencingStore 端口（ADR-032）', () => {
     if (denied.kind === 'forbidden') expect(denied.reason).toBe('already_consumed');
   });
 
-  it('引用 token 与行不符时 fail-closed（not_owner / not_found）', async () => {
+  it('fail-closed when the reference token does not match the row (not_owner / not_found)', async () => {
     const store = new FakeSequencingStore();
     await store.reserve(seq('txn_seq_mismatch'));
     const bad = { chain, account, transactionId: 'txn_seq_mismatch' as TransactionId, tokenValue: 'x'.repeat(64) };
@@ -690,7 +690,7 @@ describe('SequencingStore 端口（ADR-032）', () => {
     expect((await store.markConsumed(bad)).kind).toBe('not_found');
   });
 
-  it('未知 transactionId 一律 not_found', async () => {
+  it('an unknown transactionId is always not_found', async () => {
     const store = new FakeSequencingStore();
     const ref = { chain, account, transactionId: 'txn_seq_missing' as TransactionId, tokenValue: blockhash.value };
     expect((await store.markConsumed(ref)).kind).toBe('not_found');
@@ -698,23 +698,23 @@ describe('SequencingStore 端口（ADR-032）', () => {
   });
 });
 
-describe('TrackerLeaseStore 端口', () => {
+describe('TrackerLeaseStore port', () => {
   const base = { chain, txHash: '0xabc', leaseTtlMs: 30_000 };
 
-  it('有效期内第二 owner 无法接管，返回 held_by_other（single-flight）', async () => {
+  it('a second owner cannot take over within the validity window; returns held_by_other (single-flight)', async () => {
     const store = new FakeTrackerLeaseStore();
     expect((await store.acquire({ ...base, ownerToken: 'a' })).kind).toBe('acquired');
     const second = await store.acquire({ ...base, ownerToken: 'b' });
     expect(second.kind).toBe('held_by_other');
   });
 
-  it('同一 owner 重复 acquire 视为已持有', async () => {
+  it('a repeat acquire by the same owner counts as already held', async () => {
     const store = new FakeTrackerLeaseStore();
     await store.acquire({ ...base, ownerToken: 'a' });
     expect((await store.acquire({ ...base, ownerToken: 'a' })).kind).toBe('acquired');
   });
 
-  it('旧 owner 续租失败（lost），不得继续写状态', async () => {
+  it('an old owner fails to renew (lost) and must not keep writing state', async () => {
     const store = new FakeTrackerLeaseStore();
     await store.acquire({ ...base, ownerToken: 'a' });
     await store.release({ chain, txHash: '0xabc', ownerToken: 'a' });
@@ -722,7 +722,7 @@ describe('TrackerLeaseStore 端口', () => {
     expect((await store.renew({ ...base, ownerToken: 'a' })).kind).toBe('lost');
   });
 
-  it('释放后 listRecoverable 不再返回该租约', async () => {
+  it('after release, listRecoverable no longer returns the lease', async () => {
     const store = new FakeTrackerLeaseStore();
     await store.acquire({ ...base, ownerToken: 'a' });
     expect(await store.listRecoverable({ chain, limit: 10 })).toHaveLength(1);
@@ -731,7 +731,7 @@ describe('TrackerLeaseStore 端口', () => {
   });
 });
 
-describe('M0 只读观测缓存（兼容保留，语义未变）', () => {
+describe('M0 read-only observation cache (kept for compatibility; semantics unchanged)', () => {
   function observed() {
     return {
       schemaVersion: '1' as const,
@@ -741,12 +741,12 @@ describe('M0 只读观测缓存（兼容保留，语义未变）', () => {
     };
   }
 
-  it('InMemoryTransactionObservationStore 仍实现 TransactionObservationStore', () => {
+  it('InMemoryTransactionObservationStore still implements TransactionObservationStore', async () => {
     const store = new InMemoryTransactionObservationStore() satisfies TransactionObservationStore;
     expect(store).toBeTruthy();
   });
 
-  it('按 hash 与按 id 分别索引，list 返回该链全部观测', async () => {
+  it('indexed separately by hash and by id; list returns all observations for the chain', async () => {
     const store = new InMemoryTransactionObservationStore();
     await store.put(chain, observed());
     await store.put(chain, { ...observed(), ref: { kind: 'id', id: 'txn_1' } });

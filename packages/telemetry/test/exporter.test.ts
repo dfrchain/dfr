@@ -1,5 +1,5 @@
-// OTLP/JSON 导出格式（M5 E6）。
-// 重点：字段用 OTLP 的真实编码（int64 → 十进制**字符串**），不是"看起来像"。
+// OTLP/JSON export format (M5 E6).
+// Focus: fields use OTLP's real encoding (int64 → decimal **string**), not something that merely "looks like" it.
 import { describe, expect, it, vi } from 'vitest';
 import { InMemorySpanExporter, JsonlSpanExporter, toOtlpSpan } from '../src/exporter.js';
 import type { SpanRecord } from '../src/span.js';
@@ -17,15 +17,15 @@ const SPAN: SpanRecord = {
 };
 
 describe('toOtlpSpan', () => {
-  it('保留身份与父子关系', () => {
+    it('keeps identity and parent/child relationships', () => {
     const span = toOtlpSpan(SPAN);
     expect(span['traceId']).toBe(SPAN.traceId);
     expect(span['spanId']).toBe(SPAN.spanId);
     expect(span['parentSpanId']).toBe(SPAN.parentSpanId);
   });
 
-  it('根 span 不出现 parentSpanId 字段（不是空字符串）', () => {
-    // 显式构造一个只有必填字段的根 span（不靠解构丢弃字段，避免 lint 噪声）。
+    it('a root span has no parentSpanId field (not an empty string)', () => {
+    // Explicitly construct a root span with only the required fields (do not drop fields via destructuring, to avoid lint noise).
     const root: SpanRecord = {
       traceId: SPAN.traceId,
       spanId: SPAN.spanId,
@@ -39,7 +39,7 @@ describe('toOtlpSpan', () => {
     expect(toOtlpSpan(root)).not.toHaveProperty('parentSpanId');
   });
 
-  it('属性按类型编码；整数用 intValue 字符串', () => {
+    it('attributes are encoded by type; integers use the intValue string', () => {
     const attrs = toOtlpSpan(SPAN)['attributes'] as Array<Record<string, unknown>>;
     const byKey = Object.fromEntries(attrs.map((a) => [a['key'], a['value']]));
     expect(byKey['operation']).toEqual({ stringValue: 'getBalance' });
@@ -47,12 +47,12 @@ describe('toOtlpSpan', () => {
     expect(byKey['retry']).toEqual({ boolValue: false });
   });
 
-  it('状态码：ok=1、error=2 且带 message', () => {
+    it('status codes: ok=1, error=2 with a message', () => {
     expect((toOtlpSpan(SPAN)['status'] as Record<string, unknown>)['code']).toBe(2);
     expect((toOtlpSpan(SPAN)['status'] as Record<string, unknown>)['message']).toBe(
       'DFR_CHAIN_UNAVAILABLE',
     );
-    // 成功的 span 不带 errorCode（整体省略该字段，不是设为 undefined）。
+    // A successful span carries no errorCode (the whole field is omitted, not set to undefined).
     const okSpan: SpanRecord = {
       traceId: SPAN.traceId,
       spanId: SPAN.spanId,
@@ -69,7 +69,7 @@ describe('toOtlpSpan', () => {
 });
 
 describe('JsonlSpanExporter', () => {
-  it('输出合法的 OTLP resourceSpans 结构', () => {
+    it('outputs a valid OTLP resourceSpans structure', () => {
     const lines: string[] = [];
     new JsonlSpanExporter((l) => lines.push(l)).export([SPAN]);
     expect(lines).toHaveLength(1);
@@ -80,13 +80,13 @@ describe('JsonlSpanExporter', () => {
     expect(spans).toHaveLength(1);
   });
 
-  it('空批次不写任何行', () => {
+    it('empty batches write no lines', () => {
     const sink = vi.fn();
     new JsonlSpanExporter(sink).export([]);
     expect(sink).not.toHaveBeenCalled();
   });
 
-  it('sink 抛错被吞掉（观测不得影响业务）', () => {
+    it('a sink throw is swallowed (observation must not affect business)', () => {
     const exporter = new JsonlSpanExporter(() => {
       throw new Error('disk full');
     });
@@ -95,7 +95,7 @@ describe('JsonlSpanExporter', () => {
 });
 
 describe('InMemorySpanExporter', () => {
-  it('累积导出并提供快照副本', () => {
+    it('accumulates exports and provides snapshot copies', () => {
     const exporter = new InMemorySpanExporter();
     exporter.export([SPAN]);
     expect(exporter.exported).toHaveLength(1);

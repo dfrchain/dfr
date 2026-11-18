@@ -31,8 +31,8 @@ providers:
 const load = (text: string, env: NodeJS.ProcessEnv = {}) =>
   ChainRegistry.fromText(text, { env, source: 'test' });
 
-describe('Chain Registry 加载与投影（DFR-005）', () => {
-  it('加载仓库内真实 chains.yaml', () => {
+describe('Chain Registry loading and projection (DFR-005)', () => {
+  it('loads the real chains.yaml in the repo', () => {
     const registry = ChainRegistry.load({ env: {} });
     const ids = registry.listChains().map((c) => c.id);
     expect(ids).toContain('ethereum-sepolia');
@@ -40,21 +40,21 @@ describe('Chain Registry 加载与投影（DFR-005）', () => {
     expect(registry.updatedAt).toBe('2026-10-03T00:00:00Z');
   });
 
-  it('milestone 是部署元数据，不进入领域模型 Chain（审计修正 A-01）', () => {
+  it('milestone is deployment metadata and does not enter the domain model Chain (audit fix A-01)', () => {
     const chain = load(MINIMAL).listChains()[0]!;
     expect(chain).not.toHaveProperty('milestone');
     expect(load(MINIMAL).getEntry('ethereum-sepolia').milestone).toBe('M0');
   });
 
-  it('Provider 的 network 由 chain 派生，不需要在配置里重复声明（审计修正 A-08）', () => {
+  it("a Provider's network is derived from its chain and need not be declared again in config (audit fix A-08)", () => {
     const provider = load(MINIMAL).listProviders()[0]!;
     expect(provider.network).toBe('testnet');
     expect(provider.capabilities).toEqual(['account.balance', 'block.read']);
   });
 });
 
-describe('配置校验是 fail-closed 的', () => {
-  it('未知能力 → DFR_CONFIGURATION_ERROR', () => {
+describe('config validation is fail-closed', () => {
+  it('unknown capability → DFR_CONFIGURATION_ERROR', () => {
     const bad = MINIMAL.replace('capabilities: [account.balance, block.read]', 'capabilities: [account.balance, chain.info]');
     expect(() => load(bad)).toThrowError();
     try {
@@ -64,76 +64,76 @@ describe('配置校验是 fail-closed 的', () => {
     }
   });
 
-  it('孤儿 Provider（指向不存在的 chain）被拒绝', () => {
+  it('an orphaned Provider (pointing at a nonexistent chain) is rejected', () => {
     const bad = MINIMAL.replace('chain: ethereum-sepolia\n    kind: json-rpc-http', 'chain: no-such-chain\n    kind: json-rpc-http');
-    expect(() => load(bad)).toThrowError(/孤儿 Provider|不存在的 chain/);
+    expect(() => load(bad)).toThrowError(/orphaned Provider|nonexistent chain/);
   });
 
-  it('priority 越界被 schema 拒绝（与评分量纲一致）', () => {
+  it('an out-of-range priority is rejected by the schema (consistent with the scoring scale)', () => {
     const bad = MINIMAL.replace('priority: 10', 'priority: 100');
     expect(() => load(bad)).toThrowError(/schema/);
   });
 
-  it('明文密钥被拒绝，且报错信息不回显密钥本体', () => {
+  it('a plaintext secret is rejected, and the error does not echo the secret itself', () => {
     const bad = MINIMAL.replace('"env:TEST_PRIMARY_URL"', '"0x' + 'a'.repeat(64) + '"');
     try {
       load(bad);
       throw new Error('should have thrown');
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      expect(message).toMatch(/疑似密钥/);
+      expect(message).toMatch(/suspected secret/);
       expect(message).not.toContain('a'.repeat(64));
     }
   });
 
-  it('endpointRef 必须是引用形式，禁止内联明文 URL', () => {
+  it('endpointRef must be a reference form; inline plaintext URLs are forbidden', () => {
     const bad = MINIMAL.replace('"env:TEST_PRIMARY_URL"', '"https://rpc.example.com/v1"');
     expect(() => load(bad)).toThrowError();
   });
 });
 
-describe('引用解析（env: / none）', () => {
-  it('env: 从注入的环境变量读取端点', () => {
+describe('reference resolution (env: / none)', () => {
+  it('env: reads the endpoint from an injected environment variable', () => {
     const registry = load(MINIMAL, { TEST_PRIMARY_URL: 'https://rpc.example.com' });
     const provider = registry.listProviders()[0]!;
     expect(registry.resolveEndpoint(provider)).toBe('https://rpc.example.com');
   });
 
-  it('credentialRef: none 表示公开端点', () => {
+  it('credentialRef: none means a public endpoint', () => {
     const registry = load(MINIMAL, { TEST_PRIMARY_URL: 'https://rpc.example.com' });
     expect(registry.resolveCredential(registry.listProviders()[0]!)).toBeUndefined();
   });
 
-  it('端点环境变量缺失 → 配置错误（不把请求发往未定义地址）', () => {
+  it('a missing endpoint environment variable → configuration error (no request is sent to an undefined address)', () => {
     const registry = load(MINIMAL, {});
     expect(() => registry.resolveEndpoint(registry.listProviders()[0]!)).toThrowError(/TEST_PRIMARY_URL/);
   });
 
-  it('凭证环境变量缺失视为未认证访问，返回 undefined 而非报错', () => {
+  it('a missing credential environment variable is treated as unauthenticated access and returns undefined instead of erroring', () => {
     const withCred = MINIMAL.replace('credentialRef: "none"', 'credentialRef: "env:TEST_KEY"');
     const registry = load(withCred, { TEST_PRIMARY_URL: 'https://rpc.example.com' });
     expect(registry.resolveCredential(registry.listProviders()[0]!)).toBeUndefined();
   });
 });
 
-describe('registry ⊆ adapter 启动校验（评审修正 R-03）', () => {
-  it('Adapter 声明覆盖 registry 时通过', () => {
+describe('registry ⊆ adapter startup validation (review fix R-03)', () => {
+  it('passes when Adapter declarations cover the registry', () => {
     const registry = load(MINIMAL);
     expect(() =>
       registry.assertAdapterCapabilities('ethereum-sepolia', ['account.balance', 'block.read', 'transaction.read']),
     ).not.toThrow();
   });
 
-  it('Adapter 缺少 registry 声明的能力 → 拒绝启动', () => {
+  it('refuses to start when the Adapter lacks a capability declared by the registry', () => {
     const registry = load(MINIMAL);
     expect(() => registry.assertAdapterCapabilities('ethereum-sepolia', ['account.balance'])).toThrowError(
-      /超出 Adapter 声明/,
+      /beyond those declared by the Adapter/,
     );
   });
 });
 
-describe('查找失败的错误归类', () => {
-  it('未知链 → DFR_NOT_FOUND', () => {
+describe('error classification for failed lookups', () => {
+  it('unknown chain → DFR_NOT_FOUND', () => {
     try {
       load(MINIMAL).getEntry('nope');
       throw new Error('should have thrown');

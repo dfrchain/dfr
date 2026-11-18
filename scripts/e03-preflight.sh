@@ -1,20 +1,24 @@
 #!/usr/bin/env bash
-# DFR M1-E03 前置检查（真实 Sepolia 广播验收）
+# DFR M1-E03 preflight check (real Sepolia broadcast acceptance)
 #
-# 用途：在执行 E03（真实链广播验收）之前，一次性验证全部前置条件，并给出**可执行**的
-# 缺失项提示。它是"人工在环"流程的第一步：只有本脚本报 READY，才应继续构造交易。
+# Purpose: before running E03 (real-chain broadcast acceptance), verify all
+# preconditions in one pass and give **actionable** hints for anything missing.
+# It is the first step of the "human in the loop" flow: only when this script
+# reports READY should you go on to build a transaction.
 #
-# 安全约定（与 runbook 一致）：
-#   - 本脚本**只读**：只发 eth_chainId（只读）与一个数据库连通性查询；不构造、不签名、不广播；
-#   - **绝不打印任何凭证值**，只报告"已设置/未设置"与长度无关的判定；
-#   - 缺失即 fail-closed（退出码 1），不猜测、不降级。
+# Safety rules (same as the runbook):
+#   - This script is **read-only**: it only sends eth_chainId (read-only) and
+#     one database connectivity query; it does not build, sign, or broadcast;
+#   - **Never print any credential value**, only report "is set / is not set"
+#     and length-independent verdicts;
+#   - Missing means fail-closed (exit code 1); no guessing, no downgrading.
 #
-# 用法：
-#   set -a; . ./e03.env; set +a      # 在 shell 里导出前置变量（该文件不入库）
+# Usage:
+#   set -a; . ./e03.env; set +a      # Export the preconditions in a shell (this file is not committed)
 #   ./scripts/e03-preflight.sh
-#   DFR_E03_SKIP_DB=1 ./scripts/e03-preflight.sh   # 只验证 RPC 与注册表
+#   DFR_E03_SKIP_DB=1 ./scripts/e03-preflight.sh   # Only verify RPC and registry
 #
-# 退出码：0 = 全部通过；1 = 有缺失项。
+# Exit codes: 0 = all passed; 1 = something is missing.
 set -uo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
@@ -29,80 +33,81 @@ bad()  { printf '  \033[31m✗\033[0m %s\n' "$1"; FAILED=1; }
 hint() { printf '      → %s\n' "$1"; }
 head_() { printf '\n%s\n' "$1"; }
 
-head_ 'E03 前置检查'
+head_ 'E03 preflight check'
 
 # ---------------------------------------------------------------------------
-# 1. 必需环境变量（只报存在性，绝不打印值）
+# 1. Required environment variables (report existence only; never print values)
 # ---------------------------------------------------------------------------
-head_ '1) 环境变量'
+head_ '1) Environment variables'
 require_env() {
   local name="$1" why="$2"
   if [ -n "${!name:-}" ]; then
-    ok "${name} 已设置"
+    ok "${name} is set"
   else
-    bad "${name} 未设置"
+    bad "${name} is not set"
     hint "${why}"
   fi
 }
 
-require_env DFR_PROVIDER_ETHEREUM_SEPOLIA_PRIMARY_URL 'Sepolia 主 RPC 端点（只读调用需要）'
-require_env DFR_PROVIDER_ETHEREUM_SEPOLIA_SECONDARY_URL 'Sepolia 备用 RPC 端点（Provider 故障切换需要）'
-require_env DFR_M0_API_KEY_ID 'Gateway 鉴权 keyId（8 位）'
-require_env DFR_M0_API_KEY_HASH 'API key secret 的 sha256(secret+pepper)'
+require_env DFR_PROVIDER_ETHEREUM_SEPOLIA_PRIMARY_URL 'Sepolia primary RPC endpoint (needed for read-only calls)'
+require_env DFR_PROVIDER_ETHEREUM_SEPOLIA_SECONDARY_URL 'Sepolia secondary RPC endpoint (needed for provider failover)'
+require_env DFR_M0_API_KEY_ID 'Gateway auth keyId (8 chars)'
+require_env DFR_M0_API_KEY_HASH 'sha256(secret+pepper) of the API key secret'
 
 if [ "${DFR_M1_ALLOW_WRITE:-}" = 'true' ]; then
   ok 'DFR_M1_ALLOW_WRITE=true'
 else
-  bad 'DFR_M1_ALLOW_WRITE 不是 true（写路径未开放）'
-  hint '真实广播必须显式开启：export DFR_M1_ALLOW_WRITE=true'
+  bad 'DFR_M1_ALLOW_WRITE is not true (the write path is not open)'
+  hint 'Real broadcasts must be explicitly enabled: export DFR_M1_ALLOW_WRITE=true'
 fi
 
 if [ "${DFR_E03_SKIP_DB:-0}" = '1' ]; then
-  head_ '2) 数据库（已按 DFR_E03_SKIP_DB=1 跳过）'
+  head_ '2) Database (skipped per DFR_E03_SKIP_DB=1)'
 else
-  head_ '2) 数据库'
+  head_ '2) Database'
   if [ -z "${DFR_TRANSACTION_DATABASE_URL:-}" ]; then
-    bad 'DFR_TRANSACTION_DATABASE_URL 未设置（M1 写路径必须有持久化 Store）'
-    hint '本地可用 pnpm test:db 启动测试库并导出 DSN；生产必须指向真实库'
+    bad 'DFR_TRANSACTION_DATABASE_URL is not set (the M1 write path needs a persistent Store)'
+    hint 'Locally, start a test database with pnpm test:db and export the DSN; production must point at a real database'
   else
-    ok 'DFR_TRANSACTION_DATABASE_URL 已设置'
-    # 探测分两步，**必须区分**两类失败：
-    #   1) 驱动不可用：`pg` 只声明在 packages/storage-postgres，从仓库根 require 会
-    #      MODULE_NOT_FOUND。曾因此把"脚本自己的问题"误报成"数据库不可达"，
-    #      让操作者去排查网络与权限（2026-10-06 修复）。
-    #   2) 连接失败：网络/凭证问题。
-    # 错误原文一律不外显（可能含 DSN 片段）。
+    ok 'DFR_TRANSACTION_DATABASE_URL is set'
+    # The probe runs in two steps, and the two failure kinds **must be distinguished**:
+    #   1) Driver unavailable: `pg` is only declared in packages/storage-postgres, so requiring it
+    #      from the repo root gives MODULE_NOT_FOUND. That once misreported "the script's own problem"
+    #      as "database unreachable", sending the operator off to debug the network and permissions
+    #      (fixed 2026-10-06).
+    #   2) Connection failure: a network/credential problem.
+    # The original error text is never shown (it may contain DSN fragments).
     if node -e '
       try { require.resolve("pg", { paths: [process.cwd() + "/packages/storage-postgres"] }); }
       catch { process.exit(3); }
     ' >/dev/null 2>&1; then
-      ok '数据库驱动可用'
+      ok 'Database driver is available'
       if node -e '
         const { Pool } = require(require.resolve("pg", { paths: [process.cwd() + "/packages/storage-postgres"] }));
         const pool = new Pool({ connectionString: process.env.DFR_TRANSACTION_DATABASE_URL, connectionTimeoutMillis: 5000 });
         pool.query("SELECT 1").then(() => pool.end()).then(() => process.exit(0)).catch(() => process.exit(1));
       ' >/dev/null 2>&1; then
-        ok '数据库连通'
+        ok 'Database is reachable'
       else
-        bad '数据库不可达（错误原文不回显，避免泄漏 DSN）'
-        hint '检查 DSN、网络与账号权限；runtime 身份只需 DML'
+        bad 'Database is unreachable (original error is not echoed, to avoid leaking the DSN)'
+        hint 'Check the DSN, network, and account permissions; the runtime identity only needs DML'
       fi
     else
-      bad '数据库驱动不可用（仓库未安装依赖或 pg 不可解析）'
-      hint '先运行 pnpm install --frozen-lockfile；驱动按 packages/storage-postgres 解析'
-      hint '（这是工具/安装问题，不是数据库问题——不要据此排查网络）'
+      bad 'Database driver is unavailable (repo dependencies are not installed, or pg cannot be resolved)'
+      hint 'Run pnpm install --frozen-lockfile first; the driver is resolved via packages/storage-postgres'
+      hint '(This is a tooling/installation problem, not a database problem — do not debug the network on its basis)'
     fi
   fi
 fi
 
 # ---------------------------------------------------------------------------
-# 3. RPC 可达性 + 链身份（必须是 Sepolia）
+# 3. RPC reachability + chain identity (must be Sepolia)
 # ---------------------------------------------------------------------------
-head_ '3) RPC 端点与链身份'
+head_ '3) RPC endpoints and chain identity'
 check_rpc() {
   local label="$1" url="$2"
   if [ -z "${url}" ]; then
-    bad "${label} 未配置，跳过探测"
+    bad "${label} is not configured; skipping the probe"
     return
   fi
   local body chain_id
@@ -120,26 +125,26 @@ check_rpc() {
   ' "${url}" 2>/dev/null) || body=''
 
   if [ -z "${body}" ]; then
-    bad "${label} 不可达或未返回 chainId"
-    hint '确认端点 URL 正确、网络可达；若端点需要凭证，检查 key 是否已注入'
+    bad "${label} is unreachable or returned no chainId"
+    hint 'Confirm the endpoint URL is correct and the network is reachable; if the endpoint needs credentials, check that the key has been injected'
     return
   fi
   chain_id=$(printf '%s' "${body}" | tr 'A-Z' 'a-z')
   if [ "${chain_id}" = "${EXPECTED_CHAIN_ID}" ]; then
-    ok "${label} 可达且 chainId = ${chain_id}（Sepolia）"
+    ok "${label} is reachable and chainId = ${chain_id} (Sepolia)"
   else
-    bad "${label} 的 chainId = ${chain_id}，不是 Sepolia（${EXPECTED_CHAIN_ID}）"
-    hint '把 eth_chainId 结果直接与 11155111 比对；指向别的链会在 build 阶段被 Adapter 拒绝'
+    bad "${label} chainId = ${chain_id}, is not Sepolia (${EXPECTED_CHAIN_ID})"
+    hint 'Compare the eth_chainId result directly against 11155111; pointing at another chain will be rejected by the Adapter at the build stage'
   fi
 }
 
-check_rpc '主 RPC' "${DFR_PROVIDER_ETHEREUM_SEPOLIA_PRIMARY_URL:-}"
-check_rpc '备用 RPC' "${DFR_PROVIDER_ETHEREUM_SEPOLIA_SECONDARY_URL:-}"
+check_rpc 'Primary RPC' "${DFR_PROVIDER_ETHEREUM_SEPOLIA_PRIMARY_URL:-}"
+check_rpc 'Secondary RPC' "${DFR_PROVIDER_ETHEREUM_SEPOLIA_SECONDARY_URL:-}"
 
 # ---------------------------------------------------------------------------
-# 4. 注册表是否已为 ethereum-sepolia 声明广播能力（E03 前置的核心）
+# 4. Whether the registry has declared broadcast capability for ethereum-sepolia (the core of the E03 preflight)
 # ---------------------------------------------------------------------------
-head_ '4) 注册表能力声明'
+head_ '4) Registry capability declaration'
 if node -e '
   const { parse } = require("yaml");
   const fs = require("node:fs");
@@ -149,32 +154,32 @@ if node -e '
   const caps = chain.capabilities ?? [];
   process.exit(caps.includes("transaction.broadcast") ? 0 : 1);
 ' >/dev/null 2>&1; then
-  ok 'ethereum-sepolia 已声明 transaction.broadcast'
+  ok 'ethereum-sepolia has declared transaction.broadcast'
 else
-  bad 'ethereum-sepolia 未声明 transaction.broadcast（Registry fail-closed，广播会被拒）'
-  hint '见 docs/development/deliveries/DFR-M1-E03-prep.md：加回能力需同步 registry 契约测试'
+  bad 'ethereum-sepolia has not declared transaction.broadcast (Registry fail-closed; the broadcast would be rejected)'
+  hint 'See docs/development/deliveries/DFR-M1-E03-prep.md: restoring the capability must be synced with the registry contract tests'
 fi
 
 # ---------------------------------------------------------------------------
-# 5. 资金账户（人工提供，脚本只提示）
+# 5. Funded account (provided by a human; the script only prompts)
 # ---------------------------------------------------------------------------
-head_ '5) 资金账户（人工提供，脚本无法校验）'
+head_ '5) Funded account (provided by a human; the script cannot verify it)'
 if [ -n "${DFR_E03_FUNDED_ADDRESS:-}" ]; then
-  ok 'DFR_E03_FUNDED_ADDRESS 已设置（脚本不校验其余额，需人工确认有测试 ETH）'
+  ok 'DFR_E03_FUNDED_ADDRESS is set (the script does not verify its balance; a human must confirm it holds test ETH)'
 else
-  bad 'DFR_E03_FUNDED_ADDRESS 未设置'
-  hint '该地址用于 build 的 from 字段；余额与私钥由人工钱包保管，DFR 不接触私钥'
+  bad 'DFR_E03_FUNDED_ADDRESS is not set'
+  hint 'This address is used for the build from field; balance and private key are held in a human wallet, and DFR never touches the private key'
 fi
 
 # ---------------------------------------------------------------------------
-# 汇总
+# Summary
 # ---------------------------------------------------------------------------
-head_ '汇总'
+head_ 'Summary'
 if [ "${FAILED}" -eq 0 ]; then
-  printf '  \033[32mREADY\033[0m：前置齐备，可按 docs/runbooks/m1-sepolia-broadcast-checkpoint.md 继续。\n'
-  printf '  下一步：build 最小金额 native 转账 → simulate → **人工钱包签名** → 单次 broadcast。\n'
+  printf '  \033[32mREADY\033[0m: preflight is complete; continue per docs/runbooks/m1-sepolia-broadcast-checkpoint.md.\n'
+  printf '  Next: build a minimum-amount native transfer -> simulate -> **human wallet signature** -> a single broadcast.\n'
   exit 0
 fi
 
-printf '  \033[31mNOT READY\033[0m：存在缺失项（见上）。E03 保持 No-Go，不得用离线测试替代。\n'
+printf '  \033[31mNOT READY\033[0m: there are missing items (see above). E03 stays No-Go; do not substitute offline tests.\n'
 exit 1

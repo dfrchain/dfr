@@ -1,15 +1,17 @@
-// 生产入口与优雅退出的进程级回归（DFR-M1-E02）。
+// Process-level regression for the production entrypoint and graceful shutdown (DFR-M1-E02).
 //
-// 背景：本仓库是 `module: NodeNext` 的 ESM TypeScript 源码仓，导入写 `.js` 说明符
-// 但磁盘上是 `.ts`。Node 内置类型剥离**不会**做这个重映射，
-// 因此 `node --experimental-strip-types apps/gateway/src/main.ts` 会
-// `ERR_MODULE_NOT_FOUND: .../server.js`。E01 手册里写的启动命令正是这一种，实测启动失败。
+// Background: this repo is a `module: NodeNext` ESM TypeScript source repo; imports write `.js` specifiers
+// but the files on disk are `.ts`. Node's built-in type stripping does **not** do this remapping,
+// so `node --experimental-strip-types apps/gateway/src/main.ts` fails with
+// `ERR_MODULE_NOT_FOUND: .../server.js`. The startup command written in the E01 runbook is exactly this kind,
+// and it failed when actually run.
 //
-// E02 补了零依赖解析钩子 `scripts/ts-runtime/`。本文件用**真实子进程**锁定两件事：
-//   1. 参数属性（`constructor(private readonly x)`）必须被变换，`.js`→`.ts` 必须被解析；
-//   2. 真实 Gateway 入口能起来、`/healthz` 可达，并且 SIGTERM 后以退出码 0 优雅退出。
+// E02 added a zero-dependency resolution hook, `scripts/ts-runtime/`. This file locks two things with
+// **real subprocesses**:
+//   1. Parameter properties (`constructor(private readonly x)`) must be transformed, and `.js`→`.ts` must resolve;
+//   2. The real Gateway entrypoint starts, `/healthz` is reachable, and after SIGTERM it exits gracefully with code 0.
 //
-// 这两条都是单测无法覆盖的：它们只在真实 Node 进程的模块解析与信号路径上才成立。
+// Neither is coverable by unit tests: they only hold on a real Node process's module-resolution and signal paths.
 import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -59,8 +61,8 @@ function run(file: string): Promise<RunResult> {
   });
 }
 
-describe('Node 运行时解析钩子（DFR-M1-E02）', () => {
-  it('解析 .js 说明符到 .ts，并变换 TS 参数属性', async () => {
+describe('Node runtime resolution hook (DFR-M1-E02)', () => {
+  it('resolves .js specifiers to .ts and transforms TS parameter properties', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'dfr-ts-runtime-'));
     tempDirs.push(dir);
     writeFileSync(
@@ -76,7 +78,7 @@ describe('Node 运行时解析钩子（DFR-M1-E02）', () => {
     expect(result.stdout).toContain('got 7');
   });
 
-  it('真实 Gateway 入口可启动、/healthz 可达，且 SIGTERM 后退出码为 0', async () => {
+  it('the real Gateway entrypoint starts, /healthz is reachable, and exit code is 0 after SIGTERM', async () => {
     const child = spawn(
       process.execPath,
       [...TS_FLAGS, '--import', REGISTER, 'apps/gateway/src/main.ts'],
@@ -84,7 +86,7 @@ describe('Node 运行时解析钩子（DFR-M1-E02）', () => {
         cwd: repoRoot,
         env: {
           ...process.env,
-          // M0 只读部署：不需要数据库。
+          // M0 read-only deployment: no database needed.
           DFR_M0_API_KEY_ID: 'RuntimeA',
           DFR_M0_API_KEY_HASH: '0'.repeat(64),
           DFR_GATEWAY_PORT: '0',
@@ -125,7 +127,8 @@ describe('Node 运行时解析钩子（DFR-M1-E02）', () => {
     expect(live.status).toBe(200);
     expect(await live.json()).toMatchObject({ status: 'ok' });
 
-    // 就绪探针必须存在并返回可解析的结构（不强制 200：默认注册表在 M0 下没有启用任何链）。
+    // The readiness probe must exist and return a parseable structure (200 not forced: under M0 the default
+    // registry has no chain enabled).
     const ready = await fetch(`http://127.0.0.1:${port}/readyz`);
     expect([200, 503]).toContain(ready.status);
     expect(await ready.json()).toHaveProperty('status');

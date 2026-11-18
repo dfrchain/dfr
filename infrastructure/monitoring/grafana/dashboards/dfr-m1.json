@@ -1,7 +1,7 @@
 {
   "uid": "dfr-m1",
   "title": "DFR M1 — Gateway / Core / Adapter / Provider / Transaction",
-  "description": "DFR M1 五族指标总览。指标名与代码一致，由 tests/contract/monitoring-config.test.ts 校验无漂移。",
+  "description": "DFR M1 five-family metrics overview. Metric names match the code; tests/contract/monitoring-config.test.ts verifies there is no drift.",
   "tags": [
     "dfr",
     "m1"
@@ -17,7 +17,7 @@
   "panels": [
     {
       "id": 1,
-      "title": "API 请求速率（按状态码）",
+      "title": "API request rate (by status code)",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",
@@ -47,11 +47,11 @@
         },
         "overrides": []
       },
-      "description": "dfr_gateway_requests_total 派生；5xx 上升先看 route 维度。"
+      "description": "Derived from dfr_gateway_requests_total; when 5xx rises, look at the route dimension first."
     },
     {
       "id": 2,
-      "title": "API 延迟 P50 / P95 / P99",
+      "title": "API latency P50 / P95 / P99",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",
@@ -102,7 +102,7 @@
     },
     {
       "id": 3,
-      "title": "5xx 比例",
+      "title": "5xx share",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",
@@ -132,11 +132,11 @@
         },
         "overrides": []
       },
-      "description": "告警阈值 2%（DfrApiErrorRateHigh）。"
+      "description": "Alert threshold 2% (DfrApiErrorRateHigh)."
     },
     {
       "id": 4,
-      "title": "在途请求（按路由类）",
+      "title": "In-flight requests (by route class)",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",
@@ -168,7 +168,7 @@
     },
     {
       "id": 5,
-      "title": "鉴权失败 / 限流",
+      "title": "Auth failures / rate limiting",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",
@@ -218,7 +218,7 @@
     },
     {
       "id": 6,
-      "title": "Provider 可用率",
+      "title": "Provider availability",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",
@@ -248,11 +248,11 @@
         },
         "overrides": []
       },
-      "description": "= 1 − 健康窗口错误率；无样本时记为 1（新注册 Provider 不误报）。"
+      "description": "= 1 − error rate over the health window; recorded as 1 with no samples (a newly registered Provider does not false-alarm)."
     },
     {
       "id": 7,
-      "title": "Provider 熔断状态（1=open）",
+      "title": "Provider circuit breaker state (1=open)",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",
@@ -281,11 +281,11 @@
         },
         "overrides": []
       },
-      "description": "熔断全开时触发 DfrProviderAllUnavailable（紧急）。"
+      "description": "When all breakers are open, DfrProviderAllUnavailable fires (urgent)."
     },
     {
       "id": 8,
-      "title": "Provider 评分 / 错误率",
+      "title": "Provider score / error rate",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",
@@ -326,7 +326,7 @@
     },
     {
       "id": 9,
-      "title": "Provider 请求速率与重试",
+      "title": "Provider request rate and retries",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",
@@ -365,11 +365,11 @@
         },
         "overrides": []
       },
-      "description": "reason=write 的重试必须恒为 0（写路径禁止自动重试）。"
+      "description": "Retries with reason=write must always be 0 (the write path forbids automatic retries)."
     },
     {
       "id": 10,
-      "title": "Adapter 调用速率（按方法类别 / 状态）",
+      "title": "Adapter call rate (by method class / status)",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",
@@ -399,11 +399,11 @@
         },
         "overrides": []
       },
-      "description": "method_class=write 只应是 broadcast。"
+      "description": "method_class=write should only ever be broadcast."
     },
     {
       "id": 11,
-      "title": "Adapter 错误 / registry 不一致",
+      "title": "Adapter errors / registry mismatch",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",
@@ -441,11 +441,11 @@
         },
         "overrides": []
       },
-      "description": "registry_mismatch 正常恒为 0；非 0 触发紧急告警。"
+      "description": "registry_mismatch is normally always 0; a non-zero value fires the urgent alert."
     },
     {
       "id": 12,
-      "title": "Core 操作速率与错误",
+      "title": "Core operation rate and errors",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",
@@ -487,7 +487,7 @@
     },
     {
       "id": 13,
-      "title": "Core 能力未支持（应恒为 0）",
+      "title": "Core capability unsupported (should always be 0)",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",
@@ -519,7 +519,7 @@
     },
     {
       "id": 14,
-      "title": "交易阶段计数（按阶段 / 状态）",
+      "title": "Transaction stage counts (by stage / status)",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",
@@ -552,7 +552,7 @@
     },
     {
       "id": 15,
-      "title": "交易阶段耗时 P95",
+      "title": "Transaction stage latency P95",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",
@@ -585,7 +585,7 @@
     },
     {
       "id": 16,
-      "title": "confirm 等待 P95（单次请求内）",
+      "title": "confirm wait P95 (within a single request)",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",
@@ -615,11 +615,11 @@
         },
         "overrides": []
       },
-      "description": "只测单次 confirm 请求内的等待时长，不是创建→最终性的端到端延迟。"
+      "description": "Measures only the wait inside a single confirm request, not the end-to-end latency from creation to finality."
     },
     {
       "id": 17,
-      "title": "重组 / tracker 租约结果",
+      "title": "Reorgs / tracker lease outcomes",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",
@@ -660,7 +660,7 @@
     },
     {
       "id": 18,
-      "title": "依赖故障主动拒绝流量",
+      "title": "Dependency failure actively rejecting traffic",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",
@@ -689,11 +689,11 @@
         },
         "overrides": []
       },
-      "description": "非零表示事务存储不可用，Gateway 正在主动拒绝对应业务流量；与 DfrDependencyRejectingTraffic 告警对应。"
+      "description": "A non-zero value means the transaction store is unavailable and the Gateway is actively rejecting the corresponding business traffic; corresponds to the DfrDependencyRejectingTraffic alert."
     },
     {
       "id": 19,
-      "title": "Provider 日配额使用率",
+      "title": "Provider daily quota usage",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",
@@ -725,7 +725,7 @@
         },
         "overrides": []
       },
-      "description": "E5：来自持久 PostgreSQL 计数的全局 Provider 日配额使用率；超过 0.8 触发 DfrProviderQuotaNearLimit。"
+      "description": "E5: global Provider daily quota usage from persistent PostgreSQL counts; over 0.8 fires DfrProviderQuotaNearLimit."
     }
   ]
 }

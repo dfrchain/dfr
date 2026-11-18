@@ -1,8 +1,8 @@
 /**
- * 最小 base58 编解码（Bitcoin/Solana 字母表），零依赖（ADR-028）。
+ * Minimal base58 codec (Bitcoin/Solana alphabet), zero dependencies (ADR-028).
  *
- * 用 BigInt 累加/取余：实现直接、边界清晰；地址/签名/区块哈希都很短，性能无关紧要。
- * 编解码成对存在是 M3-A02 的要求：编解码往返是 codec 的主要验证手段。
+ * BigInt accumulate/modulo: straightforward implementation with clear boundaries; addresses/signatures/block hashes are all short, so performance does not matter.
+ * Encode/decode existing as a pair is an M3-A02 requirement: codec round-trips are the main verification method.
  */
 const ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 const INDEX: ReadonlyMap<string, number> = new Map(
@@ -10,7 +10,7 @@ const INDEX: ReadonlyMap<string, number> = new Map(
 );
 const BASE = 58n;
 
-/** base58 解码为字节；非法字符返回 null（不抛错，由调用方决定错误语义）。 */
+/** Decode base58 to bytes; invalid characters return null (no throw; the caller decides the error semantics). */
 export function base58Decode(value: string): Uint8Array | null {
   if (value === '') return null;
   let num = 0n;
@@ -19,7 +19,7 @@ export function base58Decode(value: string): Uint8Array | null {
     if (digit === undefined) return null;
     num = num * BASE + BigInt(digit);
   }
-  // 去掉 BigInt 前导零字节，再按原串前导 '1' 逐个补回。
+  // Strip BigInt leading zero bytes, then restore one per leading '1' in the original string.
   const body: number[] = [];
   while (num > 0n) {
     body.push(Number(num & 0xffn));
@@ -38,7 +38,7 @@ export function isBase58(value: string): boolean {
   return value !== '' && [...value].every((char) => INDEX.has(char));
 }
 
-/** base58 编码；空字节数组返回空串。 */
+/** Base58 encoding; an empty byte array returns an empty string. */
 export function base58Encode(bytes: Uint8Array): string {
   let num = 0n;
   for (const byte of bytes) num = num * 256n + BigInt(byte);
@@ -47,7 +47,7 @@ export function base58Encode(bytes: Uint8Array): string {
     out = ALPHABET[Number(num % BASE)]! + out;
     num /= BASE;
   }
-  // 每个前导零字节编码为 '1'（与解码端的补零逻辑互逆）。
+  // Each leading zero byte encodes as '1' (the inverse of the decode-side zero-padding logic).
   let leadingZeros = 0;
   for (const byte of bytes) {
     if (byte !== 0) break;

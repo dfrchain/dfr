@@ -1,25 +1,25 @@
 /**
- * 有界 JSON 请求体解析（DFR-M1-B06，gateway-spec 第 3 章第 7 步"契约校验"）。
+ * Bounded JSON request-body parsing (DFR-M1-B06, gateway-spec chapter 3 step 7, "contract validation").
  *
- * 三条不能省的约束：
- * 1. **声明与实际两个方向都要设限**：`content-length` 可以缺失或撒谎，
- *    因此流式累积时必须自己计数；只在 header 上检查等于没有检查；
- * 2. **拒绝非对象**：`null` / 数组 / 标量都不是合法的请求体，不能等到 handler
- *    里 `body.chain` 抛 TypeError 变成 500；
- * 3. **错误里不带原文**：非法 JSON 的片段可能含敏感内容，只报字段名与稳定错误码
- *    （error-spec 第 6 章）。
+ * Three constraints that cannot be skipped:
+ * 1. **Limit both the declared and the actual size**: `content-length` may be missing or lie,
+ *    so the streamed accumulation must count by itself; checking only the header is no check at all;
+ * 2. **Reject non-objects**: `null` / arrays / scalars are not legal request bodies; the handler must not
+ *    wait until `body.chain` throws a TypeError that becomes a 500;
+ * 3. **Errors carry no raw text**: fragments of invalid JSON may contain sensitive content, so only the field name and a stable error code are reported
+ *    (error-spec chapter 6).
  */
 import type { IncomingMessage } from 'node:http';
 import { createDfrError } from '@dfr/errors';
 import type { RequestId } from '@dfr/types';
 
 export interface ReadJsonBodyOptions {
-  /** 体积上限（字节）。调用方按配置传入，本模块不读环境变量。 */
+  /** Size cap (bytes). Passed in by the caller per configuration; this module reads no environment variables. */
   readonly maxBytes: number;
   readonly requestId: RequestId;
 }
 
-/** 读取并解析有界 JSON 对象；任何失败都抛 DFR 错误，由 Gateway 统一映射状态码。 */
+/** Read and parse a bounded JSON object; any failure throws a DFR error, mapped to a status code centrally by the Gateway. */
 export async function readJsonBody(
   req: IncomingMessage,
   options: ReadJsonBodyOptions,
@@ -39,7 +39,7 @@ export async function readJsonBody(
   if (raw.trim() === '') {
     throw createDfrError('DFR_VALIDATION_FAILED', {
       requestId,
-      message: '请求体不能为空：需要 JSON 对象',
+      message: 'request body must not be empty: a JSON object is required',
       details: { fields: ['body'] },
     });
   }
@@ -48,10 +48,10 @@ export async function readJsonBody(
   try {
     parsed = JSON.parse(raw) as unknown;
   } catch {
-    // 不把原文放进错误详情：非法片段可能包含凭证或私钥。
+    // Do not put raw text into error details: invalid fragments may contain credentials or private keys.
     throw createDfrError('DFR_VALIDATION_FAILED', {
       requestId,
-      message: '请求体不是合法 JSON',
+      message: 'request body is not valid JSON',
       details: { fields: ['body'] },
     });
   }
@@ -59,7 +59,7 @@ export async function readJsonBody(
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw createDfrError('DFR_VALIDATION_FAILED', {
       requestId,
-      message: '请求体必须是 JSON 对象',
+      message: 'request body must be a JSON object',
       details: { fields: ['body'] },
     });
   }
@@ -77,7 +77,7 @@ async function readBounded(
     const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string, 'utf8');
     total += buf.length;
     if (total > maxBytes) {
-      // 超限即停止读取，避免继续缓冲攻击流量。
+      // Stop reading as soon as the cap is exceeded, to avoid buffering more attack traffic.
       req.destroy();
       throw tooLarge(requestId, maxBytes);
     }
@@ -89,7 +89,7 @@ async function readBounded(
 function tooLarge(requestId: RequestId, maxBytes: number): Error {
   return createDfrError('DFR_PAYLOAD_TOO_LARGE', {
     requestId,
-    message: `请求体超过上限 ${maxBytes} 字节`,
+    message: `request body exceeds the ${maxBytes} byte limit`,
     details: { maxBytes },
   });
 }

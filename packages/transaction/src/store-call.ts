@@ -1,34 +1,34 @@
 /**
- * Store 调用观测（observability-spec 第 4 章的 `store.read` / `store.write` span）。
+ * Store-call observation (the `store.read` / `store.write` spans of observability-spec chapter 4).
  *
- * 为什么需要：Gateway（`http.request`）、Core/Adapter（`adapter.call`）、
- * Provider（`provider.request`）三层都已落日志，但事务引擎的 Store 调用**完全没有观测**——
- * 于是"这笔 build 慢在哪一段"无法回答。本模块补齐这一层。
+ * Why it is needed: the Gateway (`http.request`), Core/Adapter (`adapter.call`), and
+ * Provider (`provider.request`) layers all have logging, but the transaction engine's Store calls had **no observation at all** —
+ * so "where exactly is this build slow" could not be answered. This module fills that gap.
  *
- * 刻意只记录**调用形状与结果**（store / operation / kind / status / errorCode / latencyMs），
- * 不记录参数与返回值：Store 的参数含地址、nonce、载荷与租约 token，返回值含完整交易记录。
- * 需要下钻时用 `requestId` / `traceId` 关联已经脱敏的其它层日志。
+ * Deliberately records only the **call shape and outcome** (store / operation / kind / status / errorCode / latencyMs),
+ * never the parameters or return values: Store parameters contain addresses, nonces, payloads, and lease tokens, and return values contain full transaction records.
+ * For a deeper dive, correlate the already-redacted logs from other layers with `requestId` / `traceId`.
  */
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { isDfrError } from '@dfr/errors';
 import type { RequestId } from '@dfr/types';
 
-/** Store 端口的可观测名字（与 `TransactionEngineStores` 的键一致；sequencing 为 M3 新增）。 */
+/** The observable name of a Store port (matching the keys of `TransactionEngineStores`; sequencing is the M3 addition). */
 export type StoreName = 'transaction' | 'idempotency' | 'nonce' | 'sequencing' | 'tracker';
 
-/** 读/写分类：与 observability-spec 的 `store.read` / `store.write` span 名称对应。 */
+/** Read/write classification: matching the observability-spec `store.read` / `store.write` span names. */
 export type StoreCallKind = 'read' | 'write';
 
 export interface StoreCallRecord {
   readonly store: StoreName;
-  /** 端口方法名，例如 get / create / transition / begin / reserve / acquire。 */
+   /** The port method name, e.g. get / create / transition / begin / reserve / acquire. */
   readonly operation: string;
   readonly kind: StoreCallKind;
   readonly status: 'success' | 'error';
-  /** 稳定 DFR 错误码；非 DFR 异常归一为 `DFR_INTERNAL_ERROR`（不回显原文）。 */
+   /** A stable DFR error code; non-DFR exceptions normalize to `DFR_INTERNAL_ERROR` (without echoing the original text). */
   readonly errorCode?: string;
   readonly latencyMs: number;
-  /** 关联字段；恢复/巡检等后台路径可能没有请求上下文。 */
+   /** Correlation fields; background paths such as recovery/sweeps may have no request context. */
   readonly requestId?: RequestId;
   readonly traceId?: string;
   readonly spanId?: string;
@@ -37,11 +37,11 @@ export interface StoreCallRecord {
 export type StoreCallSink = (record: StoreCallRecord) => void;
 
 /**
- * 进程内当前请求上下文（observability-spec 第 4 章明确要求用 AsyncLocalStorage 承载 span）。
+ * The in-process current request context (observability-spec chapter 4 explicitly requires AsyncLocalStorage to carry spans).
  *
- * 为什么不是把 requestId 一路透传进 Store 端口：Store 端口是**持久化契约**，
- * 端口签名不该为观测目的新增参数（那会污染 Storage 实现与契约测试）。用
- * AsyncLocalStorage 让"当前请求上下文"对 Store 调用**隐式可见**，端口签名保持不变。
+ * Why not thread requestId all the way into the Store ports: Store ports are a **persistence contract**,
+ * and port signatures should not gain parameters for observability (that would pollute the Storage implementation and contract tests). Using
+ * AsyncLocalStorage makes "the current request context" **implicitly visible** to Store calls, while port signatures stay unchanged.
  */
 interface StoreCallContext {
   readonly requestId?: RequestId;
@@ -51,7 +51,7 @@ interface StoreCallContext {
 
 const storeCallContext = new AsyncLocalStorage<StoreCallContext>();
 
-/** 在给定请求上下文内执行；上下文随后续的 Store 调用自动携带。 */
+/** Execute within a given request context; the context is carried automatically by subsequent Store calls. */
 export function withStoreCallContext<T>(
   context: StoreCallContext,
   fn: () => Promise<T>,
@@ -60,11 +60,11 @@ export function withStoreCallContext<T>(
 }
 
 /**
- * 写操作集合：决定 `kind`。
+ * The write-operation set: it decides `kind`.
  *
- * 以"是否可能改变持久状态"为准，而不是以方法名像不像动词。
- * `listRecoverable` / `getByHash` / `get` 是读；`release` / `releaseIfSafe` 虽是清理，
- * 也会写租约状态，因此算写。
+ * Judged by "whether it may change persisted state", not by whether the method name looks like a verb.
+ * `listRecoverable` / `getByHash` / `get` are reads; `release` / `releaseIfSafe` are cleanup,
+ * but they also write lease state, so they count as writes.
  */
 export const WRITE_OPERATIONS: ReadonlySet<string> = new Set([
   'create',
@@ -83,11 +83,11 @@ export const WRITE_OPERATIONS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * 明确登记的**读**操作。
+ * The explicitly registered **read** operations.
  *
- * 两个集合都必须显式登记：`packages/transaction/test/store-call.test.ts` 会枚举四个端口的
- * 实际方法名并断言"每个方法都在某个集合里"。新增端口方法却忘记分类 → 测试失败，
- * 而不是静默落入某个默认分类。
+ * Both sets must be explicitly registered: `packages/transaction/test/store-call.test.ts` enumerates the four ports'
+ * actual method names and asserts "every method is in some set". Adding a port method and forgetting to classify it → test failure,
+ * instead of silently falling into some default classification.
  */
 export const READ_OPERATIONS: ReadonlySet<string> = new Set([
   'get',
@@ -97,27 +97,27 @@ export const READ_OPERATIONS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * 判定读/写。
+ * Decide read/write.
  *
- * 未登记的操作**按写处理**（保守）：把真实写入报成读会低估写压力并掩盖写放大，
- * 比多报一次写更危险。正常路径下不应出现未登记方法——契约测试会拦住。
+ * An unregistered operation is treated **as a write** (conservative): reporting a real write as a read would undercount write pressure and hide write amplification,
+ * which is more dangerous than over-reporting one write. Unregistered methods should not appear on normal paths — the contract test blocks them.
  */
 export function storeCallKind(store: StoreName, operation: string): StoreCallKind {
   if (READ_OPERATIONS.has(operation)) return 'read';
   if (WRITE_OPERATIONS.has(operation)) return 'write';
-  // 未登记：保守归为写，并在记录里保留原始 operation 供排查。
+   // Unregistered: conservatively classified as a write, keeping the original operation in the record for troubleshooting.
   void store;
   return 'write';
 }
 
 /**
- * 调用一次 Store 并产出观测记录。
+ * Call a Store once and produce an observation record.
  *
- * 三条不变式：
- * 1. 记录**永不**影响业务：sink 抛错被吞掉；
- * 2. 错误先归一（非 DFR 异常 → `DFR_INTERNAL_ERROR`），再记录，最后原样抛出**原始**异常
- *    （不改变既有错误传播语义）；
- * 3. 未注入 sink 时不做任何多余工作（只有一个 undefined 判断）。
+ * Three invariants:
+ * 1. A record **never** affects the business path: sink errors are swallowed;
+ * 2. errors are normalized first (non-DFR exceptions → `DFR_INTERNAL_ERROR`), then recorded, and finally the **original** exception is rethrown verbatim
+ *    (without changing the existing error-propagation semantics);
+ * 3. with no sink injected, no extra work is done (a single undefined check).
  */
 async function observeStoreCall<T>(
   sink: StoreCallSink | undefined,
@@ -138,13 +138,13 @@ async function observeStoreCall<T>(
 }
 
 /**
- * 把一个 Store 端口对象包成"每次方法调用都产出观测记录"的版本。
+ * Wrap a Store port object so that every method call produces an observation record.
  *
- * 单点实现（而不是在 20+ 个调用处各写一遍）：漏掉一处不会有任何提示，
- * 而端口层包装在结构上不可能漏。读/写分类由 `storeCallKind` 按方法名判定。
+ * A single implementation (instead of writing it once at each of 20+ call sites): missing one site would give no warning,
+ * while port-layer wrapping structurally cannot miss one. Read/write classification is decided by `storeCallKind` from the method name.
  *
- * 仅包装函数属性；非函数属性（如有）原样保留。未注入 sink 时直接返回原对象，
- * 连 Proxy 都不创建。
+ * Only function properties are wrapped; non-function properties (if any) are kept verbatim. With no sink injected, the original object is returned directly,
+ * not even creating a Proxy.
  */
 export function observeStores<T extends object>(stores: T, sink: StoreCallSink | undefined): T {
   if (sink === undefined) return stores;
@@ -162,11 +162,11 @@ export function observeStores<T extends object>(stores: T, sink: StoreCallSink |
 }
 
 /**
- * 推断 Store 名称。
+ * Infer the Store name.
  *
- * 不依赖调用方传名字：端口对象本身通常是各类实例，没有可靠的 `name` 字段，
- * 因此由装配方通过 `storeName` 显式标注（Symbol 属性，不进入 `Object.keys`，
- * 也就不会被序列化进任何日志）。
+ * Do not rely on the caller passing a name: port objects are usually instances of various classes with no reliable `name` field,
+ * so the wiring side labels it explicitly via `storeName` (a Symbol property, which does not enter `Object.keys`
+ * and is therefore never serialized into any log).
  */
 const STORE_NAME = Symbol('dfr.storeName');
 
@@ -180,7 +180,7 @@ function storeNameOf(target: object): StoreName {
   if (tagged === 'transaction' || tagged === 'idempotency' || tagged === 'nonce' || tagged === 'tracker') {
     return tagged;
   }
-  // 未标注时宁可报 unknown，也不猜成某个具体 Store 而产出错误归因。
+   // When unlabeled, prefer reporting unknown over guessing a concrete Store and producing a wrong attribution.
   return 'transaction';
 }
 
@@ -206,6 +206,6 @@ function emit(
       ...(context?.spanId !== undefined ? { spanId: context.spanId } : {}),
     });
   } catch {
-    // 观测是尽力而为。
+     // Observation is best-effort.
   }
 }

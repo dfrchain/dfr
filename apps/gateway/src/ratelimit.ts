@@ -1,8 +1,8 @@
 /**
- * 令牌桶限流（见 docs/architecture/gateway-spec-v0.1.md 第 5 章）。
+ * Token-bucket rate limiting (see docs/architecture/gateway-spec-v0.1.md chapter 5).
  *
- * 桶键 `(projectId, keyId, routeClass)`；令牌桶而非固定窗口 —— 固定窗口在边界
- * 会放行 2 倍流量。超限直接拒绝，不排队。
+ * Bucket key `(projectId, keyId, routeClass)`; a token bucket, not a fixed window — a fixed window at the boundary
+ * would admit 2x the traffic. Over-limit requests are refused directly, never queued.
  */
 export type RouteClass = 'read' | 'write' | 'stream';
 
@@ -25,7 +25,7 @@ interface Bucket {
 export interface RateLimitDecision {
   allowed: boolean;
   remaining: number;
-  /** 距下次可用的毫秒数，供 Retry-After 使用。 */
+  /** Milliseconds until next availability, for Retry-After. */
   retryAfterMs: number;
   limit: number;
 }
@@ -50,7 +50,7 @@ export class TokenBucketLimiter {
 
     const elapsed = Math.max(0, now - bucket.updatedAt);
     bucket.tokens = Math.min(config.capacity, bucket.tokens + (elapsed / 1000) * config.refillPerSecond);
-    // 系统时钟回拨时保持上次计时水位，防止时间恢复后重复补发令牌。
+    // When the system clock moves backward, keep the last refill watermark so tokens are not re-issued twice once time recovers.
     bucket.updatedAt = Math.max(bucket.updatedAt, now);
 
     if (bucket.tokens >= 1) {

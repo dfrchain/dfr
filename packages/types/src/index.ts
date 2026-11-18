@@ -1,10 +1,10 @@
 /**
- * @dfr/types —— DFR 领域模型的机器可读契约。
+ * @dfr/types — the machine-readable contract for DFR domain models.
  *
- * 规范来源：docs/architecture/*.md、docs/api/openapi.yaml
- * 状态：Draft v0.1（规范冻结阶段）
+ * Spec sources: docs/architecture/*.md, docs/api/openapi.yaml
+ * Status: Draft v0.1 (spec freeze phase)
  *
- * 注意：本包为纯类型契约，编译与校验工具链在 DFR-001 落地。
+ * Note: this package is a pure type contract; the compile and validation toolchain lands in DFR-001.
  */
 export * from './primitives.js';
 export * from './capability.js';

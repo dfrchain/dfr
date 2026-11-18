@@ -1,17 +1,17 @@
 /**
- * simulate HTTP 端点契约测试（DFR-M1-B08）。
+ * simulate HTTP endpoint contract test (DFR-M1-B08).
  *
- * 权威来源：docs/api/openapi.yaml `/v1/transactions/simulate`、
- * docs/architecture/m1-api-contract.md 第 1/2/5 节。
+ * Authoritative sources: docs/api/openapi.yaml `/v1/transactions/simulate`,
+ * docs/architecture/m1-api-contract.md sections 1/2/5.
  *
- * 请求体 = `SimulateTransactionRequest`：`transactionId` + build 返回的
- * `UnsignedTransaction`（不接受"另带一个载荷"：引擎会与落库记录逐字节比对）。
+ * Request body = `SimulateTransactionRequest`: `transactionId` + the
+ * `UnsignedTransaction` returned by build (no "bring another payload": the engine compares byte-for-byte against the stored record).
  *
- * 用假引擎测 Gateway 的职责：
- *   - 契约封套 `{ transactionId, simulation, requestId }`（成功码 200）；
- *   - 结构校验在 Gateway，领域绑定校验在引擎；
- *   - **回滚（DFR_TRANSACTION_REVERTED）必须映射为 422，绝不能被包装成 500**；
- *   - 未装配引擎 → 422，不是 500。
+ * Tests the Gateway's responsibilities with a fake engine:
+ *   - contract envelope `{ transactionId, simulation, requestId }` (success code 200);
+ *   - structural validation in the Gateway, domain binding validation in the engine;
+ *   - **a revert (DFR_TRANSACTION_REVERTED) must map to 422, never wrapped as 500**;
+ *   - no engine assembled → 422, not 500.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AddressInfo } from 'node:net';
@@ -98,8 +98,8 @@ async function post(body: string | Record<string, unknown>, headers: Record<stri
   return { status: response.status, body: (await response.json()) as Record<string, unknown> };
 }
 
-describe('POST /v1/transactions/simulate（DFR-M1-B08）', () => {
-  it('成功返回 200 + 契约封套（transactionId / simulation / requestId）', async () => {
+describe('POST /v1/transactions/simulate (DFR-M1-B08)', () => {
+  it('returns 200 + contract envelope (transactionId / simulation / requestId) on success', async () => {
     await start(fakeEngine(async () => OK_RESULT));
     const response = await post(VALID_BODY);
 
@@ -112,7 +112,7 @@ describe('POST /v1/transactions/simulate（DFR-M1-B08）', () => {
     expect(JSON.stringify(response.body)).not.toContain('signedPayload');
   });
 
-  it('把 transactionId / unsignedTransaction / requestId / signal 透传给引擎', async () => {
+  it('passes transactionId / unsignedTransaction / requestId / signal through to the engine', async () => {
     const seen: SimulateTransactionInput[] = [];
     await start(
       fakeEngine(async (input) => {
@@ -121,27 +121,27 @@ describe('POST /v1/transactions/simulate（DFR-M1-B08）', () => {
       }),
     );
 
-    // 可选 Idempotency-Key 必须被接受（OpenAPI 声明 optional），但引擎的
-    // simulate 输入没有该字段：它不参与幂等判断（simulate 以 transactionId 定位）。
+    // An optional Idempotency-Key must be accepted (OpenAPI declares it optional), but the engine's
+    // simulate input has no such field: it takes no part in idempotency decisions (simulate locates by transactionId).
     await post(VALID_BODY, { 'idempotency-key': 'simulate-key-1' });
     await post(VALID_BODY);
 
     expect(seen).toHaveLength(2);
     expect(seen[0]?.transactionId).toBe(TXN_ID);
     expect(seen[0]?.unsignedTransaction).toEqual(UNSIGNED);
-    // 请求 ID 与取消信号必须一路带到引擎（否则重试/超时无法归因）。
+    // The request ID and cancellation signal must travel all the way to the engine (otherwise retries/timeouts cannot be attributed).
     expect(seen[0]?.requestId).toMatch(/^req_/u);
     expect(seen[0]?.signal).toBeInstanceOf(AbortSignal);
   });
 
-  it('沿用合法 X-Request-Id，并在响应封套中回写同一个值', async () => {
+  it('reuses a valid X-Request-Id and echoes the same value in the response envelope', async () => {
     await start(fakeEngine(async () => OK_RESULT));
     const rid = 'req_01J8Z6W3Q2K9M4ABCDEFGHJKMN';
     const response = await post(VALID_BODY, { 'x-request-id': rid });
     expect(response.body['requestId']).toBe(rid);
   });
 
-  it('结构校验在 Gateway：缺 transactionId / 缺 unsignedTransaction / 类型错 → 400 且不调用引擎', async () => {
+  it('structural validation in the Gateway: missing transactionId / missing unsignedTransaction / wrong type → 400, and the engine is not called', async () => {
     const simulate = vi.fn(async () => OK_RESULT);
     await start(fakeEngine(simulate));
 
@@ -160,21 +160,21 @@ describe('POST /v1/transactions/simulate（DFR-M1-B08）', () => {
     expect(simulate).not.toHaveBeenCalled();
   });
 
-  it('缺 unsignedTransaction.meta → 400，绝不泄漏 500（2026-10-06 真实链验收发现）', async () => {
-    // 真实缺陷：OpenAPI 的 UnsignedTransaction 把 `meta` 列为必填，但 Gateway 的结构校验
-    // 只查了 chain/payload。缺 meta 的请求会一路进入引擎，在
-    // `unsigned.meta.requiresNonce` 抛 TypeError，被归一化成 500 DFR_INTERNAL_ERROR。
-    // 那是**调用方输入错误**，必须是 400；500 会把"少传字段"误导成"服务端故障"。
+  it('missing unsignedTransaction.meta → 400, never leaking a 500 (found in the 2026-10-06 real-chain acceptance)', async () => {
+    // Real defect: OpenAPI lists `meta` as required on UnsignedTransaction, but the Gateway's structural validation
+    // only checked chain/payload. A request missing meta travels all the way into the engine, where
+    // `unsigned.meta.requiresNonce` throws a TypeError, normalized into 500 DFR_INTERNAL_ERROR.
+    // That is a **caller input error** and must be 400; a 500 misleads "a missing field" into "a server failure".
     const simulate = vi.fn(async () => OK_RESULT);
     await start(fakeEngine(simulate));
 
     const invalid: Record<string, unknown>[] = [
-      // 缺 meta
+      // Missing meta
       { transactionId: TXN_ID, unsignedTransaction: { schemaVersion: '1', chain: CHAIN, payload: '0x02f8' } },
-      // meta 类型错
+      // Wrong meta type
       { transactionId: TXN_ID, unsignedTransaction: { schemaVersion: '1', chain: CHAIN, payload: '0x02f8', meta: 'x' } },
       { transactionId: TXN_ID, unsignedTransaction: { schemaVersion: '1', chain: CHAIN, payload: '0x02f8', meta: [] } },
-      // schemaVersion 不是 "1"
+      // schemaVersion is not "1"
       { transactionId: TXN_ID, unsignedTransaction: { schemaVersion: '2', chain: CHAIN, payload: '0x02f8', meta: {} } },
       { transactionId: TXN_ID, unsignedTransaction: { chain: CHAIN, payload: '0x02f8', meta: {} } },
     ];
@@ -186,7 +186,7 @@ describe('POST /v1/transactions/simulate（DFR-M1-B08）', () => {
     expect(simulate).not.toHaveBeenCalled();
   });
 
-  it('模拟回滚（DFR_TRANSACTION_REVERTED）映射为 422，不被包装成 500', async () => {
+  it('a simulated revert (DFR_TRANSACTION_REVERTED) maps to 422, not wrapped as 500', async () => {
     await start(
       fakeEngine(async () => {
         throw createDfrError('DFR_TRANSACTION_REVERTED', {
@@ -201,13 +201,13 @@ describe('POST /v1/transactions/simulate（DFR-M1-B08）', () => {
     expect(response.body).toMatchObject({ dfr_code: 'DFR_TRANSACTION_REVERTED' });
   });
 
-  it('载荷绑定失败 / 状态不允许（引擎 DFR_VALIDATION_FAILED）映射为 400', async () => {
+  it('payload binding failure / disallowed state (engine DFR_VALIDATION_FAILED) maps to 400', async () => {
     await start(
       fakeEngine(async () => {
         throw createDfrError('DFR_VALIDATION_FAILED', {
           requestId: 'req_01J8Z6W3Q2K9M4ABCDEFGHJKMN' as never,
           chain: CHAIN as never,
-          message: 'unsigned payload 与已保存记录不一致',
+          message: 'unsigned payload does not match the saved record',
           details: { fields: ['unsignedTransaction'] },
         });
       }),
@@ -217,12 +217,12 @@ describe('POST /v1/transactions/simulate（DFR-M1-B08）', () => {
     expect(response.body).toMatchObject({ dfr_code: 'DFR_VALIDATION_FAILED' });
   });
 
-  it('未知 transactionId（DFR_NOT_FOUND）映射为 404', async () => {
+  it('unknown transactionId (DFR_NOT_FOUND) maps to 404', async () => {
     await start(
       fakeEngine(async () => {
         throw createDfrError('DFR_NOT_FOUND', {
           requestId: 'req_01J8Z6W3Q2K9M4ABCDEFGHJKMN' as never,
-          message: '找不到交易',
+          message: 'Transaction not found',
         });
       }),
     );
@@ -231,7 +231,7 @@ describe('POST /v1/transactions/simulate（DFR-M1-B08）', () => {
     expect(response.body).toMatchObject({ dfr_code: 'DFR_NOT_FOUND' });
   });
 
-  it('未装配引擎 → 422（写路径未启用，不是 500）', async () => {
+  it('no engine assembled → 422 (write path not enabled, not 500)', async () => {
     server = createGatewayServer({ core, auth: auth(), allowWrite: true });
     await new Promise<void>((resolve) => server?.listen(0, '127.0.0.1', resolve));
     baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;

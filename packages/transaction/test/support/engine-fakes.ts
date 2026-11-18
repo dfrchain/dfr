@@ -1,8 +1,8 @@
 /**
- * M1 引擎测试的**共享内存替身**（从 build.test.ts 抽出，见 ADR-037）。
+ * The **shared in-memory test doubles** for M1 engine tests (extracted from build.test.ts, see ADR-037).
  *
- * 抽出原因：ADR-037 的 preflight 与 build 需要同一套替身来断言"零副作用"，
- * 复制 300 行会立刻漂移。**只搬移，不改语义**。
+ * Why extracted: ADR-037's preflight and build need the same test doubles to assert "zero side effects";
+ * copying 300 lines would drift immediately. **Moved only, semantics unchanged**.
  */
 import type {
   AccountRef,
@@ -58,7 +58,7 @@ export const dec = (value: string): DecimalUint => value as DecimalUint;
 export const iso = (ms: number): Iso8601 => new Date(ms).toISOString() as Iso8601;
 
 /* ------------------------------------------------------------------ */
-/* 替身：TransactionStore                                             */
+/* Test doubles: TransactionStore                                             */
 /* ------------------------------------------------------------------ */
 
 export class FakeTransactionStore implements TransactionStore {
@@ -91,9 +91,9 @@ export class FakeTransactionStore implements TransactionStore {
     if (current.status !== input.expectedStatus) {
       return { kind: 'status_conflict', current };
     }
-    // 替身按 reason 映射事件；未列出的事件说明测试用到了替身尚未支持的边。
-    // ADR-037 起 `abandon` 是合法事件（state-machine 已定义），这里必须认识它，
-    // 否则 abandon 测试会以"状态机拒绝"的假象失败。
+    // Test doubles map events by reason; an unlisted event means the test used an edge the doubles do not support yet.
+    // Since ADR-037, `abandon` is a legal event (defined in the state machine), so it must be recognized here,
+    // or the abandon tests would fail with the false appearance of "rejected by the state machine".
     const eventMap: Record<string, TransactionEvent> = {
       'broadcast.accepted': 'broadcast.accepted',
       build: 'build',
@@ -105,7 +105,7 @@ export class FakeTransactionStore implements TransactionStore {
     };
     const mappedEvent = eventMap[input.reason];
     if (mappedEvent === undefined) {
-      throw new Error(`FakeTransactionStore: 未映射的 transition reason 「${input.reason}」`);
+      throw new Error(`FakeTransactionStore: unmapped transition reason "${input.reason}"`);
     }
     const moved = transition({
       from: current.status,
@@ -139,7 +139,7 @@ export class FakeTransactionStore implements TransactionStore {
 }
 
 /* ------------------------------------------------------------------ */
-/* 替身：IdempotencyStore                                             */
+/* Test doubles: IdempotencyStore                                             */
 /* ------------------------------------------------------------------ */
 
 interface FakeIdemRow {
@@ -155,9 +155,9 @@ interface FakeIdemRow {
 export class FakeIdempotencyStore implements IdempotencyStore {
   readonly rows = new Map<string, FakeIdemRow>();
   readonly beginCalls: BeginIdempotencyInput[] = [];
-  /** 测试可推进的单调时钟（毫秒），用于制造租约过期与接管。 */
+  /** A test-advanceable monotonic clock (milliseconds), used to manufacture lease expiry and takeover. */
   clockMs = 1_000_000;
-  /** 置为 true 时 complete 返回 lost_ownership（模拟执行权被接管）。 */
+  /** When true, complete returns lost_ownership (simulating a takeover of execution rights). */
   loseOwnership = false;
 
   private keyOf(scope: IdempotencyScope): string {
@@ -234,15 +234,15 @@ export class FakeIdempotencyStore implements IdempotencyStore {
 }
 
 /* ------------------------------------------------------------------ */
-/* 替身：NonceStore                                                   */
+/* Test doubles: NonceStore                                                   */
 /* ------------------------------------------------------------------ */
 
 export class FakeNonceStore implements NonceStore {
   readonly reserveCalls: ReserveNonceInput[] = [];
   readonly releaseCalls: NonceLeaseRef[] = [];
-  /** 置为 true 时 reserve 返回 conflict。 */
+  /** When true, reserve returns conflict. */
   conflict = false;
-  /** 置为 true 时 releaseIfSafe 返回 forbidden（同 nonce 已签名/广播）。 */
+  /** When true, releaseIfSafe returns forbidden (same nonce already signed/broadcast). */
   releaseForbidden = false;
 
   async reserve(input: ReserveNonceInput): Promise<ReserveNonceResult> {
@@ -289,7 +289,7 @@ export class FakeNonceStore implements NonceStore {
 }
 
 /* ------------------------------------------------------------------ */
-/* 替身：链端口                                                       */
+/* Test doubles: chain port                                                       */
 /* ------------------------------------------------------------------ */
 
 export class FakeChainPort implements TransactionChainPort {
@@ -297,7 +297,7 @@ export class FakeChainPort implements TransactionChainPort {
   readonly buildCalls: ChainBuildInput[] = [];
   pendingNonce = dec('42');
   buildError?: Error;
-  /** 非空时 `build` 抛 DFR_TRANSACTION_REVERTED（模拟 gas 估计阶段回滚）。 */
+  /** When non-empty, `build` throws DFR_TRANSACTION_REVERTED (simulating a revert at the gas-estimation phase). */
   buildRevert?: string;
 
   async getPendingNonce(input: GetPendingNonceInput): Promise<DecimalUint> {
@@ -307,12 +307,12 @@ export class FakeChainPort implements TransactionChainPort {
 
   async build(input: ChainBuildInput): Promise<UnsignedTransaction> {
     this.buildCalls.push(input);
-    // ADR-037：preflight 需要能制造"build 阶段即回滚"（EVM 的 eth_estimateGas 回滚）。
+    // ADR-037: preflight needs to manufacture "a revert at the build phase" (an EVM eth_estimateGas revert).
     if (this.buildRevert !== undefined) {
       throw createDfrError('DFR_TRANSACTION_REVERTED', {
         requestId: input.requestId ?? ('req_test' as never),
         chain: input.request.chain,
-        message: '执行回滚（eth_estimateGas）',
+        message: 'Execution reverted (eth_estimateGas)',
         details: { revertReason: this.buildRevert },
       });
     }
@@ -330,24 +330,24 @@ export class FakeChainPort implements TransactionChainPort {
     };
   }
 
-  /** simulate 调用记录（ADR-037 的 preflight 会用到；build 测试不应触发它）。 */
+  /** The simulate call record (used by ADR-037's preflight; build tests must not trigger it). */
   readonly simulateCalls: unknown[] = [];
   /**
-   * B05 才引入 simulate。**默认抛错**，这样 build 测试仍然能断言"build 不调用 simulate"；
-   * preflight 测试把它置为 true，表示"允许模拟"。
+   * B05 introduced simulate. **Throws by default**, so build tests can still assert "build does not call simulate";
+   * preflight tests set it to true, meaning "simulation is allowed".
    */
   allowSimulate = false;
   simulateResult: SimulationResult = { success: true, estimatedCost: dec('21000') };
 
   async simulate(input: unknown): Promise<SimulationResult> {
     this.simulateCalls.push(input);
-    if (!this.allowSimulate) throw new Error('build 测试不应调用 simulate');
+    if (!this.allowSimulate) throw new Error('build tests must not call simulate');
     return this.simulateResult;
   }
 }
 
 /* ------------------------------------------------------------------ */
-/* 组装                                                               */
+/* Assembly                                                               */
 /* ------------------------------------------------------------------ */
 
 export interface Harness {

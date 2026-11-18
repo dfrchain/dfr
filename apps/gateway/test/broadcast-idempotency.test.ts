@@ -1,11 +1,11 @@
-// broadcast 幂等契约测试（TODO-013）。
+// broadcast idempotency contract test (TODO-013).
 //
-// 预复审发现：gateway-spec §7.2 / openapi / m1-api-contract §4 / security-trust-model §5
-// 都声称广播有幂等（存指纹 + 首次响应、同体重放、异体 409、`Idempotency-Replayed`），
-// 但 Gateway 只校验键长度，`engine.broadcast` 从不访问幂等 Store。
+// Pre-review finding: gateway-spec §7.2 / openapi / m1-api-contract §4 / security-trust-model §5
+// all claim broadcast is idempotent (store fingerprint + first response, same-body replay, different-body 409, `Idempotency-Replayed`),
+// but the Gateway only validates key length, and `engine.broadcast` never touches the idempotency Store.
 //
-// 本文件把该契约锁成行为。**最强的一条断言是**：同键同体重放时
-// **Adapter 只被调用一次** —— 这才是"幂等"真正的资金安全含义（不会重复广播）。
+// This file locks that contract into behavior. **The strongest assertion is**: on a same-key same-body replay,
+// **the Adapter is called only once** — that is the true funds-safety meaning of "idempotent" (no duplicate broadcast).
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
@@ -19,7 +19,7 @@ import {
 import { createInMemoryTransactionStores } from '../../../tests/e2e/support/in-memory-transaction-stores.js';
 
 const CHAIN = 'ethereum-sepolia';
-const KEY_ID = 'BcIdem01'; // 恰好 8 位
+const KEY_ID = 'BcIdem01'; // exactly 8 characters
 const SECRET = 'broadcastIdempotencySecret0123456789';
 const PEPPER = 'bc-idem-pepper';
 const EXPECTED_HASH = `0x${'ab'.repeat(32)}`;
@@ -80,7 +80,7 @@ async function start(): Promise<void> {
     auth: auth(),
     allowWrite: true,
     transactions: engine as never,
-    // 真实的内存幂等 Store + 真实的 C04 协调器（此前从未被装配）。
+    // A real in-memory idempotency Store + the real C04 coordinator (never assembled before).
     idempotency: new GatewayIdempotencyCoordinator(stores.idempotency),
   });
   await new Promise<void>((resolve) => server?.listen(0, '127.0.0.1', resolve));
@@ -114,8 +114,8 @@ async function post(
   };
 }
 
-describe('broadcast 幂等（TODO-013）', () => {
-  it('同键同体两次 → 都 202，但 Adapter 只被调用一次，第二次带 Idempotency-Replayed', async () => {
+describe('broadcast idempotency (TODO-013)', () => {
+  it('same key and body twice → both 202, but the Adapter is called only once, and the second carries Idempotency-Replayed', async () => {
     await start();
     const payload = body('txn_01J8Z6W3Q2K9M4ABCDEFGHJKMN');
 
@@ -126,25 +126,25 @@ describe('broadcast 幂等（TODO-013）', () => {
 
     const second = await post(payload, 'bc-idem-key-0001');
     expect(second.status).toBe(202);
-    // 关键：重放**不得**再次广播。
+    // Key point: a replay must **not** broadcast again.
     expect(broadcastCalls).toBe(1);
     expect(second.replayed).toBe('true');
     expect(second.body['transactionId']).toBe(first.body['transactionId']);
   });
 
-  it('同键不同体 → 409 DFR_IDEMPOTENCY_CONFLICT，且不广播第二次', async () => {
+  it('same key, different body → 409 DFR_IDEMPOTENCY_CONFLICT, and no second broadcast', async () => {
     await start();
     await post(body('txn_01J8Z6W3Q2K9M4ABCDEFGHJKMN'), 'bc-idem-key-0002');
     expect(broadcastCalls).toBe(1);
 
-    // 换 transactionId（不同请求体）复用同一幂等键。
+    // Reuse the same idempotency key with a different transactionId (different request body).
     const conflict = await post(body('txn_OTHER_ID'), 'bc-idem-key-0002');
     expect(conflict.status).toBe(409);
     expect(conflict.body['dfr_code']).toBe('DFR_IDEMPOTENCY_CONFLICT');
     expect(broadcastCalls).toBe(1);
   });
 
-  it('不同幂等键 → 各自独立执行（幂等键不串味）', async () => {
+  it('different idempotency keys → each executes independently (idempotency keys do not cross-contaminate)', async () => {
     await start();
     const payload = body('txn_01J8Z6W3Q2K9M4ABCDEFGHJKMN');
     await post(payload, 'bc-idem-key-0003');
@@ -152,8 +152,8 @@ describe('broadcast 幂等（TODO-013）', () => {
     expect(broadcastCalls).toBe(2);
   });
 
-  it('未装配幂等协调器时不得静默降级：仍要求键，但不做重放', async () => {
-    // 该用例锁定"装配与否"的行为差异是显式的：没有协调器就没有重放保证。
+  it('without an assembled idempotency coordinator, no silent degradation: the key is still required, but no replay is done', async () => {
+    // This case locks in that the behavioral difference of "assembled or not" is explicit: no coordinator means no replay guarantee.
     broadcastCalls = 0;
     const engine = {
       broadcast: async () => {
@@ -168,17 +168,17 @@ describe('broadcast 幂等（TODO-013）', () => {
     const payload = body('txn_01J8Z6W3Q2K9M4ABCDEFGHJKMN');
     await post(payload, 'bc-idem-key-0005');
     await post(payload, 'bc-idem-key-0005');
-    // 无协调器 → 两次都真的广播（这是当前的诚实行为，不是"假装幂等"）。
+    // No coordinator → both requests really broadcast (this is the current honest behavior, not "pretend idempotency").
     expect(broadcastCalls).toBe(2);
   });
 });
 
-describe('真实 startGateway 的幂等接线（TODO-013）', () => {
-  it('M1 启动后广播幂等生效：同键不同体被 409 拦截（证明协调器已装配）', async () => {
-    // 为什么用"冲突"而不是"重放"来验证接线：重放需要**首次请求成功**（才会写首次响应），
-    // 而让真实 startGateway 的引擎成功广播需要可用的 Provider + 真实签名 —— 那由
-    // tests/e2e/m1-broadcast.e2e.test.ts 覆盖。这里只需证明"协调器确实被装配"：
-    // `acquire` 发生在引擎调用**之前**，因此同键不同体必然得到 409（而不是引擎层的 404）。
+describe('real startGateway idempotency wiring (TODO-013)', () => {
+  it('after M1 startup, broadcast idempotency is in effect: same key with a different body is blocked with 409 (proving the coordinator is assembled)', async () => {
+    // Why "conflict" rather than "replay" verifies the wiring: replay requires the **first request to succeed** (so the first response is written),
+    // while making the real startGateway engine broadcast successfully needs an available Provider + real signing — that is covered by
+    // tests/e2e/m1-broadcast.e2e.test.ts. Here we only need to prove "the coordinator is really assembled":
+    // `acquire` happens **before** the engine call, so the same key with a different body necessarily gets 409 (not the engine layer's 404).
     const { startGateway } = await import('../src/main.js');
     const stores = createInMemoryTransactionStores();
     const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
@@ -221,8 +221,8 @@ describe('真实 startGateway 的幂等接线（TODO-013）', () => {
         headers,
         body: JSON.stringify(body('txn_wire_a')),
       });
-      // 首次请求拿到执行权，随后因记录不存在在引擎层失败（404），
-      // 但幂等记录已经建立 —— 这正是下面冲突断言的前提。
+      // The first request acquires execution rights, then fails at the engine layer because the record does not exist (404),
+      // but the idempotency record is already established — which is exactly the premise of the conflict assertion below.
       expect(first.status).toBe(404);
 
       const second = await fetch(url, {

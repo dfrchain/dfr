@@ -1,10 +1,10 @@
 /**
- * RecoveryCoordinator.abandonStaleUnbroadcast 契约测试（ADR-037 方案 C）。
+ * RecoveryCoordinator.abandonStaleUnbroadcast contract test (ADR-037, option C).
  *
- * 权威来源：`docs/adr/ADR-037-abandoned-built-transaction-reclaim.md`。
+ * Authoritative source: `docs/adr/ADR-037-abandoned-built-transaction-reclaim.md`.
  *
- * 这是**兜底**：方案 A 的显式 abandon 只在调用方记得时有效；崩溃/中断/忘记时靠本巡检自愈。
- * 最重要的负对照：`signed` 及以上**永不**被本巡检触碰（那会回收已签名交易的 nonce）。
+ * This is the **safety net**: option A's explicit abandon only works when the caller remembers; crashes/interruptions/forgetting rely on this sweep to self-heal.
+ * The most important negative control: `signed` and above are **never** touched by this sweep (that would reclaim a signed transaction's nonce).
  */
 import { describe, expect, it } from 'vitest';
 import type { ChainId, Iso8601 } from '@dfr/types';
@@ -20,8 +20,8 @@ import { RecoveryCoordinator } from '../src/recovery.js';
 
 const CHAIN = 'ethereum-sepolia' as ChainId;
 const NOW = Date.parse('2026-10-07T12:00:00.000Z');
-const OLD = '2026-10-07T10:00:00.000Z' as Iso8601; // 2 小时前（> 30 分钟窗口）
-const FRESH = '2026-10-07T11:59:00.000Z' as Iso8601; // 1 分钟前
+const OLD = '2026-10-07T10:00:00.000Z' as Iso8601; // 2 hours ago (> 30-minute window)
+const FRESH = '2026-10-07T11:59:00.000Z' as Iso8601; // 1 minute ago
 
 function record(overrides: Partial<TransactionRecord>): TransactionRecord {
   return {
@@ -54,7 +54,7 @@ function harness(
   const releases: Harness['releases'] = [];
   const transactions = {
     listRecoverable: async (input: { statuses?: readonly string[]; updatedBefore?: string }) => {
-      // 替身按"状态 + 窗口上界"过滤，模拟 SQL 的行为（而不是把全部记录都返回）。
+      // Test doubles filter by "state + window upper bound", simulating SQL behavior (instead of returning all records).
       return records.filter((r) => {
         if (input.statuses !== undefined && !input.statuses.includes(r.status)) return false;
         if (input.updatedBefore !== undefined && r.updatedAt > input.updatedBefore) return false;
@@ -88,8 +88,8 @@ function harness(
   return { coordinator, transitions, releases };
 }
 
-describe('RecoveryCoordinator.abandonStaleUnbroadcast（ADR-037 方案 C）', () => {
-  it('超窗的 built 被自动作废：先完成 abandoned CAS、再安全释放租约', async () => {
+describe('RecoveryCoordinator.abandonStaleUnbroadcast (ADR-037, option C)', () => {
+  it('an over-window built record is auto-voided: complete the abandoned CAS first, then safely release the lease', async () => {
     const h = harness([record({ nonce: '20' as never })], { abandonBuiltAfterMs: 30 * 60_000 });
 
     const abandoned = await h.coordinator.abandonStaleUnbroadcast({ limit: 10 });
@@ -101,7 +101,7 @@ describe('RecoveryCoordinator.abandonStaleUnbroadcast（ADR-037 方案 C）', ()
     ]);
   });
 
-  it('超窗的 simulated 同样被作废（两者都未签名）', async () => {
+  it('an over-window simulated record is voided the same way (both are unsigned)', async () => {
     const h = harness([record({ status: 'simulated', nonce: '21' as never })], {
       abandonBuiltAfterMs: 30 * 60_000,
     });
@@ -109,7 +109,7 @@ describe('RecoveryCoordinator.abandonStaleUnbroadcast（ADR-037 方案 C）', ()
     expect(h.transitions[0]!.toStatus).toBe('abandoned');
   });
 
-  it('★ 负对照：signed 及以上**永不**被本巡检触碰', async () => {
+  it('★ negative control: signed and above are **never** touched by this sweep', async () => {
     const h = harness(
       [
         record({ transactionId: 'txn_signed' as never, status: 'signed', nonce: '30' as never }),
@@ -123,11 +123,11 @@ describe('RecoveryCoordinator.abandonStaleUnbroadcast（ADR-037 方案 C）', ()
 
     expect(abandoned).toBe(0);
     expect(h.transitions).toEqual([]);
-    // 关键：一次租约释放都没有发生。
+    // Key point: not a single lease release happened.
     expect(h.releases).toEqual([]);
   });
 
-  it('窗口内（刚 build）的记录不被回收', async () => {
+  it('a record inside the window (just built) is not reclaimed', async () => {
     const h = harness([record({ updatedAt: FRESH, nonce: '40' as never })], {
       abandonBuiltAfterMs: 30 * 60_000,
     });
@@ -135,8 +135,8 @@ describe('RecoveryCoordinator.abandonStaleUnbroadcast（ADR-037 方案 C）', ()
     expect(h.transitions).toEqual([]);
   });
 
-  it('未配置窗口 = 关闭本巡检（显式，而不是用某个默认值）', async () => {
-    const h = harness([record({ nonce: '50' as never })]); // 不传 abandonBuiltAfterMs
+  it('an unconfigured window = this sweep disabled (explicit, not some default)', async () => {
+    const h = harness([record({ nonce: '50' as never })]); // do not pass abandonBuiltAfterMs
     expect(await h.coordinator.abandonStaleUnbroadcast({ limit: 10 })).toBe(0);
     expect(h.transitions).toEqual([]);
   });
@@ -239,7 +239,7 @@ describe('RecoveryCoordinator.abandonStaleUnbroadcast（ADR-037 方案 C）', ()
     },
   );
 
-  it('limit 越界 fail-closed', async () => {
+  it('limit out of bounds fails closed', async () => {
     const h = harness([], { abandonBuiltAfterMs: 30 * 60_000 });
     await expect(h.coordinator.abandonStaleUnbroadcast({ limit: 0 })).rejects.toThrow(RangeError);
     await expect(h.coordinator.abandonStaleUnbroadcast({ limit: 501 })).rejects.toThrow(RangeError);

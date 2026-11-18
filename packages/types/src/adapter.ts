@@ -1,8 +1,8 @@
 /**
- * Adapter 契约（见 docs/architecture/adapter-spec-v0.1.md）。
+ * Adapter contract (see docs/architecture/adapter-spec-v0.1.md).
  *
- * 采用"基础接口 + Capability 拆分接口"，不采用单个宽接口。
- * 未声明的能力必须返回 DFR_UNSUPPORTED_CAPABILITY，禁止静默降级。
+ * Uses "base interface + Capability-split interfaces", not a single wide interface.
+ * Undeclared capabilities must return DFR_UNSUPPORTED_CAPABILITY; silent degradation is forbidden.
  */
 import type { ChainId, NetworkId, ChainFamily, RequestId, DecimalUint } from './primitives.js';
 import type { SequencingToken } from './sequencing.js';
@@ -28,11 +28,11 @@ import type {
 import type { EventFilter, ChainEvent } from './event.js';
 import type { ProviderRouter } from './provider.js';
 
-/** 由 Provider Manager 注入，Adapter 不持有端点或凭证。 */
+/** Injected by the Provider Manager; the Adapter holds no endpoints or credentials. */
 export interface AdapterContext {
   chain: ChainId;
   network: NetworkId;
-  /** Provider 路由器；Adapter 按需 acquire，不持有端点或凭证。 */
+  /** Provider router; the Adapter acquires on demand and holds no endpoints or credentials. */
   providers: ProviderRouter;
   signal: AbortSignal;
   requestId: RequestId;
@@ -40,10 +40,10 @@ export interface AdapterContext {
   spanId?: string;
 }
 
-/** 所有 Adapter 必须实现的基础接口。 */
+/** The base interface every Adapter must implement. */
 export interface ChainAdapter {
   readonly family: ChainFamily;
-  /** Adapter 实现版本（semver）。 */
+  /** Adapter implementation version (semver). */
   readonly version: string;
   readonly specVersion: '0.1';
   getInfo(ctx: AdapterContext): Promise<ChainInfo>;
@@ -74,17 +74,17 @@ export interface BuildCapability {
 }
 
 /**
- * `simulate` 的补充输入（DFR-M1-B07 新增，可选、向后兼容）。
+ * Supplementary input for `simulate` (added in DFR-M1-B07, optional, backward compatible).
  *
- * `UnsignedTransaction` 本身不含发送方（载荷只有 chainId/nonce/to/value/gas/data
- * 与费用字段）。直接调用 Adapter 时省略 `options` 即维持 B03 行为：不伪造 `from`，
- * 并在 `warnings` 中显式声明"发送方相关检查未被覆盖"。
+ * `UnsignedTransaction` itself carries no sender (the payload has only chainId/nonce/to/value/gas/data
+ * and fee fields). Calling the Adapter directly without `options` keeps B03 behavior: no fabricated `from`,
+ * and an explicit statement in `warnings` that "sender-related checks were not covered".
  *
- * Transaction Engine 拥有记录，知道该载荷的发送方；它通过 `options.from` 让
- * Adapter 把 `from` 补进 `eth_call`，从而让余额 / 授权 / nonce 检查真正生效。
+ * The Transaction Engine owns the record and knows the payload's sender; it passes `from` via `options.from` so the
+ * Adapter can add `from` to `eth_call`, making the balance / allowance / nonce checks actually effective.
  */
 export interface SimulationOptions {
-  /** 记录中的发送方；仅在载荷路径（`UnsignedTransaction`）有意义。 */
+  /** The sender in the record; only meaningful on the payload path (`UnsignedTransaction`). */
   from?: AccountRef;
 }
 
@@ -97,53 +97,53 @@ export interface SimulationCapability {
 }
 
 /**
- * 非 Capability 的 Adapter 扩展方法：读链上 pending nonce（DFR-M1-B07）。
+ * Non-Capability Adapter extension method: read the on-chain pending nonce (DFR-M1-B07).
  *
- * 刻意**不进** `CapabilityId` / `capabilities()`：它不是对外 API 能力，不能被
- * Gateway 直接路由，只服务 Transaction Engine 的 nonce 租约（m1-storage-model §3）。
- * Core 用"方法存在性"判定是否支持，缺失则 fail-closed 为
- * `DFR_UNSUPPORTED_CAPABILITY`，不静默降级。
+ * Deliberately **not** in `CapabilityId` / `capabilities()`: it is not an outward-facing API capability and cannot be
+ * routed directly by the Gateway; it only serves the Transaction Engine's nonce lease (m1-storage-model §3).
+ * Core decides support by "method existence"; when missing, it fails closed to
+ * `DFR_UNSUPPORTED_CAPABILITY` with no silent degradation.
  */
 export interface PendingNonceReadMethod {
-  /** 链上 pending nonce，十进制字符串（绝不经 JS `number`）。 */
+  /** On-chain pending nonce, decimal string (never via JS `number`). */
   getPendingNonce(ctx: AdapterContext, account: AccountRef): Promise<DecimalUint>;
 }
 
 /**
- * 非 Capability 的 Adapter 扩展方法：判定一个**排序前提**在当前链状态下是否已过期
- * （DFR-M3-A01，ADR-032）。
+ * Non-Capability Adapter extension method: decide whether an **ordering precondition** has expired under current chain state
+ * (DFR-M3-A01, ADR-032).
  *
- * 为什么必须由 Adapter 拥有（roadmap M3 的第一条红线："链特定过期语义在 Adapter"）：
- * 过期是**链特定的**——
- *   - Solana：比对 `getBlockHeight()` 与 token 的 `lastValidBlockHeight`
- *     （按**区块高度**，不是时间；实测 devnet 有效窗口约 166 个 block）；
- *   - EVM：nonce 不会"过期"，只会被更高的 nonce 消耗 → 不实现本方法。
+ * Why the Adapter must own it (roadmap M3's first red line: "chain-specific expiry semantics live in the Adapter"):
+ * expiry is **chain-specific** —
+ *   - Solana: compare `getBlockHeight()` against the token's `lastValidBlockHeight`
+ *     (by **block height**, not time; measured devnet window is about 166 blocks);
+ *   - EVM: a nonce never "expires", it is only consumed by a higher nonce → do not implement this method.
  *
- * 与 `PendingNonceReadMethod` 同理：不进 `CapabilityId` / `capabilities()`，不能被
- * Gateway 直接路由，只服务 Transaction Engine 的排序租约（`SequencingStore`）。
- * Core 以**方法存在性**判定支持性；缺失即视为"永不过期"（EVM 语义）——
- * 这是显式约定，不是静默降级。
+ * As with `PendingNonceReadMethod`: not in `CapabilityId` / `capabilities()`, cannot be
+ * routed directly by the Gateway; it only serves the Transaction Engine's sequencing lease (`SequencingStore`).
+ * Core decides support by **method existence**; when missing, it is treated as "never expires" (EVM semantics) —
+ * this is an explicit convention, not silent degradation.
  */
 /**
- * 非 Capability 的 Adapter 扩展方法：取本链当前的**排序前提**（ADR-032/033）。
+ * Non-Capability Adapter extension method: get this chain's current **ordering precondition** (ADR-032/033).
  *
- * 与 `PendingNonceReadMethod` 同理：不进 `CapabilityId` / `capabilities()`，只服务
- * Transaction Engine 的排序租约——EVM 用 `getPendingNonce`（nonce 路径），
- * Solana 用本方法（blockhash 路径）。Core 以方法存在性判定走哪条路径。
+ * As with `PendingNonceReadMethod`: not in `CapabilityId` / `capabilities()`, only serves
+ * the Transaction Engine's sequencing lease — EVM uses `getPendingNonce` (the nonce path),
+ * Solana uses this method (the blockhash path). Core decides which path to take by method existence.
  */
 export interface SequencingTokenReadMethod {
   getSequencingToken(ctx: AdapterContext, account: AccountRef): Promise<SequencingToken>;
 }
 
 /**
- * 非 Capability 的 Adapter 扩展方法：把**引擎分配的排序前提**注入请求（ADR-033）。
+ * Non-Capability Adapter extension method: inject the **engine-assigned ordering precondition** into the request (ADR-033).
  *
- * Solana 的 `build` 必须使用引擎/Store 已经选定并落租约的 blockhash（否则租约与载荷
- * 不一致，等于绕过了"同一交易重复 build 稳定"的保证）。EVM 用的是 `req.nonce`，
- * 不需要本方法。
+ * Solana's `build` must use the blockhash already chosen by the engine/Store and placed under lease (otherwise lease and payload
+ * disagree, bypassing the "repeated builds of the same transaction are stable" guarantee). EVM uses `req.nonce`,
+ * and does not need this method.
  */
 export interface EnsureSequencingTokenMethod {
-  /** 返回注入了排序前提的请求（不修改入参）；非法 token 形状即 fail-closed。 */
+  /** Returns the request with the ordering precondition injected (input not mutated); an illegally shaped token fails closed. */
   withSequencingToken(req: TransactionRequest, token: SequencingToken): TransactionRequest;
 }
 
@@ -152,15 +152,15 @@ export interface SequencingTokenExpiryMethod {
 }
 
 /**
- * 广播后链上观测的输入/输出（DFR-M1-C03b，ADR-019）。
+ * Input/output of on-chain observation after broadcast (DFR-M1-C03b, ADR-019).
  *
- * 定义在 `types` 而不是 `transaction`，是因为它是 Adapter 与 Core 之间的**链访问契约**
- * （Adapter 报告它看到了什么），而"对应哪个状态事件"属于状态语义、留在 transaction 包。
- * Core 只做搬运，不解释这些字段。
+ * Defined in `types` rather than `transaction` because it is the **chain-access contract** between Adapter and Core
+ * (the Adapter reports what it saw), while "which state event it maps to" is state semantics and stays in the transaction package.
+ * Core only carries these fields; it does not interpret them.
  */
 export interface BroadcastObservationRequest {
   readonly chain: ChainId;
-  /** 记录里的 expectedHash（由载荷重算，不是调用方声明）。 */
+  /** The expectedHash in the record (recomputed from the payload, not declared by the caller). */
   readonly txHash: string;
   readonly from: AccountRef;
   readonly nonce: DecimalUint;
@@ -171,19 +171,19 @@ export type BroadcastObservation =
   | { readonly kind: 'pending'; readonly txHash: string }
   | { readonly kind: 'replaced'; readonly nonce: DecimalUint; readonly byTxHash?: string }
   /**
-   * 按 expectedHash 查不到，且该 nonce 仍未被占用。
+   * Not found by expectedHash, and the nonce is still unoccupied.
    *
-   * 注意：**不等于 dropped** —— mempool 传播是异步的，其它端点可能仍持有该交易。
-   * 是否判 `dropped` 由上层在 `dropTimeoutMs` 窗口之后决定（ADR-019）。
+   * Note: **not the same as dropped** — mempool propagation is asynchronous, and other endpoints may still hold the transaction.
+   * Whether it counts as `dropped` is decided by the upper layer after the `dropTimeoutMs` window (ADR-019).
    */
   | { readonly kind: 'absent' };
 
 /**
- * 非 Capability 的 Adapter 扩展方法：观测广播后的链上处境（DFR-M1-C03b）。
+ * Non-Capability Adapter extension method: observe the on-chain situation after broadcast (DFR-M1-C03b).
  *
- * 与 `PendingNonceReadMethod` 同理：不进 `CapabilityId` / `capabilities()`，
- * 因为它是内部协调入口，不对应对外 API 能力。Core 用方法存在性判定，
- * 缺失则引擎保持 `unknown`（fail-closed，不假装 dropped / failed）。
+ * As with `PendingNonceReadMethod`: not in `CapabilityId` / `capabilities()`,
+ * because it is an internal coordination entry, not an outward-facing API capability. Core decides by method existence;
+ * when missing, the engine keeps `unknown` (fail-closed, never pretends dropped / failed).
  */
 export interface BroadcastObservationReadMethod {
   observeBroadcast(
@@ -192,7 +192,7 @@ export interface BroadcastObservationReadMethod {
   ): Promise<BroadcastObservation>;
 }
 
-/** 单次只读确认观测；Provider/Adapter 不负责轮询或状态持久化。 */
+/** A single read-only confirmation observation; Provider/Adapter do no polling or state persistence. */
 export interface ChainConfirmationObservation {
   readonly status: Transaction['status'];
   readonly finality: FinalityState;
@@ -202,8 +202,8 @@ export interface ChainConfirmationObservation {
 }
 
 /**
- * 内部确认观测入口，不是 `transaction.confirm.native` Capability。
- * Core/Transaction 负责最终性策略判定、租约、等待与持久化协调。
+ * Internal confirmation observation entry, not the `transaction.confirm.native` Capability.
+ * Core/Transaction own finality policy decisions, leases, waiting, and persistence coordination.
  */
 export interface ConfirmationObservationReadMethod {
   observeConfirmation(
@@ -214,11 +214,11 @@ export interface ConfirmationObservationReadMethod {
 
 export interface BroadcastCapability {
   /**
-   * 广播已签名交易。
+   * Broadcast a signed transaction.
    *
-   * 审计修正 A-06：新增 `options` 参数以承载 `rebroadcast` 标记与幂等键。
-   * transaction-lifecycle.md 要求 `dropped → broadcast` 重播携带 `rebroadcast: true`，
-   * 但旧签名没有承载它的位置。
+   * Audit fix A-06: added the `options` parameter to carry the `rebroadcast` flag and idempotency key.
+   * transaction-lifecycle.md requires a `dropped → broadcast` replay to carry `rebroadcast: true`,
+   * but the old signature had nowhere to carry it.
    */
   broadcast(
     ctx: AdapterContext,
@@ -228,33 +228,33 @@ export interface BroadcastCapability {
 }
 
 /**
- * 原生确认能力（可选，R-02）。
+ * Native confirmation capability (optional, R-02).
  *
- * 默认路径是 Core 用 transaction.read + Registry 的 FinalityPolicy 轮询派生确认；
- * 只有提供原生确认订阅的链才实现本接口并声明 `transaction.confirm.native`。
+ * The default path is Core deriving confirmations by polling with transaction.read + the Registry's FinalityPolicy;
+ * only chains offering native confirmation subscriptions implement this interface and declare `transaction.confirm.native`.
  */
 export interface NativeConfirmCapability {
   waitForConfirmation(ctx: AdapterContext, req: ConfirmRequest): Promise<ConfirmationResult>;
 }
 
-/** event.subscribe 是部署级能力（ADR-025）：Adapter 不实现；本接口仅用于类型映射。 */
+/** event.subscribe is a deployment-level capability (ADR-025): the Adapter does not implement it; this interface is only for type mapping. */
 export interface EventCapability {
   subscribe(ctx: AdapterContext, filter: EventFilter): AsyncIterable<ChainEvent>;
 }
 
 /**
- * 只读合约调用（ADR-035，`eth_call`）。
+ * Read-only contract call (ADR-035, `eth_call`).
  *
- * 两种输入二选一，**同时给出即 fail-closed**（避免"用哪个"含糊）：
- *   - `data`：预编码 calldata（`0x…`）——BEX 已用 `cast calldata` 时走这条；
- *   - `abi` + `method`（+ `args`）：由 Adapter 用 viem 编码，并按 outputs 解码返回。
+ * Two inputs, pick exactly one; **providing both fails closed** (to avoid ambiguity over "which one"):
+ *   - `data`: pre-encoded calldata (`0x…`) — use this when BEX already has `cast calldata`;
+ *   - `abi` + `method` (+ `args`): encoded by the Adapter with viem, decoded against outputs and returned.
  */
 export interface ContractReadRequest {
   readonly chain?: ChainId;
   readonly contract: string;
-  /** 预编码 calldata（0x…）。与 abi/method 二选一。 */
+  /** Pre-encoded calldata (0x…). Either this or abi/method. */
   readonly data?: string;
-  /** human-readable 或 JSON 片段；提供 method 时用于编码与解码。 */
+  /** Human-readable or JSON fragment; used for encoding and decoding when method is provided. */
   readonly abi?: readonly (string | Record<string, unknown>)[];
   readonly method?: string;
   readonly args?: readonly unknown[];
@@ -262,9 +262,9 @@ export interface ContractReadRequest {
 }
 
 export interface ContractReadResult {
-  /** `eth_call` 的原始返回（0x…）。 */
+  /** The raw `eth_call` return (0x…). */
   readonly data: string;
-  /** 提供 abi+method 时，按 outputs 解码的值；否则缺省。 */
+  /** Value decoded against outputs when abi+method are provided; otherwise absent. */
   readonly decoded?: unknown;
 }
 
@@ -273,31 +273,31 @@ export interface ContractReadCapability {
 }
 
 /**
- * 账户存在性 / 合约判定（ADR-036，`eth_getCode` + `eth_getTransactionCount`）。
+ * Account existence / contract determination (ADR-036, `eth_getCode` + `eth_getTransactionCount`).
  *
- * 复用既有 `Account` / `AccountKind`。EVM：code 非空 → `contract`，否则 `externally-owned`；
- * `exists` 是**启发式**（code 非空或余额>0 或 nonce>0），不谎称精确。
+ * Reuses the existing `Account` / `AccountKind`. EVM: non-empty code → `contract`, otherwise `externally-owned`;
+ * `exists` is a **heuristic** (non-empty code, or balance > 0, or nonce > 0) and does not claim precision.
  */
 export interface AccountCodeCapability {
   getAccount(ctx: AdapterContext, account: AccountRef): Promise<Account>;
 }
 
 /**
- * 事件日志查询（ADR-034，BEX 链上核对）。
+ * Event log query (ADR-034, BEX on-chain reconciliation).
  *
- * 与 `contract.read`（`eth_call`）是**不同**语义：这里按**区块区间**取日志。
- * 有界区间是硬约束：`fromBlock`/`toBlock` 必填，跨度超过 Adapter 声明的
- * `constraints.maxBlockRange` 时 fail-closed（不静默截断）。
+ * **Different** semantics from `contract.read` (`eth_call`): logs are fetched by **block range** here.
+ * A bounded range is a hard constraint: `fromBlock`/`toBlock` are required, and a span exceeding the Adapter-declared
+ * `constraints.maxBlockRange` fails closed (no silent truncation).
  */
 export interface ContractLogsRequest {
   readonly chain?: ChainId;
-  /** 合约地址；省略 = 任意合约（谨慎：仍须有界区间）。 */
+  /** Contract address; omitted = any contract (caution: a bounded range is still required). */
   readonly address?: string;
-  /** 与 `eth_getLogs` 的 topics 对齐：null = 通配，数组 = OR。 */
+  /** Aligned with `eth_getLogs` topics: null = wildcard, array = OR. */
   readonly topics?: readonly (string | readonly string[] | null)[];
   readonly fromBlock: BlockRef;
   readonly toBlock: BlockRef;
-  /** 单次返回上限；实现可再收紧。 */
+  /** Maximum number of results per call; implementations may tighten further. */
   readonly limit?: number;
 }
 
@@ -310,7 +310,7 @@ export interface ConsistencyHint {
   blockRef?: BlockRef;
 }
 
-/** 供 Core 路由使用的 Capability → 接口映射说明（类型层面）。 */
+/** Capability → interface mapping notes for Core routing (type level). */
 export interface AdapterCapabilityMap {
   'account.balance': BalanceCapability;
   'block.read': BlockCapability;
@@ -327,7 +327,7 @@ export interface AdapterCapabilityMap {
 
 export type AdapterCapabilityId = keyof AdapterCapabilityMap;
 
-/** 编译期保证 CapabilityId 与接口映射一致。 */
+/** Compile-time guarantee that CapabilityId and the interface mapping agree. */
 export type _AssertCapabilityParity = CapabilityId extends AdapterCapabilityId
   ? AdapterCapabilityId extends CapabilityId
     ? true

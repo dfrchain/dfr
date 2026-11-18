@@ -1,15 +1,20 @@
 #!/usr/bin/env bash
-# DFR 数据库备份 / 恢复演练（隔离环境）。
+# DFR database backup / restore drill (isolated environment).
 #
-# 目的：证明“备份能恢复”不是口头假设。流程：
-#   1. 使用现有测试 PostgreSQL，创建独立源库与目标库；
-#   2. 在源库应用全部迁移并写入代表性事实（交易/状态迁移/幂等/配额）；
-#   3. pg_dump 自定义格式备份；
-#   4. pg_restore 到目标库；
-#   5. 校验迁移版本、schema 对象与关键行完全一致。
+# Purpose: prove that "backups can be restored" is not just an assumption.
+# Flow:
+#   1. Use the existing test PostgreSQL to create separate source and
+#      target databases;
+#   2. Apply all migrations to the source database and write representative
+#      facts (transactions / state transitions / idempotency / quotas);
+#   3. pg_dump in custom format;
+#   4. pg_restore into the target database;
+#   5. Verify migration versions, schema objects, and key rows match exactly.
 #
-# 隔离：数据库名以 _backup_test 结尾，结束后 DROP；不触碰 dfr_m1_test。
-# 安全：口令只从 infrastructure/docker/.env 读入环境变量，不打印 DSN。
+# Isolation: database names end in _backup_test and are DROPPED afterwards;
+# dfr_m1_test is untouched.
+# Safety: passwords are read from infrastructure/docker/.env into
+# environment variables only; DSNs are never printed.
 set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
@@ -22,18 +27,21 @@ TARGET_DB='dfr_backup_target_test'
 step() { printf '\n== %s ==\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
 
-[ -f "${ENV_FILE}" ] || fail "缺少 ${ENV_FILE}"
+[ -f "${ENV_FILE}" ] || fail "missing ${ENV_FILE}"
 set -a
 # shellcheck disable=SC1090
 . "${ENV_FILE}"
 set +a
 
-# 幂等启动测试容器：CI 顺序执行时，前一阶段（pnpm test:db 且 KEEP=0）
-# 可能已经停掉容器；备份演练必须自己保证依赖在场，而不是要求调用方预热。
+# Start the test containers idempotently: when CI runs stages in order, an
+# earlier stage (pnpm test:db with KEEP=0) may already have stopped the
+# containers; the backup drill must ensure its own dependencies are present
+# rather than requiring the caller to warm them up.
 docker compose -f "${REPO_ROOT}/infrastructure/docker/docker-compose.test.yml" up -d --wait >/dev/null
-docker inspect "${CONTAINER}" >/dev/null 2>&1 || fail "测试容器 ${CONTAINER} 未运行"
+docker inspect "${CONTAINER}" >/dev/null 2>&1 || fail "test container ${CONTAINER} is not running"
 
-# 容器内执行 psql；口令经 PGPASSWORD 传入，不出现在 argv。
+# Run psql inside the container; the password is passed via PGPASSWORD and
+# never appears in argv.
 psql_admin() {
   local db="$1"; shift
   docker exec -e PGPASSWORD="${DFR_POSTGRES_BOOTSTRAP_PASSWORD}" "${CONTAINER}" \
@@ -50,19 +58,19 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-step '0. 创建独立源库 / 目标库'
+step '0. Create isolated source / target databases'
 drop_databases
 psql_admin postgres -c "CREATE DATABASE ${SOURCE_DB} OWNER dfr_migrator" >/dev/null
 psql_admin postgres -c "CREATE DATABASE ${TARGET_DB} OWNER dfr_migrator" >/dev/null
-printf '  ok 已创建隔离数据库\n'
+printf '  ok isolated databases created\n'
 
-step '1. 源库应用全部迁移'
+step '1. Apply all migrations to the source database'
 SOURCE_DSN="postgres://dfr_migrator:${DFR_POSTGRES_MIGRATOR_PASSWORD}@127.0.0.1:55432/${SOURCE_DB}"
 DFR_TRANSACTION_MIGRATION_DATABASE_URL="${SOURCE_DSN}" \
   pnpm --filter @dfr/storage-postgres migrate >/dev/null
-printf '  ok 迁移完成\n'
+printf '  ok migrations applied\n'
 
-step '2. 写入代表性事实'
+step '2. Write representative facts'
 docker exec -i -e PGPASSWORD="${DFR_POSTGRES_MIGRATOR_PASSWORD}" "${CONTAINER}" \
   psql -v ON_ERROR_STOP=1 -U dfr_migrator -d "${SOURCE_DB}" -q <<'SQL'
 INSERT INTO transaction_data.transactions
@@ -88,31 +96,33 @@ INSERT INTO transaction_data.provider_quota_daily
 VALUES ('backup-provider', 'base-sepolia', DATE '2026-10-08', 42);
 SQL
 
-# 防假阳性：如果 stdin 被吞或 SQL 未执行，后续“空表等于空表”的比对会
-# 看起来完全一致。这里先在源库断言四类事实都真实存在。
+# Guard against false positives: if stdin were swallowed or the SQL never
+# ran, a later comparison of "empty table equals empty table" would look
+# perfectly consistent. So first assert on the source database that all four
+# kinds of facts really exist.
 SOURCE_COUNTS=$(docker exec -e PGPASSWORD="${DFR_POSTGRES_MIGRATOR_PASSWORD}" "${CONTAINER}" \
   psql -v ON_ERROR_STOP=1 -At -U dfr_migrator -d "${SOURCE_DB}" -c \
   "SELECT (SELECT count(*) FROM transaction_data.transactions) || ':' ||
           (SELECT count(*) FROM transaction_data.transaction_transitions) || ':' ||
           (SELECT count(*) FROM transaction_data.idempotency_records) || ':' ||
           (SELECT count(*) FROM transaction_data.provider_quota_daily)")
-[ "${SOURCE_COUNTS}" = '1:1:1:1' ] || fail "源库代表性数据未写入（${SOURCE_COUNTS}）"
-printf '  ok 事务 / 状态迁移 / 幂等 / 配额均已写入\n'
+[ "${SOURCE_COUNTS}" = '1:1:1:1' ] || fail "representative data was not written to the source database (${SOURCE_COUNTS})"
+printf '  ok transaction / state transition / idempotency / quota all written\n'
 
-step '3. pg_dump 备份'
+step '3. pg_dump backup'
 BACKUP_FILE=$(mktemp -t dfr-backup.XXXXXX.dump)
 docker exec -e PGPASSWORD="${DFR_POSTGRES_MIGRATOR_PASSWORD}" "${CONTAINER}" \
   pg_dump -U dfr_migrator -d "${SOURCE_DB}" --format=custom >"${BACKUP_FILE}"
 SIZE=$(wc -c <"${BACKUP_FILE}" | tr -d ' ')
-[ "${SIZE}" -gt 0 ] || fail '备份文件为空'
-printf '  ok 备份生成（%s bytes）\n' "${SIZE}"
+[ "${SIZE}" -gt 0 ] || fail 'backup file is empty'
+printf '  ok backup created (%s bytes)\n' "${SIZE}"
 
-step '4. pg_restore 恢复'
+step '4. pg_restore recovery'
 docker exec -i -e PGPASSWORD="${DFR_POSTGRES_MIGRATOR_PASSWORD}" "${CONTAINER}" \
   pg_restore -U dfr_migrator -d "${TARGET_DB}" --no-owner --exit-on-error <"${BACKUP_FILE}"
-printf '  ok 恢复完成\n'
+printf '  ok restore complete\n'
 
-step '5. 一致性校验'
+step '5. Consistency checks'
 check_equal() {
   local label="$1" sql="$2"
   local source target
@@ -120,23 +130,23 @@ check_equal() {
     psql -v ON_ERROR_STOP=1 -At -U dfr_migrator -d "${SOURCE_DB}" -c "${sql}")
   target=$(docker exec -e PGPASSWORD="${DFR_POSTGRES_MIGRATOR_PASSWORD}" "${CONTAINER}" \
     psql -v ON_ERROR_STOP=1 -At -U dfr_migrator -d "${TARGET_DB}" -c "${sql}")
-  [ "${source}" = "${target}" ] || fail "${label} 不一致：source=${source} target=${target}"
+  [ "${source}" = "${target}" ] || fail "${label} mismatch: source=${source} target=${target}"
   printf '  ok %s = %s\n' "${label}" "${target}"
 }
 
-check_equal '迁移版本数' \
+check_equal 'migration version count' \
   "SELECT count(*) FROM dfr_migrations.schema_migrations"
-check_equal '业务表数' \
+check_equal 'business table count' \
   "SELECT count(*) FROM information_schema.tables WHERE table_schema='transaction_data' AND table_type='BASE TABLE'"
-check_equal '交易快照指纹' \
+check_equal 'transaction snapshot fingerprint' \
   "SELECT md5(string_agg(id || ':' || status || ':' || state_version, ',' ORDER BY id)) FROM transaction_data.transactions"
-check_equal '状态迁移数' \
+check_equal 'state transition count' \
   "SELECT count(*) FROM transaction_data.transaction_transitions"
-check_equal '幂等记录指纹' \
+check_equal 'idempotency record fingerprint' \
   "SELECT md5(string_agg(key || ':' || fingerprint || ':' || state || ':' || status_code, ',' ORDER BY key)) FROM transaction_data.idempotency_records"
-check_equal 'Provider 配额用量' \
+check_equal 'Provider quota usage' \
   "SELECT used FROM transaction_data.provider_quota_daily WHERE provider_id='backup-provider' AND chain_id='base-sepolia' AND day=DATE '2026-10-08'"
 
 rm -f "${BACKUP_FILE}"
 step 'PASS'
-printf '备份 / 恢复演练通过；临时数据库与备份文件已清理。\n'
+printf 'Backup / restore drill passed; temporary databases and backup file cleaned up.\n'

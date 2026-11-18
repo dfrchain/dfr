@@ -1,10 +1,10 @@
-// OTLP span 导出接线测试（M5 生产加固 E6）。
+// OTLP span export wiring test (M5 production hardening E6).
 //
-// 这条测试锁的是 observability-spec 验收清单里最后一个未决项：
-// "真正的 parent/child span（独立 spanId + 父引用）"。
+// This test locks the last open item in the observability-spec acceptance checklist:
+// "real parent/child spans (independent spanIds + parent references)".
 //
-// 断言在**线格式**上做，而不是只看日志：解析 stdout 里的 OTLP/JSON，
-// 检查 traceId 一致、各层 spanId 互不相同、parentSpanId 指向请求 span。
+// Assertions are made on the **wire format**, not just on logs: parse the OTLP/JSON in stdout,
+// and check that traceIds match, each layer's spanId differs, and parentSpanId points at the request span.
 import { createServer } from 'node:http';
 import { describe, expect, it, vi } from 'vitest';
 import { startGateway } from '../src/main.js';
@@ -41,8 +41,8 @@ function parseOtlpLines(lines: readonly string[]): OtlpSpan[] {
   return spans;
 }
 
-describe('span-emitter 纯函数', () => {
-  it('关联字段不进入 span 属性（身份与属性不重复存两份）', () => {
+describe('span-emitter pure functions', () => {
+  it('correlation fields do not enter span attributes (identity and attributes are not stored twice)', () => {
     const attrs = attributesFromLogFields({
       request_id: 'r',
       trace_id: 't',
@@ -56,12 +56,12 @@ describe('span-emitter 纯函数', () => {
     expect(attrs).toEqual({ operation: 'getInfo', latency_ms: 3 });
   });
 
-  it('store span 名按 kind 展开为 store.read / store.write', () => {
+  it('store span names expand by kind into store.read / store.write', () => {
     expect(storeSpanName('read')).toBe('store.read');
     expect(storeSpanName('write')).toBe('store.write');
   });
 
-  it('span 名称与 spec §4 的层级名一致', () => {
+  it('span names match the spec §4 layer names', () => {
     expect(SPAN_NAMES).toEqual({
       coreOperation: 'core.operation',
       adapterCall: 'adapter.call',
@@ -70,8 +70,8 @@ describe('span-emitter 纯函数', () => {
   });
 });
 
-describe('真实 startGateway：DFR_OTLP_SPANS=true 产出可组装层级的 span', () => {
-  it('core/adapter/provider 三层各产出独立 spanId，父指向同一请求 span', async () => {
+describe('real startGateway: DFR_OTLP_SPANS=true produces spans that assemble into a hierarchy', () => {
+  it('the core/adapter/provider layers each produce an independent spanId, with parents pointing at the same request span', async () => {
     const rpc = createServer((req, res) => {
       let body = '';
       req.on('data', (c: Buffer) => {
@@ -140,7 +140,7 @@ describe('真实 startGateway：DFR_OTLP_SPANS=true 产出可组装层级的 spa
 
       const spans = parseOtlpLines(lines);
       const byName = new Map(spans.map((s) => [s.name, s]));
-      // 至少要有 core.operation 与 provider.request（adapter.call 视适配器实现而定）
+      // There must be at least core.operation and provider.request (adapter.call depends on the adapter implementation)
       expect(byName.has('core.operation'), JSON.stringify([...byName.keys()])).toBe(true);
 
       const core = byName.get('core.operation') as OtlpSpan;
@@ -149,20 +149,20 @@ describe('真实 startGateway：DFR_OTLP_SPANS=true 产出可组装层级的 spa
       expect(core.parentSpanId).toMatch(/^[0-9a-f]{16}$/u);
       expect(core.status.code).toBe(1);
 
-      // 所有 span 共享同一 trace
+      // All spans share the same trace
       for (const span of spans) expect(span.traceId).toBe(core.traceId);
 
-      // 每层 spanId 互不相同（这就是"独立 spanId"）
+      // Each layer's spanId differs (that is what "independent spanId" means)
       const spanIds = spans.map((s) => s.spanId);
       expect(new Set(spanIds).size).toBe(spanIds.length);
 
       const sameRequest = spans.filter((s) => s.parentSpanId !== undefined);
       expect(new Set(sameRequest.map((s) => s.parentSpanId)).size).toBe(1);
 
-      // spanId 不等于父（没有自环）
+      // A spanId never equals its parent (no self-loop)
       for (const span of spans) expect(span.spanId).not.toBe(span.parentSpanId);
 
-      // 脱敏：span 属性里不得出现 RPC 端点
+      // Redaction: no RPC endpoint may appear in span attributes
       expect(JSON.stringify(spans)).not.toContain('127.0.0.1');
     } finally {
       await app?.close();
@@ -172,7 +172,7 @@ describe('真实 startGateway：DFR_OTLP_SPANS=true 产出可组装层级的 spa
     }
   }, 25_000);
 
-  it('未开启 DFR_OTLP_SPANS 时不产出 span（默认行为不变）', async () => {
+  it('no spans are produced when DFR_OTLP_SPANS is off (default behavior unchanged)', async () => {
     const rpc = createServer((req, res) => {
       let body = '';
       req.on('data', (c: Buffer) => {

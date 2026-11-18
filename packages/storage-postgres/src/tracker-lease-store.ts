@@ -1,8 +1,8 @@
 /**
- * PostgresTrackerLeaseStore（DFR-M1-A12）。
+ * PostgresTrackerLeaseStore (DFR-M1-A12).
  *
- * 所有租约有效性判断均在 SQL 内使用 clock_timestamp()。接管、续租与释放都用
- * 带 owner/到期条件的单条写语句，避免旧 Worker 在读写窗口中重新获得所有权。
+ * All lease-validity checks use clock_timestamp() inside SQL. Takeover, renewal, and release all use a single
+ * write statement with owner/expiry conditions, so a stale worker cannot regain ownership in the read-write window.
  */
 import type {
   AcquireTrackerLeaseInput,
@@ -67,7 +67,7 @@ export class PostgresTrackerLeaseStore implements TrackerLeaseStore {
 
     const existing = await this.getWithActive(input.chain, input.txHash);
     if (existing === undefined) {
-      // 与 release 并发，行已消失；重新走一次 INSERT 抢占。
+      // Concurrent with a release, the row is gone; retry the INSERT claim.
       return this.acquire(input);
     }
     if (existing.active === true) {
@@ -76,7 +76,7 @@ export class PostgresTrackerLeaseStore implements TrackerLeaseStore {
         : { kind: 'held_by_other', lease: rowToLease(existing) };
     }
 
-    // 已过期：只有仍匹配刚读到 owner 且依然过期时才能接管。
+    // Expired: takeover is only allowed while it still matches the owner just read and is still expired.
     const takeover = await this.pool.query<TrackerLeaseRow>(
       `UPDATE ${TABLE}
           SET owner_token = $3,
@@ -93,7 +93,7 @@ export class PostgresTrackerLeaseStore implements TrackerLeaseStore {
       return { kind: 'acquired', lease: rowToLease(takeover.rows[0]) };
     }
 
-    // 另一 owner 抢先接管或行被释放；读取最新事实返回，不覆盖赢家。
+    // Another owner took over first, or the row was released; read the latest facts and return them without overwriting the winner.
     const current = await this.getWithActive(input.chain, input.txHash);
     if (current === undefined) return this.acquire(input);
     return current.owner_token === input.ownerToken

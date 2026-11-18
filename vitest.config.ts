@@ -15,36 +15,48 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       reporter: ['text-summary', 'json-summary'],
-      // 覆盖率是**回归护栏**，不是达标游戏：阈值按当前实测值留出余量，
-      // 目的是"新代码让覆盖率骤降时红灯"，而不是逼着为已有的锁文件式代码补测试。
+      // Coverage is a **regression guardrail**, not a target game: thresholds
+      // leave headroom above current measured values, so that the goal is
+      // "the light turns red when new code drops coverage sharply", not
+      // forcing tests to be written for existing lockfile-style code.
       //
-      // 两个刻意排除项（都不是"为了好看"）：
-      //   1. `packages/storage-postgres/src/**`：PostgreSQL 实现的真实覆盖来自
-      //      `pnpm test:db`（独立门禁，需要 Docker）；在离线门禁里它会恒为个位数，
-      //      把总阈值拖到无意义的低位。它由 DB 门禁覆盖，不在这里假装。
-      //   2. 测试自身的 support 目录与测试文件：测"测试工具"没有意义。
+      // Two deliberate exclusions (neither is "for looks"):
+      //   1. `packages/storage-postgres/src/**`: the real coverage of the
+      //      PostgreSQL implementation comes from `pnpm test:db` (a separate
+      //      gate that needs Docker); in the offline gate it would always
+      //      be single digits, dragging the overall threshold down to a
+      //      meaningless level. It is covered by the DB gate, not faked here.
+      //   2. The tests' own support directories and test files: testing
+      //      "test tooling" is pointless.
       exclude: [
         'packages/storage-postgres/src/**',
         'tests/**/support/**',
         '**/*.d.ts',
         '**/test/**',
       ],
-      // 阈值来自 testing-strategy §8 的**分对象**门槛，而不是一个全局数字：
-      // 规范明确写"全局不设统一门槛"（统一数字会诱导写无意义断言），
-      // 关键路径用 100% 硬要求替代。这里把规范里已写下的门槛变成可执行检查。
+      // Thresholds come from the **per-object** bars in testing-strategy §8,
+      // not a single global number:
+      // the spec explicitly says "no single global bar" (a single number
+      // invites meaningless assertions); critical paths use a hard 100%
+      // requirement instead. This turns the bars already written in the
+      // spec into executable checks.
       thresholds: {
-        // 表：Adapter 实现 | 80% 行覆盖
+        // Table: Adapter implementation | 80% line coverage
         'adapters/evm/src/**': { lines: 80 },
-        // 表：领域模型校验 | 90% 行覆盖
+        // Table: Domain model validation | 90% line coverage
         'packages/types/src/**': { lines: 90 },
-        // 表：状态机是"关键路径"，用 100% 硬要求（见同一节末句）
+        // Table: The state machine is a "critical path", with a hard 100%
+        // requirement (see the last sentence of the same section)
         'packages/transaction/src/state-machine.ts': { lines: 100, functions: 100 },
-        // 表：错误映射 | 100%（每个错误码至少一条用例）。
-        // 逐码的 HTTP 区间判定与 4xx/5xx 分类由 packages/errors/test/errors.test.ts 覆盖。
+        // Table: Error mapping | 100% (at least one case per error code).
+        // The per-code HTTP range decisions and 4xx/5xx classification are
+        // covered by packages/errors/test/errors.test.ts.
         'packages/errors/src/**': { functions: 100 },
-        // 能力路由的"每个能力支持/不支持两条路径"是**行为**要求，不用行覆盖率表达：
-        // 由 packages/core/test/capability-routing.test.ts（method_missing 三条）
-        // 与各端点 422 用例共同保证。
+        // The capability-routing "two paths per capability, supported /
+        // unsupported" is a **behavioral** requirement, not expressible as
+        // line coverage:
+        // guaranteed jointly by packages/core/test/capability-routing.test.ts
+        // (three method_missing cases) and the 422 cases of each endpoint.
       },
     },
   },

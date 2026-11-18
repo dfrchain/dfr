@@ -1,14 +1,14 @@
 /**
- * 真实 Solana devnet 区块的交易向量（M3-A02 离线 ground truth）。
+ * Real Solana devnet block transaction vectors (M3-A02 offline ground truth).
  *
- * 来源：devnet slot 508083216 的 `getBlock`（commitment=finalized,
- * maxSupportedTransactionVersion=1）。`blockPayloadBase64` 是链上原始交易字节（signed）；
+ * Source: `getBlock` of devnet slot 508083216 (commitment=finalized,
+ * maxSupportedTransactionVersion=1). `blockPayloadBase64` holds the raw on-chain transaction bytes (signed);
  * `accountKeys` / `header` / `recentBlockhash` / `instructionCount` / `numAddressTableLookups`
- * 取自同一次调用的 `encoding: json` 解析结果——由**链节点**给出，不是我们的实现，
- * 因此可用来独立校验 codec。
+ * taken from the `encoding: json` parse of the same call — provided by a **chain node**, not by our implementation,
+ * so it can independently verify the codec.
  *
- * 这些都是**公开链上数据**（签名与公钥），不含任何私钥或口令。
- * v0 且 `numAddressTableLookups > 0` 的记录用于固定"ALT 需要链上解析、本卡 fail-closed"的行为。
+ * All of this is **public on-chain data** (signatures and public keys), with no private keys or passwords.
+ * Records that are v0 with `numAddressTableLookups > 0` pin the behavior "ALT needs on-chain resolution; this card fails closed".
  */
 export interface SolanaFixtureTransaction {
   readonly version: 'legacy' | 'v0';
@@ -25,7 +25,7 @@ export interface SolanaFixtureTransaction {
   readonly numAddressTableLookups: number;
 }
 
-/** 4 笔代表（2 legacy + 2 v0，其中一笔带 ALT lookup）。 */
+/** 4 representative records (2 legacy + 2 v0, one with an ALT lookup). */
 export const SOLANA_DEVNET_FIXTURES: readonly SolanaFixtureTransaction[] = [
   {
     version: 'legacy',
@@ -107,10 +107,10 @@ export const SOLANA_DEVNET_FIXTURES: readonly SolanaFixtureTransaction[] = [
 ];
 
 /**
- * 一笔现成的**真实签名** legacy 交易（供 broadcast/绑定测试复用）。
+ * A ready-made **really signed** legacy transaction (reused by broadcast/binding tests).
  *
- * 它是公开链上数据：`signedPayloadBase64` 是链上原始交易字节，`txHash` 是第 0 个签名，
- * `feePayer` 是第一个账户。不含任何私钥。
+ * It is public on-chain data: `signedPayloadBase64` holds the raw on-chain transaction bytes, `txHash` is signature 0,
+ * `feePayer` is the first account. No private keys involved.
  */
 export const SOLANA_DEVNET_LEGACY_SIGNED = {
   signedPayloadBase64: 'AZ82IG3I0GpZe5ryfAa/vUdo+1cyLCL8wCmr54O25iLcCKfFFS9DViOpUOYhlAKxhuQI3QYVyboQVSqh8AL3fg4BAAEDpfuA15Zqk/qY4T5fOJJqjQJFWiEN3b6ng7BW/vKk6Ralu+09sLiMvZ1GCVOUV1+C5cEQ7TWqe+DJqmPx3EeQnwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAmbYFp8v7etb4YKSGzSHXATfXOYfqXKdM8hll0xSuS7gBAgIAAQwCAAAAIU4AAAAAAAA=',

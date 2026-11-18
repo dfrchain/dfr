@@ -1,11 +1,11 @@
 /**
- * DFR Core（M0：Query Engine + Capability Router）。
+ * DFR Core (M0: Query Engine + Capability Router).
  *
- * 职责：
- * - 把 Chain Registry、Adapter、Provider Manager 装配在一起；
- * - 在调用 Adapter 之前做 Capability 路由（未声明 → DFR_UNSUPPORTED_CAPABILITY）；
- * - 启动时对启用的链执行 `registry ⊆ adapter` 校验（fail-closed）；
- * - 保持 Core 不含任何链特定分支（链特定逻辑只在 Adapter）。
+ * Responsibilities:
+ * - Assemble the Chain Registry, Adapters, and Provider Manager;
+ * - do Capability routing before calling an Adapter (undeclared → DFR_UNSUPPORTED_CAPABILITY);
+ * - at startup, validate `registry ⊆ adapter` for the enabled chains (fail-closed);
+ * - keep Core free of any chain-specific branches (chain-specific logic lives only in Adapters).
  */
 import {
   ERROR_METADATA,
@@ -90,10 +90,10 @@ import type {
   TransactionStore,
 } from '@dfr/transaction';
 
-/** Adapter 注册项：Core 通过它为该链创建 Adapter 实例。 */
+/** An Adapter registration: Core uses it to create an Adapter instance for the chain. */
 export interface AdapterRegistration {
   id: string;
-  /** semver 实现版本。 */
+  /** The semver implementation version. */
   version: string;
   create(chain: Chain): ChainAdapter;
 }
@@ -101,67 +101,67 @@ export interface AdapterRegistration {
 export interface DfrCoreOptions {
   registry: ChainRegistry;
   adapters: readonly AdapterRegistration[];
-  /** 当前启用的里程碑；只有 milestone <= 该值的链会对内可用。默认 M0。 */
+  /** The currently enabled milestone; only chains with milestone <= this value are usable internally. Default M0. */
   milestone?: Milestone;
   fetchImpl?: typeof fetch;
   now?: () => number;
   /**
-   * 加权选择用的随机源（注入点，默认 `Math.random`）。
+   * A weighted-selection randomness source (an injection point; defaults to `Math.random`).
    *
-   * 为什么需要它：Provider 选择在评分相同的前 2 名之间做**加权随机**（provider-spec 第 8 章）。
-   * 这让"主 Provider 失败后切到备用"这类故障切换行为在测试里不可确定性复现——
-   * 随机可能先选中备用，于是主 Provider 根本没被调用，断言时而通过时而失败。
-   * 注入固定值（如 `() => 0`）即可稳定地先选最高分候选。与既有的 `now` 注入同一风格。
+   * Why it is needed: Provider selection does **weighted random** selection between the top 2 equally scored candidates (provider-spec chapter 8).
+   * That makes failover behaviors like "after the primary Provider fails, switch to the backup" non-deterministically reproducible in tests —
+   * the random pick may hit the backup first, so the primary Provider is never called at all, and assertions pass or fail intermittently.
+   * Injecting a fixed value (e.g. `() => 0`) stably picks the highest-scored candidate first. Same style as the existing `now` injection.
    */
   random?: () => number;
   onProviderCall?: (record: ProviderCallRecord) => void;
   /**
-   * Adapter 调用观测出口（DFR-M1-E02 观测补充）。
+   * Adapter-call observation outlet (the DFR-M1-E02 observation supplement).
    *
-   * Core 是唯一知道"哪次 Adapter 调用对应哪个请求"的层，因此 `adapter.call` 记录在
-   * Core 产生（observability-spec 第 4 章 span 层级）。与 `onProviderCall` 一样，
-   * 回调**不得**抛错影响业务路径；composition root 负责把它接到结构化日志。
+   * Core is the only layer that knows "which Adapter call belongs to which request", so `adapter.call` records are
+   * produced in Core (observability-spec chapter 4 span hierarchy). Like `onProviderCall`,
+   * the callback must **never** throw in a way that affects the business path; the composition root wires it to structured logging.
    */
   onAdapterCall?: (record: AdapterCallRecord) => void;
   /**
-   * Core 编排操作观测出口（observability-spec §5.2）。
+   * Core-orchestration operation observation outlet (observability-spec §5.2).
    *
-   * 与 `onAdapterCall` 一起在 `callAdapter` 的单点发出——同一把锁、同一份计时，
-   * 因此两者的耗时可比（Core 操作耗时 ≥ 其中 Adapter 调用耗时）。
+   * Emitted together with `onAdapterCall` at the single point in `callAdapter` — the same lock, the same timing,
+   * so the two durations are comparable (a Core operation takes ≥ its Adapter call).
    */
   onCoreOperation?: (record: CoreOperationRecord) => void;
   /**
-   * `registry 声明了但 Adapter 未实现` 的能力计数出口（§5.2 的
-   * `dfr_core_capability_unsupported_total`）。正常应为 0。
+   * The counting outlet for `registry declared it but the Adapter did not implement it` capabilities (§5.2's
+   * `dfr_core_capability_unsupported_total`). It should normally be 0.
    */
   onCapabilityUnsupported?: (input: {
     readonly chain: ChainId;
     readonly capability: string;
     /**
-     * 两种"能力不可用"的来源，映射到 §5.2 与 §5.3 的两个不同计数器：
-     * - `capability_not_declared`：Adapter 的 `capabilities()` 里没有该能力
-     *   → `dfr_core_capability_unsupported_total`；
-     * - `method_missing`：Adapter **声明了**该能力却没有对应方法
-     *   → `dfr_adapter_registry_mismatch_total`（spec §8 明确：这说明启动校验被绕过，应为 0）。
+     * The two sources of "capability unavailable", mapped to two different counters in §5.2 and §5.3:
+     * - `capability_not_declared`: the capability is absent from the Adapter's `capabilities()`
+     *   → `dfr_core_capability_unsupported_total`;
+     * - `method_missing`: the Adapter **declared** the capability but has no matching method
+     *   → `dfr_adapter_registry_mismatch_total` (spec §8 is explicit: this means startup validation was bypassed, and it should be 0).
      */
     readonly kind: 'capability_not_declared' | 'method_missing';
   }) => void;
   /**
-   * M0 只读观测缓存（不是 M1 引擎 Store）。
+   * M0 read-only observation cache (not the M1 engine Store).
    *
-   * DFR-M1-A06 前该选项名为 `transactionStore`，但 `TransactionStore` 现在是
-   * `@dfr/transaction` 的 M1 引擎端口（`create/get/transition/listRecoverable`）。
-   * 两者语义不同（观测缓存 vs 引擎记录），因此改名以消除歧义，
-   * 避免 M1 装配时把链上观测误写进交易执行表。M1 引擎 Store 由 composition root 装配。
+   * Before DFR-M1-A06 this option was named `transactionStore`, but `TransactionStore` is now
+   * `@dfr/transaction`'s M1 engine port (`create/get/transition/listRecoverable`).
+   * The two mean different things (observation cache vs. engine record), so it was renamed to remove the ambiguity
+   * and stop M1 wiring from mistakenly writing on-chain observations into the transaction execution table. The M1 engine Store is wired up by the composition root.
    */
   transactionObservationStore?: TransactionObservationStore;
-  /** M1 交易数据面端口；M1+ 必须完整提供。 */
+  /** The M1 transaction data-plane port; M1+ must provide it in full. */
   transactionStores?: TransactionStores;
   /**
-   * E5：Provider 日配额持久 Store。
+   * E5: the Provider daily-quota persistent Store.
    *
-   * 由 composition root 注入；未提供时 Provider Manager 沿用进程内计数。
-   * Core 只透传端口，不知道 SQL 或数据库实现。
+   * Injected by the composition root; without it, the Provider Manager keeps using in-process counting.
+   * Core only passes the port through; it knows no SQL or database implementation.
    */
   providerQuotaStore?: ProviderQuotaStore;
 }
@@ -170,7 +170,7 @@ export interface TransactionStores {
   readonly transaction: TransactionStore;
   readonly idempotency: IdempotencyStore;
   readonly nonce: NonceStore;
-  /** M3-B03（ADR-033）：Solana 的 blockhash 排序租约；EVM 部署可不装配。 */
+  /** M3-B03 (ADR-033): Solana's blockhash ordering lease; EVM deployments may leave it unwired. */
   readonly sequencing?: SequencingStore;
   readonly tracker: TrackerLeaseStore;
 }
@@ -202,56 +202,56 @@ interface ChainRuntime {
   chain: Chain;
   adapter: ChainAdapter;
   /**
-   * Adapter 的**实际实现版本**（来自 `AdapterRegistration.version`，例如 `0.1.0`）。
+   * The Adapter's **actual implementation version** (from `AdapterRegistration.version`, e.g. `0.1.0`).
    *
-   * 刻意不用 `chain.adapter.version`：那是 Registry 声明的 **semver 范围**（如 `^0.1.0`），
-   * 拿它当指标标签既不准确（不是具体版本）、也会被标签白名单折叠成 `other`
-   * （含 `^` 字符）。观测要的是"跑的是哪个版本"。
+   * Deliberately not `chain.adapter.version`: that is the Registry-declared **semver range** (e.g. `^0.1.0`),
+   * and using it as a metric label would be both inaccurate (not a concrete version) and folded into `other` by the label allowlist
+   * (it contains a `^` character). Observation wants "which version is actually running".
    */
   adapterVersion: string;
-  /** 惰性构造：未配置端点的链不阻塞整个进程启动。 */
+  /** Lazy construction: chains without configured endpoints do not block the whole process from starting. */
   manager?: ProviderManager;
 }
 
 /**
- * 一次 Adapter 调用的观测记录（DFR-M1-E02 观测补充）。
+ * One Adapter call's observation record (the DFR-M1-E02 observation supplement).
  *
- * 权威来源：docs/architecture/observability-spec-v0.1.md 第 3 章关联字段与第 4 章 span 层级
- * （`core.operation` → `adapter.call` → `provider.request`）。
+ * Authoritative source: docs/architecture/observability-spec-v0.1.md, chapter 3 correlation fields and chapter 4 span hierarchy
+ * (`core.operation` → `adapter.call` → `provider.request`).
  *
- * 刻意**不**包含：调用参数、返回值、载荷、地址列表。Adapter 的参数可能含 calldata 与
- * unsigned payload；它们既可能很大也可能敏感，不属于日志字段。需要下钻时用 `requestId`/`traceId`
- * 关联已脱敏的 Gateway 日志与 Provider 调用日志。
+ * Deliberately **excludes**: call parameters, return values, payloads, and address lists. Adapter parameters may contain calldata and
+ * unsigned payloads; they can be both large and sensitive, so they do not belong in log fields. For a deeper dive, correlate the
+ * redacted Gateway logs and Provider call logs with `requestId`/`traceId`.
  */
 export interface AdapterCallRecord {
   readonly requestId: RequestId;
   readonly traceId?: string;
   readonly spanId?: string;
-  /** Adapter 标识，例如 evm。 */
+  /** The Adapter identifier, e.g. evm. */
   readonly adapter: string;
   readonly adapterVersion: string;
   readonly chain: ChainId;
-  /** Adapter 方法名，例如 getBalance / build / broadcast。 */
+  /** The Adapter method name, e.g. getBalance / build / broadcast. */
   readonly method: string;
   /**
-   * 读写分类（observability-spec §5.3 的 `method_class` 标签）。
+   * Read/write classification (the observability-spec §5.3 `method_class` label).
    *
-   * 判定口径：**只有 `broadcast` 是链上写**。`build` / `simulate` 不改变链上状态，
-   * 因此是 `read`——把它们算成写会虚高写路径指标、并让"写操作"这个信号失去意义。
+   * The rule: **only `broadcast` is an on-chain write**. `build` / `simulate` do not change on-chain state,
+   * so they are `read` — counting them as writes would inflate write-path metrics and make the "write operation" signal meaningless.
    */
   readonly methodClass: 'read' | 'write';
   readonly status: 'success' | 'error';
-  /** 稳定的 DFR 错误码（已归一化）。 */
+  /** The stable, normalized DFR error code. */
   readonly errorCode?: string;
   readonly latencyMs: number;
 }
 
 /**
- * 一次 Core 编排操作的观测事件（observability-spec §5.2）。
+ * One Core orchestration operation's observation event (observability-spec §5.2).
  *
- * 与 `AdapterCallRecord` 分开：Core 的"操作"是面向调用方的语义单位，
- * 未来可能出现不经过 Adapter 的操作（例如纯缓存命中）。两者目前 1:1，但不合并，
- * 以免以后要为缓存路径伪造一个 adapter 记录。
+ * Kept separate from `AdapterCallRecord`: a Core "operation" is a caller-facing semantic unit,
+ * and operations that never touch an Adapter (e.g. a pure cache hit) may appear in the future. The two are 1:1 today but are not merged,
+ * so a fake adapter record never has to be invented for the cache path later.
  */
 export interface CoreOperationRecord {
   readonly requestId: RequestId;
@@ -261,19 +261,19 @@ export interface CoreOperationRecord {
   readonly chain: ChainId;
   readonly status: 'success' | 'error';
   readonly errorCode?: string;
-  /** 错误分类（来自 error-spec 的 metadata）；仅 error 时有值。 */
+  /** The error classification (from the error-spec metadata); only present on error. */
   readonly category?: string;
   readonly latencyMs: number;
 }
 
-/** 单链就绪明细（DFR-M1-E02）。 */
+/** Per-chain readiness detail (DFR-M1-E02). */
 export interface ChainReadiness {
   readonly chain: string;
   readonly providers: number;
   readonly available: number;
 }
 
-/** Core 就绪报告；Gateway `/readyz` 的输入之一。 */
+/** The Core readiness report; one of the inputs to the Gateway `/readyz`. */
 export interface CoreReadiness {
   readonly ready: boolean;
   readonly chains: readonly ChainReadiness[];
@@ -283,7 +283,7 @@ export class DfrCore {
   private readonly options: DfrCoreOptions;
   private readonly runtimes = new Map<string, ChainRuntime>();
   private readonly registry: ChainRegistry;
-  /** 主动就绪探测的 TTL 缓存与单飞句柄（见 `probeReadiness`）。 */
+  /** The TTL cache and single-flight handle for active readiness probing (see `probeReadiness`). */
   private readinessProbeCache: { readonly at: number; readonly result: CoreReadiness } | undefined;
   private readinessProbeInFlight: Promise<CoreReadiness> | undefined;
 
@@ -321,7 +321,7 @@ export class DfrCore {
       if (registration === undefined) {
         throw createDfrError('DFR_CONFIGURATION_ERROR', {
           requestId: newRequestId(),
-          message: `链 ${entry.id} 引用了未注册的 Adapter "${entry.adapter.id}"`,
+          message: `Chain ${entry.id} references an unregistered Adapter "${entry.adapter.id}"`,
           chain: entry.id,
         });
       }
@@ -332,7 +332,7 @@ export class DfrCore {
     }
   }
 
-  /** 当前里程碑下对内可用的链（领域模型，不含 milestone）。 */
+  /** The chains available internally under the current milestone (a domain model, without milestone). */
   listChains(): readonly Chain[] {
     return [...this.runtimes.values()].map((r) => r.chain);
   }
@@ -341,7 +341,7 @@ export class DfrCore {
     return this.runtimes.has(chainId);
   }
 
-  /* ------------------------------ 查询 ------------------------------ */
+  /* ------------------------------ Queries ------------------------------ */
 
   async getChainInfo(chainId: string, ctx: CallContext): Promise<ChainInfo> {
     const runtime = this.runtime(chainId, ctx);
@@ -409,7 +409,7 @@ export class DfrCore {
     return tx;
   }
 
-  /** 单次确认观测 + Registry 策略判定；轮询、lease 与后台任务由 Transaction 负责。 */
+  /** A single confirmation observation + Registry strategy decision; polling, leases, and background work are Transaction's job. */
   async observeConfirmation(
     chainId: ChainId,
     txHash: string,
@@ -432,7 +432,7 @@ export class DfrCore {
       if (observation === null) {
         throw createDfrError('DFR_TRANSACTION_NOT_FOUND', {
           requestId: ctx.requestId,
-          message: '链上未找到该交易',
+          message: 'Transaction not found on-chain',
           chain: chainId,
         });
       }
@@ -487,7 +487,7 @@ export class DfrCore {
   }
 
   /**
-   * 只读合约调用（ADR-035，`eth_call`）。只读；ABI 编解码在 Adapter。
+   * Read-only contract call (ADR-035, `eth_call`). Read-only; ABI encoding/decoding lives in the Adapter.
    */
   async readContract(
     chainId: ChainId,
@@ -506,7 +506,7 @@ export class DfrCore {
   }
 
   /**
-   * 账户存在性 / 合约判定（ADR-036，`eth_getCode`）。只读。
+   * Account existence / contract check (ADR-036, `eth_getCode`). Read-only.
    */
   async getAccount(chainId: ChainId, account: AccountRef, ctx: CallContext): Promise<Account> {
     const runtime = this.runtime(chainId, ctx);
@@ -521,10 +521,10 @@ export class DfrCore {
   }
 
   /**
-   * 事件日志查询（ADR-034，M4）。Capability 路由 + Adapter 调用，只读。
+   * Event log query (ADR-034, M4). Capability routing + Adapter call, read-only.
    *
-   * 有界区间由 Adapter 保证（`maxBlockRange`）；Core 只做能力闸门、方法存在性判定与
-   * 错误归一化。Adapter 未实现该能力时 fail-closed 为 `DFR_UNSUPPORTED_CAPABILITY`。
+   * The bounded range is guaranteed by the Adapter (`maxBlockRange`); Core only does the capability gate, the method-existence check, and
+   * error normalization. When the Adapter does not implement the capability, it fails closed with `DFR_UNSUPPORTED_CAPABILITY`.
    */
   async getLogs(
     chainId: ChainId,
@@ -542,14 +542,14 @@ export class DfrCore {
     );
   }
 
-  /* ------------------------------ M1 写路径 ------------------------------ */
+  /* ------------------------------ M1 write path ------------------------------ */
 
   /**
-   * 构造未签名交易（DFR-M1-B07）：Capability 路由 + Adapter 调用，不落库、不签名。
+   * Build an unsigned transaction (DFR-M1-B07): Capability routing + Adapter call, no persistence, no signing.
    *
-   * Core 只做路由与错误归一化；nonce 分配、幂等与状态机属于 Transaction Engine。
-   * 本方法**不**读取或分配 nonce——那是 `TransactionEngine` 的职责，它把引擎分配
-   * 的显式 nonce 交给本方法（Adapter 因此不会再查一次 nonce）。
+   * Core only does routing and error normalization; nonce allocation, idempotency, and the state machine belong to the Transaction Engine.
+   * This method does **not** read or allocate a nonce — that is the `TransactionEngine`'s job; it hands the engine-allocated
+   * explicit nonce to this method (so the Adapter never queries a nonce again).
    */
   async buildTransaction(
     chainId: ChainId,
@@ -568,10 +568,10 @@ export class DfrCore {
   }
 
   /**
-   * 模拟交易（DFR-M1-B08 使用；端口路径）。
+   * Simulate a transaction (used by DFR-M1-B08; the port path).
    *
-   * 回滚由 Adapter 表达为 `SimulationResult.success=false`，本方法不把它转成异常
-   * （error-spec 第 5 章：不要把可预期的回滚包装成 5xx）。
+   * A revert is expressed by the Adapter as `SimulationResult.success=false`; this method does not turn it into an exception
+   * (error-spec chapter 5: do not wrap an expected revert as a 5xx).
    */
   async simulateTransaction(
     chainId: ChainId,
@@ -591,12 +591,12 @@ export class DfrCore {
   }
 
   /**
-   * 广播已签名交易（DFR-M1-C03a；端口路径）。
+   * Broadcast a signed transaction (DFR-M1-C03a; the port path).
    *
-   * Core 只做 Capability 路由与错误归一化：链语义（签名载荷解析、绑定校验、
-   * 单次 `eth_sendRawTransaction`）全部在 Adapter。`options` 里的记录真值
-   * （`expectedFrom` / `expectedUnsignedPayload`）由 Engine 提供、Core 原样搬运，
-   * Core 不解释它们。
+   * Core only does Capability routing and error normalization: chain semantics (signed-payload parsing, binding checks,
+   * a single `eth_sendRawTransaction`) all live in the Adapter. The record ground truths in `options`
+   * (`expectedFrom` / `expectedUnsignedPayload`) are supplied by the Engine and carried verbatim by Core;
+   * Core does not interpret them.
    */
   async broadcastTransaction(
     chainId: ChainId,
@@ -616,10 +616,10 @@ export class DfrCore {
   }
 
   /**
-   * 读链上 pending nonce（DFR-M1-B07 端口路径，非 Capability）。
+   * Read the on-chain pending nonce (the DFR-M1-B07 port path, not a Capability).
    *
-   * Adapter 未实现该方法时 fail-closed 为 `DFR_UNSUPPORTED_CAPABILITY`，不静默
-   * 返回 `0`——否则会把"读不到 nonce"变成"用 nonce 0 构造交易"。
+   * When the Adapter does not implement the method, it fails closed with `DFR_UNSUPPORTED_CAPABILITY` instead of silently
+   * returning `0` — otherwise "cannot read the nonce" would become "build a transaction with nonce 0".
    */
   async getPendingNonce(
     chainId: ChainId,
@@ -637,10 +637,10 @@ export class DfrCore {
   }
 
   /**
-   * 取本链当前的**排序前提**（ADR-033，非 Capability 的内部协调入口）。
+   * Fetch this chain's current **ordering precondition** (ADR-033, an internal coordination entry point, not a Capability).
    *
-   * 与 `getPendingNonce` 同理：不查 Registry 能力，只按 Adapter 的方法存在性路由；
-   * 缺失时 fail-closed 为 `DFR_UNSUPPORTED_CAPABILITY`（而不是猜一个 token）。
+   * Same as `getPendingNonce`: do not consult Registry capabilities; route only by whether the Adapter method exists;
+   * when missing, fail closed with `DFR_UNSUPPORTED_CAPABILITY` (instead of guessing a token).
    */
   async getSequencingToken(
     chainId: ChainId,
@@ -658,10 +658,10 @@ export class DfrCore {
   }
 
   /**
-   * 把引擎分配的排序前提注入请求（ADR-033）。
+   * Inject the ordering precondition allocated by the engine into the request (ADR-033).
    *
-   * Solana 的 `build` 必须用这个 blockhash（否则租约与载荷不一致）；EVM 用的是
-   * `req.nonce`，Adapter 也实现本方法以保持同一套引擎路径。缺失即 fail-closed。
+   * Solana's `build` must use this blockhash (or the lease and the payload disagree); EVM uses
+   * `req.nonce`, and the Adapter implements this method too, to keep one engine path. Missing means fail-closed.
    */
   withSequencingToken(
     chainId: ChainId,
@@ -681,11 +681,11 @@ export class DfrCore {
   }
 
   /**
-   * 观测广播后的链上处境（DFR-M1-C03b，非 Capability 的内部协调入口）。
+   * Observe the on-chain situation after a broadcast (DFR-M1-C03b, an internal coordination entry point, not a Capability).
    *
-   * 与 `getPendingNonce` 同理：不查 Registry 能力（这不是对外 API），
-   * 只按 Adapter 的方法存在性路由；缺失时 fail-closed 为
-   * `DFR_UNSUPPORTED_CAPABILITY`，由引擎保持 `unknown`。
+   * Same as `getPendingNonce`: do not consult Registry capabilities (this is not a public API),
+   * only route by whether the Adapter method exists; when missing, fail closed with
+   * `DFR_UNSUPPORTED_CAPABILITY`, leaving the engine at `unknown`.
    */
   async observeBroadcast(
     chainId: ChainId,
@@ -703,13 +703,13 @@ export class DfrCore {
   }
 
   /**
-   * 判定一个**排序前提**（blockhash / nonce）在当前链状态下是否已过期
-   * （DFR-M3-A01，ADR-032）。
+   * Judge whether an **ordering precondition** (blockhash / nonce) is expired under the current chain state
+   * (DFR-M3-A01, ADR-032).
    *
-   * 与 `getPendingNonce` 同理：不查 Registry 能力（这不是对外 API），只按 Adapter
-   * 的方法存在性路由。**仅 nonce 在缺失方法时视为永不过期**（EVM 语义）。
-   * 对 blockhash 则必须 fail-closed：不能把“无法查询链高”误当作“尚未过期”。
-   * 过期语义及实际链高判定仍由 Adapter 拥有（roadmap M3 第一条红线）。
+   * Same as `getPendingNonce`: do not consult Registry capabilities (this is not a public API); route only by
+   * whether the Adapter method exists. **Only a nonce is treated as never expiring when the method is missing** (EVM semantics).
+   * For a blockhash, it must fail closed: "cannot query the chain height" must not be mistaken for "not expired yet".
+   * Expiry semantics and the actual chain-height decision are still owned by the Adapter (roadmap M3, first red line).
    */
   async isSequencingExpired(
     chainId: ChainId,
@@ -730,13 +730,13 @@ export class DfrCore {
   }
 
   /**
-   * 启动 Provider 健康巡检。
+   * Start the Provider health sweep.
    *
-   * 语义（M0 明确）：尝试为每条启用的链构造 Manager，**端点未配置的链被跳过**，
-   * 不阻塞进程启动。这类链在首次收到请求时会以 `DFR_CONFIGURATION_ERROR` fail-closed。
+   * Semantics (explicit in M0): try to construct a Manager for every enabled chain; **chains with unconfigured endpoints are skipped**,
+   * without blocking process startup. Such chains fail closed with `DFR_CONFIGURATION_ERROR` when they first receive a request.
    *
-   * 结果通过返回值暴露，便于启动日志如实报告"哪条链有健康巡检、哪条没有"，
-   * 而不是让运维以为全部在监控中。
+   * The result is exposed via the return value, so startup logs can honestly report "which chains have a health sweep and which do not",
+   * instead of letting ops believe everything is under monitoring.
    */
   startHealthChecks(): { started: string[]; skipped: string[] } {
     const started: string[] = [];
@@ -759,7 +759,7 @@ export class DfrCore {
     }
   }
 
-  /** Provider 健康快照（运维巡检用）。 */
+  /** Provider health snapshot (for the ops sweep). */
   providerHealth(): Record<string, unknown> {
     const out: Record<string, unknown> = {};
     for (const [id, runtime] of this.runtimes) {
@@ -769,10 +769,10 @@ export class DfrCore {
   }
 
   /**
-   * Provider 观测快照（observability-spec §5.4 的 gauge 数据源，只读、不联网）。
+   * Provider observation snapshot (the gauge data source of observability-spec §5.4; read-only, no network).
    *
-   * 返回 `chainId → 每 Provider 快照`；未配置端点的链返回空数组
-   * （与 `readiness()` 的"0 providers"口径一致，不伪造 gauge）。
+   * Returns `chainId → per-Provider snapshot`; chains without configured endpoints return an empty array
+   * (consistent with `readiness()`'s "0 providers" wording — no fabricated gauge).
    */
   providerObservability(): Record<string, readonly ProviderObservabilitySnapshot[]> {
     const out: Record<string, readonly ProviderObservabilitySnapshot[]> = {};
@@ -783,7 +783,7 @@ export class DfrCore {
     return out;
   }
 
-  /** E5：异步 Provider 观测（配额用量来自持久 Store）。 */
+  /** E5: asynchronous Provider observation (quota usage comes from the persistent Store). */
   async providerObservabilityAsync(): Promise<Record<string, readonly ProviderObservabilitySnapshot[]>> {
     const out: Record<string, readonly ProviderObservabilitySnapshot[]> = {};
     for (const [id, runtime] of this.runtimes) {
@@ -794,16 +794,16 @@ export class DfrCore {
   }
 
   /**
-   * 运维就绪报告（DFR-M1-E02，observability-spec 第 9 章）。
+   * Ops readiness report (DFR-M1-E02, observability-spec chapter 9).
    *
-   * 语义刻意保持可从外部验证、且不发明新状态：
-   * - `providers`：该链已装配的 Provider 数量（0 = 端点/凭证未解析成功）；
-   * - `available`：其中**读熔断器未打开**的数量（open 的 Provider 不接流量）；
-   * - `ready`：至少启用一条链，且至少一条链有可用 Provider。
+   * Semantics deliberately kept externally verifiable, without inventing new states:
+   * - `providers`: the number of Providers wired up for the chain (0 = endpoints/credentials failed to resolve);
+   * - `available`: of those, the number whose **read circuit breaker is closed** (an open Provider takes no traffic);
+   * - `ready`: at least one chain is enabled, and at least one chain has an available Provider.
    *
-   * 这里不把"从未观测过"（health status = unknown）判为不可用：冷启动的 Provider
-   * 在第一次探针之前就是这样，若判为不可用会导致刚启动的实例永远不就绪。
-   * 该取舍写在 docs/runbooks/m1-local.md 的探针一节。
+   * This does not judge "never observed" (health status = unknown) as unavailable: a cold-start Provider
+   * looks like that before its first probe, and judging it unavailable would leave a freshly started instance never ready.
+   * That tradeoff is written in the probe section of docs/runbooks/m1-local.md.
    */
   readiness(): CoreReadiness {
     const chains: ChainReadiness[] = [];
@@ -824,20 +824,20 @@ export class DfrCore {
   }
 
   /**
-   * 主动探测就绪（DFR-M1-E02 观测补充；opt-in）。
+   * Actively probe readiness (the DFR-M1-E02 observation supplement; opt-in).
    *
-   * 与同步 `readiness()` 的区别：`readiness()` 只读**已有**的熔断/健康状态，因此一个刚启动、
-   * 还没跑过任何探针的实例会把 `unknown` 的 Provider 计为可用——冷启动时可能"谎报就绪"。
-   * 本方法对每条链的**每个** Provider 当场发一次低权重探针（`eth_chainId` 之类），
-   * `available` 因此表示"刚才真的应答了"。
+   * Difference from the synchronous `readiness()`: `readiness()` only reads the **existing** circuit-breaker/health state, so a freshly started instance
+   * that has not run any probe yet counts an `unknown` Provider as available — it may "falsely report ready" at cold start.
+   * This method sends one low-weight probe (e.g. `eth_chainId`) to **each** Provider of each chain on the spot,
+   * so `available` means "just now actually answered".
    *
-   * 成本控制（三条，缺一不可）：
-   * - **TTL 缓存**：`cacheMs`（默认 5s）内复用上一次结果，避免编排系统每秒轮询就打一次 RPC；
-   * - **单飞**：并发调用共享同一个探测 Promise，不产生探测风暴；
-   * - **短超时**：`timeoutMs`（默认 2s）限制就绪路径的最坏延迟。
+   * Cost controls (all three required):
+   * - **TTL cache**: results are reused within `cacheMs` (default 5s), so an orchestration system polling every second does not hit RPC each time;
+   * - **single-flight**: concurrent calls share one probe Promise, so no probe storm is created;
+   * - **short timeout**: `timeoutMs` (default 2s) bounds the worst-case latency of the readiness path.
    *
-   * 探针走 `ProviderManager.probe`，它直接调用 `provider.request`，**不经过熔断器**，
-   * 因此"探测失败"不会把熔断器打开（探针不应改写熔断状态）。
+   * Probes go through `ProviderManager.probe`, which calls `provider.request` directly, **bypassing the circuit breaker**,
+   * so a "probe failure" never opens the circuit breaker (probes must not rewrite circuit-breaker state).
    */
   async probeReadiness(options: { timeoutMs?: number; cacheMs?: number } = {}): Promise<CoreReadiness> {
     const cacheMs = options.cacheMs ?? 5_000;
@@ -865,7 +865,7 @@ export class DfrCore {
       const providerIds = manager.healthSnapshot().map((entry) => entry.providerId);
       let available = 0;
       for (const providerId of providerIds) {
-        // 串行探测：Provider 数量是个位数，串行避免瞬时并发冲击上游端点。
+        // Serial probing: the Provider count is a single digit, so serial probing avoids an instantaneous concurrency spike on upstream endpoints.
         if (await manager.probe(providerId, timeoutMs)) available += 1;
       }
       chains.push({ chain: id, providers: providerIds.length, available });
@@ -878,7 +878,7 @@ export class DfrCore {
     return result;
   }
 
-  /** 惰性构造 ProviderManager；端点/凭证解析失败视为该链不可用，而不是让探针抛错。 */
+  /** Lazily construct the ProviderManager; an endpoint/credential resolution failure counts the chain as unavailable, instead of letting the probe throw. */
   private managerIfConfigured(runtime: ChainRuntime): ChainRuntime['manager'] {
     if (runtime.manager !== undefined) return runtime.manager;
     try {
@@ -888,30 +888,30 @@ export class DfrCore {
     }
   }
 
-  /* ------------------------------ 内部 ------------------------------ */
+  /* ------------------------------ internals ------------------------------ */
 
   private runtime(chainId: string, ctx: CallContext): ChainRuntime {
     const runtime = this.runtimes.get(chainId);
     if (runtime === undefined) {
       throw createDfrError('DFR_NOT_FOUND', {
         requestId: ctx.requestId,
-        message: `未知或未启用的链 "${chainId}"`,
+        message: `Unknown or disabled chain "${chainId}"`,
       });
     }
     return runtime;
   }
 
   /**
-   * 统一的 Adapter 调用包装（DFR-M1-E02 观测补充）。
+   * The unified Adapter call wrapper (the DFR-M1-E02 observation supplement).
    *
-   * 做三件事，且顺序固定：
-   * 1. 计时并调用 Adapter；
-   * 2. 成功 → 发 `adapter.call`(success) 记录；
-   * 3. 失败 → **先归一化**错误（`normalize`），用归一化后的稳定错误码发记录，
-   *    再抛出归一化错误。
+   * It does three things, in a fixed order:
+   * 1. Time and call the Adapter;
+   * 2. on success → emit an `adapter.call`(success) record;
+   * 3. on failure → **normalize** the error first (`normalize`), emit the record with the normalized stable error code,
+   *    then throw the normalized error.
    *
-   * 为什么先归一化再记录：`Provider`/`viem` 抛出的原始异常文本可能含端点或内部地址，
-   * 而 `errorCode` 是稳定枚举。日志只记 code，不记原文。
+   * Why normalize before recording: the raw exception text thrown by `Provider`/`viem` may contain endpoints or internal addresses,
+   * while `errorCode` is a stable enum. Logs record only the code, not the original text.
    */
   private async callAdapter<T>(
     runtime: ChainRuntime,
@@ -937,9 +937,9 @@ export class DfrCore {
   }
 
   /**
-   * 发出一次 Core 操作记录（observability-spec §5.2）。
+   * Emit one Core operation record (observability-spec §5.2).
    *
-   * 与 `emitAdapterCall` 同一约定：出口抛错被吞掉，观测失败不得改变业务结果。
+   * Same convention as `emitAdapterCall`: an outlet that throws is swallowed; an observation failure must not change the business result.
    */
   private emitCapabilityUnsupported(
     chain: ChainId,
@@ -951,7 +951,7 @@ export class DfrCore {
     try {
       sink({ chain, capability, kind });
     } catch {
-      // 观测是尽力而为。
+      // Observation is best-effort.
     }
   }
 
@@ -965,7 +965,7 @@ export class DfrCore {
   ): void {
     const onCoreOperation = this.options.onCoreOperation;
     if (onCoreOperation === undefined) return;
-    // 先取出可能为 undefined 的派生值，避免 exactOptionalPropertyTypes 下的窄化丢失。
+    // First take out the possibly-undefined derived values, avoiding narrowing loss under exactOptionalPropertyTypes.
     const category = categoryOf(errorCode);
     try {
       onCoreOperation({
@@ -976,12 +976,12 @@ export class DfrCore {
         chain: runtime.chain.id as ChainId,
         status,
         ...(errorCode !== undefined ? { errorCode } : {}),
-        // 错误分类取自 error-spec 的 metadata；未知码不带 category（不猜）。
+        // The error classification comes from the error-spec metadata; unknown codes carry no category (never guess).
         ...(category !== undefined ? { category } : {}),
         latencyMs: Math.max(0, latencyMs),
       });
     } catch {
-      // 观测是尽力而为。
+      // Observation is best-effort.
     }
   }
 
@@ -1001,7 +1001,7 @@ export class DfrCore {
         ...(ctx.traceId !== undefined ? { traceId: ctx.traceId } : {}),
         ...(ctx.spanId !== undefined ? { spanId: ctx.spanId } : {}),
         adapter: runtime.chain.adapter.id,
-        // 实际实现版本，不是 Registry 的 semver 范围（见 ChainRuntime.adapterVersion）。
+        // The actual implementation version, not the Registry's semver range (see ChainRuntime.adapterVersion).
         adapterVersion: runtime.adapterVersion,
         chain: runtime.chain.id,
         method,
@@ -1011,7 +1011,7 @@ export class DfrCore {
         latencyMs: Math.max(0, latencyMs),
       });
     } catch {
-      // 观测是尽力而为：日志出口失败不得改变业务结果。
+      // Observation is best-effort: a log-outlet failure must not change the business result.
     }
   }
 
@@ -1021,19 +1021,19 @@ export class DfrCore {
     ctx: CallContext,
   ): void {
     const declared = runtime.adapter.capabilities().capabilities;
-    // 见 ADR-034：Provider 路由按**注册表声明**的能力过滤，而 Adapter 的 `capabilities()` 是
-    // 实现真相。二者对 `contract.logs`/`contract.read` 这类"可能未被注册表启用"的能力可能
-    // 不一致——若只查 Adapter，未声明的链会走到 Provider 选择并报出误导性的
-    // `DFR_CHAIN_UNAVAILABLE`(503)。因此这里同时要求**注册表**声明该能力：
-    // 未声明即 fail-closed 为 `DFR_UNSUPPORTED_CAPABILITY`(422)。
+    // See ADR-034: Provider routing filters by the **Registry-declared** capabilities, while the Adapter's `capabilities()` is
+    // the implementation truth. The two may disagree for capabilities like `contract.logs`/`contract.read` that the Registry may not have enabled —
+    // if only the Adapter were consulted, an undeclared chain would reach Provider selection and report the misleading
+    // `DFR_CHAIN_UNAVAILABLE`(503). So this also requires the **Registry** to declare the capability:
+    // undeclared means fail-closed with `DFR_UNSUPPORTED_CAPABILITY`(422).
     const registryDeclares = runtime.chain.capabilities.includes(capability);
     if (!declared.includes(capability) || !registryDeclares) {
-      // capability 不支持是**配置/契约**问题，不是运行时抖动：单独计数，
-      // 便于用 §5.2 的 `capability_unsupported` 直接定位（值为 0 才是健康状态）。
+      // A capability being unsupported is a **configuration/contract** problem, not runtime jitter: count it separately,
+      // so §5.2's `capability_unsupported` pinpoints it directly (0 is the healthy value).
       this.emitCapabilityUnsupported(runtime.chain.id as ChainId, capability, 'capability_not_declared');
       throw createDfrError('DFR_UNSUPPORTED_CAPABILITY', {
         requestId: ctx.requestId,
-        message: `链 ${runtime.chain.id} 不支持能力 ${capability}`,
+        message: `Chain ${runtime.chain.id} does not support capability ${capability}`
         chain: runtime.chain.id,
         details: { capability },
       });
@@ -1045,12 +1045,12 @@ export class DfrCore {
     runtime: ChainRuntime,
     ctx: CallContext,
   ): Error {
-    // 走到这里说明 Registry 声明了该能力、但 Adapter 没有实现对应方法——
-    // 正是 spec §8 所说的"启动校验被绕过"，必须单独计数（正常为 0）。
+    // Reaching this point means the Registry declared the capability but the Adapter has no matching method —
+    // exactly what spec §8 calls "startup validation was bypassed"; it must be counted separately (normally 0).
     this.emitCapabilityUnsupported(runtime.chain.id as ChainId, capability, 'method_missing');
     return createDfrError('DFR_UNSUPPORTED_CAPABILITY', {
       requestId: ctx.requestId,
-      message: `链 ${runtime.chain.id} 声明了 ${capability} 但未实现对应方法`,
+      message: `Chain ${runtime.chain.id} declares ${capability} but has no matching method`
       chain: runtime.chain.id,
       details: { capability },
     });
@@ -1076,7 +1076,7 @@ export class DfrCore {
     if (descriptors.length === 0) {
       throw createDfrError('DFR_CHAIN_UNAVAILABLE', {
         requestId: ctx.requestId,
-        message: `链 ${runtime.chain.id} 未配置任何 Provider`,
+        message: `Chain ${runtime.chain.id} has no Providers configured`
         chain: runtime.chain.id,
       });
     }
@@ -1107,7 +1107,7 @@ export class DfrCore {
 
 }
 
-/** 取错误码的分类（error-spec metadata）；未知码返回 undefined，不猜测。 */
+/** Get an error code's classification (error-spec metadata); unknown codes return undefined — never guess. */
 function categoryOf(errorCode: string | undefined): ErrorMetadata['category'] | undefined {
   if (errorCode === undefined) return undefined;
   if (!isKnownErrorCode(errorCode)) return undefined;
@@ -1115,10 +1115,10 @@ function categoryOf(errorCode: string | undefined): ErrorMetadata['category'] | 
 }
 
 /**
- * Adapter 方法的读写分类（observability-spec §5.3 的 `method_class`）。
+ * The Adapter methods' read/write classification (the observability-spec §5.3 `method_class`).
  *
- * 只有 `broadcast` 改变链上状态。`build` / `simulate` 都是构造或只读探测，
- * 算成写会虚高写路径指标，让"写操作"这个信号失去意义。
+ * Only `broadcast` changes on-chain state. `build` / `simulate` are construction or read-only probing,
+ * and counting them as writes would inflate write-path metrics and make the "write operation" signal meaningless.
  */
 function adapterMethodClass(method: string): 'read' | 'write' {
   return method === 'broadcast' ? 'write' : 'read';

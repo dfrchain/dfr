@@ -1,13 +1,13 @@
-// D03 恢复巡检的 composition root 接线测试（关闭 TODO-009 记录的残余缺口）。
+// D03 recovery sweep composition-root wiring test (closes the residual gap recorded in TODO-009).
 //
-// 缺口：`RecoveryCoordinator`（过期幂等清理 / 孤儿 nonce 租约回收 / unknown 解析）
-// 此前只在**启动**时跑一轮，长期不重启的实例永远不会再回收它们。
+// Gap: `RecoveryCoordinator` (expired idempotency cleanup / orphaned nonce lease reclamation / unknown resolution)
+// previously ran only one round at **startup**, so long-lived instances would never reclaim them again.
 //
-// 本测试用真实 `startGateway` 证明三件事：
-//   1. 启动时先跑一轮恢复（且发生在监听端口之前）；
-//   2. 之后按 `DFR_RECOVERY_SWEEP_INTERVAL_MS` 周期运行；
-//   3. `close()` 后停止，不再触达 Store。
-// 组件级行为由 packages/transaction/test/recovery-scheduler.test.ts 与 recovery.test.ts 覆盖。
+// This test uses a real `startGateway` to prove three things:
+//   1. a recovery round runs first at startup (before listening on the port);
+//   2. it then runs periodically per `DFR_RECOVERY_SWEEP_INTERVAL_MS`;
+//   3. it stops after `close()`, no longer touching the Store.
+// Component-level behavior is covered by packages/transaction/test/recovery-scheduler.test.ts and recovery.test.ts.
 import { describe, expect, it, vi } from 'vitest';
 import type { TransactionStores } from '@dfr/core';
 import { hashSecret } from '../src/index.js';
@@ -30,7 +30,7 @@ const BASE_ENV = {
   DFR_PROVIDER_ETHEREUM_SEPOLIA_SECONDARY_URL: 'https://stub.local/sepolia-secondary',
 };
 
-/** 记录 pruneExpired 的 limit：恢复每轮唯一必调的方法。 */
+/** Record pruneExpired's limit: the one method every recovery round must call. */
 function countingPersistence() {
   const pruneExpired = vi.fn(async (_input: { limit: number }) => 0);
   const persistence: GatewayPersistence = {
@@ -58,8 +58,8 @@ function silenceStdio() {
   };
 }
 
-describe('D03 恢复巡检接线（关闭 TODO-009 残余缺口）', () => {
-  it('启动时先跑一轮恢复（监听端口之前），并遵守 DFR_RECOVERY_BATCH_SIZE', async () => {
+describe('D03 recovery sweep wiring (closing the TODO-009 residual gap)', () => {
+  it('runs one recovery round first at startup (before listening), honoring DFR_RECOVERY_BATCH_SIZE', async () => {
     const { persistence, pruneExpired } = countingPersistence();
     const restore = silenceStdio();
     try {
@@ -67,7 +67,7 @@ describe('D03 恢复巡检接线（关闭 TODO-009 残余缺口）', () => {
         { ...BASE_ENV, DFR_RECOVERY_BATCH_SIZE: '37' },
         async () => persistence,
       );
-      // startGateway resolve 时已经监听过：启动轮必须已经跑过。
+      // By the time startGateway resolves, it has already listened: the startup round must have run.
       expect(pruneExpired).toHaveBeenCalledTimes(1);
       expect(pruneExpired.mock.calls[0]?.[0].limit).toBe(37);
       await app.close();
@@ -76,7 +76,7 @@ describe('D03 恢复巡检接线（关闭 TODO-009 残余缺口）', () => {
     }
   }, 15_000);
 
-  it('按 DFR_RECOVERY_SWEEP_INTERVAL_MS 周期运行', async () => {
+  it('runs periodically per DFR_RECOVERY_SWEEP_INTERVAL_MS', async () => {
     const { persistence, pruneExpired } = countingPersistence();
     const restore = silenceStdio();
     try {
@@ -93,7 +93,7 @@ describe('D03 恢复巡检接线（关闭 TODO-009 残余缺口）', () => {
     }
   }, 15_000);
 
-  it('close() 停掉恢复巡检：之后不再触达 Store', async () => {
+  it('close() stops the recovery sweep: the Store is no longer touched afterwards', async () => {
     const { persistence, pruneExpired } = countingPersistence();
     const restore = silenceStdio();
     try {
@@ -111,7 +111,7 @@ describe('D03 恢复巡检接线（关闭 TODO-009 残余缺口）', () => {
     }
   }, 15_000);
 
-  it('非法恢复巡检间隔 / 批次上限 fail-closed', async () => {
+  it('an illegal recovery sweep interval / batch cap fails closed', async () => {
     const { persistence } = countingPersistence();
     await expect(
       startGateway({ ...BASE_ENV, DFR_RECOVERY_SWEEP_INTERVAL_MS: '10' }, async () => persistence),

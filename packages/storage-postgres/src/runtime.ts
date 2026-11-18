@@ -1,4 +1,4 @@
-/** PostgreSQL Store 运行时工厂（ADR-017）。 */
+/** PostgreSQL Store runtime factory (ADR-017). */
 import type {
   IdempotencyStore,
   NonceStore,
@@ -20,38 +20,38 @@ export interface PostgresTransactionStores {
   readonly nonce: NonceStore;
   readonly tracker: TrackerLeaseStore;
   /**
-   * M3-A01：Solana blockhash 排序租约（ADR-032 方案 A，与 `nonce` 并存）。
+   * M3-A01: Solana blockhash sequencing leases (ADR-032 option A, coexisting with `nonce`).
    *
-   * 可选：M3 之前的部署不需要它；EVM 写路径也不用它。Solana 写路径装配后必填。
+   * Optional: pre-M3 deployments do not need it; neither does the EVM write path. Required once the Solana write path is assembled.
    */
   readonly sequencing?: SequencingStore;
-  /** E5：Provider 日配额的跨实例原子计数。 */
+  /** E5: cross-instance atomic counting of the Provider daily quota. */
   readonly providerQuota: PostgresProviderQuotaStore;
 }
 
 export interface PostgresTransactionRuntime {
   readonly stores: PostgresTransactionStores;
   /**
-   * 依赖就绪探针（DFR-M1-E02）：执行 `SELECT 1`。
+   * Dependency readiness probe (DFR-M1-E02): runs `SELECT 1`.
    *
-   * 供 Gateway `/readyz` 使用；失败时抛 `PostgresRuntimeUnavailableError`，
-   * **不**携带 DSN 或驱动原文。与 `close()` 一样是幂等只读操作。
+   * Used by Gateway `/readyz`; on failure it throws `PostgresRuntimeUnavailableError`,
+   * carrying **no** DSN or raw driver text. Like `close()`, it is an idempotent read-only operation.
    */
   healthCheck(): Promise<void>;
   close(): Promise<void>;
 }
 
 export interface CreatePostgresTransactionRuntimeOptions {
-  /** 敏感值：只传给 pg，不写入错误、日志或返回值。 */
+  /** Sensitive value: passed only to pg, never written into errors, logs, or return values. */
   readonly databaseUrl: string;
   readonly connectionTimeoutMs?: number;
   /**
-   * 空闲连接被上游切断时的通知（可选）。
+   * Notification when an idle connection is cut by the upstream side (optional).
    *
-   * `pg.Pool` 在空闲客户端出错时会发 `error` 事件；没有监听器时 Node 会把
-   * 它当成未捕获异常并退出进程。Gateway 必须保持存活（只让 `/readyz` 变 503），
-   * 因此运行时始终安装处理器，并通过本回调交给 composition root 记固定日志。
-   * 回调必须容错；其异常不得影响进程存活。
+   * When an idle client errors, `pg.Pool` emits an `error` event; with no listener, Node treats it
+   * as an uncaught exception and exits the process. The Gateway must stay alive (only `/readyz` becomes 503),
+   * so the runtime always installs a handler and passes it to the composition root via this callback for fixed-message logging.
+   * The callback must be fault-tolerant; its exceptions must not affect process survival.
    */
   readonly onPoolError?: () => void;
 }
@@ -64,7 +64,7 @@ export class PostgresRuntimeUnavailableError extends Error {
   }
 }
 
-/** 创建 Pool、执行 readiness probe，并只暴露 Store 端口与 close。 */
+/** Create the Pool, run the readiness probe, and expose only the Store ports and close. */
 export async function createPostgresTransactionRuntime(
   options: CreatePostgresTransactionRuntimeOptions,
 ): Promise<PostgresTransactionRuntime> {
@@ -73,15 +73,15 @@ export async function createPostgresTransactionRuntime(
     connectionTimeoutMillis: options.connectionTimeoutMs ?? 5_000,
   });
 
-  // 关键：必须先安装 error 监听器。数据库重启/网络抖动会切断空闲连接，
-  // 没有监听器时 pg 的池级 error 会以未捕获异常结束进程——表现为整个 Gateway
-  // 消失（连接被拒），而不是 fail-closed 的 /readyz 503。回调只传固定信号，
-  // 不接收或记录驱动异常，避免 DSN/口令进入日志。
+  // Critical: install the error listener first. Database restarts / network jitter cut idle connections,
+  // and without a listener the pg pool-level error ends the process as an uncaught exception — the whole Gateway
+  // disappears (connections refused) instead of a fail-closed /readyz 503. The callback only passes a fixed signal,
+  // and never receives or records driver exceptions, so no DSN/password enters the logs.
   pool.on('error', () => {
     try {
       options.onPoolError?.();
     } catch {
-      // 观测回调失败不能反过来杀死进程。
+      // A failing observability callback must not kill the process in return.
     }
   });
 
@@ -91,7 +91,7 @@ export async function createPostgresTransactionRuntime(
     try {
       await pool.end();
     } catch {
-      // 保留固定的脱敏错误，不暴露驱动异常或 DSN。
+      // Keep the fixed redacted error; do not expose driver exceptions or the DSN.
     }
     throw new PostgresRuntimeUnavailableError();
   }
@@ -111,7 +111,7 @@ export async function createPostgresTransactionRuntime(
       try {
         await pool.query('SELECT 1');
       } catch {
-        // 与启动探针同一约定：对外只暴露固定的脱敏错误。
+        // Same convention as the startup probe: only the fixed redacted error is exposed.
         throw new PostgresRuntimeUnavailableError();
       }
     },

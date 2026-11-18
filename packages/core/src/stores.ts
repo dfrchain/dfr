@@ -1,24 +1,24 @@
 /**
- * 兼容 re-export（DFR-M1-A06）。
+ * Compatibility re-export (DFR-M1-A06).
  *
- * Store 接口的**唯一权威位置**已迁移到 `packages/transaction`：
- * 见 docs/development/module-catalog.md 第 3 节与 docs/architecture/m1-storage-model.md 第 8 节。
+ * The **single authoritative location** for the Store interfaces has moved to `packages/transaction`:
+ * see docs/development/module-catalog.md section 3 and docs/architecture/m1-storage-model.md section 8.
  *
- * 本文件刻意**不包含任何定义**，只做转出，避免 Core 与 Transaction 出现两份
- * 会各自漂移的 Store 契约。实现由 `packages/storage-postgres` 提供。
+ * This file deliberately contains **no definitions** at all, only re-exports, so Core and Transaction never end up with two
+ * Store contracts that drift apart. Implementations come from `packages/storage-postgres`.
  *
- * 迁移说明（见 docs/development/deliveries/DFR-M1-A06.md）：
- *   - M0 旧接口 `TransactionStore`（`put/get/list` 的只读观测缓存）已更名为
- *     `TransactionObservationStore`，因为 `TransactionStore` 现在是 M1 引擎端口；
- *   - M0 旧接口 `IdempotencyStore`（`get/put/prune`）在整个仓库零调用，
- *     且其职责被 M1 的 `IdempotencyStore`（`begin/complete/get/pruneExpired`）
- *     完整取代，故不再保留同名死接口。
+ * Migration notes (see docs/development/deliveries/DFR-M1-A06.md):
+ *   - the M0 old interface `TransactionStore` (the read-only observation cache with `put/get/list`) has been renamed to
+ *     `TransactionObservationStore`, because `TransactionStore` is now the M1 engine port;
+ *   - the M0 old interface `IdempotencyStore` (`get/put/prune`) has zero call sites in the whole repo,
+ *     and its responsibilities are fully replaced by M1's `IdempotencyStore` (`begin/complete/get/pruneExpired`),
+ *     so the dead interface of the same name is no longer kept.
  */
 
 export { InMemoryTransactionObservationStore } from '@dfr/transaction';
 
 export type {
-  // M1 端口：TransactionStore
+  // M1 port: TransactionStore
   CreateTransactionInput,
   CreateTransactionResult,
   ListRecoverableInput,
@@ -27,7 +27,7 @@ export type {
   TransitionPatch,
   TransitionTransactionInput,
   TransitionTransactionResult,
-  // M1 端口：IdempotencyStore
+  // M1 port: IdempotencyStore
   BeginIdempotencyInput,
   BeginIdempotencyResult,
   CompleteIdempotencyInput,
@@ -37,7 +37,7 @@ export type {
   IdempotencyState,
   IdempotencyStore,
   PruneExpiredIdempotencyInput,
-  // M1 端口：NonceStore
+  // M1 port: NonceStore
   AdvanceNonceLeaseResult,
   NonceLease,
   NonceLeaseRef,
@@ -47,7 +47,7 @@ export type {
   ReleaseNonceLeaseResult,
   ReserveNonceInput,
   ReserveNonceResult,
-  // M1 端口：TrackerLeaseStore
+  // M1 port: TrackerLeaseStore
   AcquireTrackerLeaseInput,
   AcquireTrackerLeaseResult,
   ListRecoverableTrackerLeasesInput,
@@ -57,6 +57,6 @@ export type {
   RenewTrackerLeaseResult,
   TrackerLease,
   TrackerLeaseStore,
-  // M0 兼容：只读观测缓存
+  // M0 compatibility: read-only observation cache
   TransactionObservationStore,
 } from '@dfr/transaction';

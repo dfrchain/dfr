@@ -1,32 +1,32 @@
 #!/usr/bin/env bash
-# DFR staging 演练前置检查（M5-E01，launch-plan 链④"A 口径上线前的一次 staging"）。
+# DFR staging drill preflight check (M5-E01, launch-plan chain 4, "one staging run before the A-scope launch").
 #
-# 用途：在一个**已部署**的 DFR 实例上，一次性验证"这次 staging 演练值得开始"：
-# 进程活着、依赖就绪、鉴权真的生效、只读面能返回真实数据、指标可抓。
+# Purpose: on a **deployed** DFR instance, verify in one pass that "this staging drill is worth starting":
+# the process is alive, dependencies are ready, auth really works, the read-only surface returns real data, and metrics can be scraped.
 #
-# 为什么单独写一个而不是复用 e03-preflight.sh：
-#   e03 检查的是**源仓库内**的前置（RPC/DSN/注册表文件），回答"能不能开始构造交易"；
-#   本脚本检查的是一个**远端已部署实例**，回答"这个部署能不能开始演练"。
-#   两者对象不同，混在一起会让"本机没配 DSN"与"staging 挂了"无法区分。
+# Why a separate script instead of reusing e03-preflight.sh:
+#   e03 checks the preconditions **inside the source repo** (RPC/DSN/registry files) and answers "can we start building a transaction";
+#   this script checks a **remote deployed instance** and answers "can this deployment start a drill".
+#   They cover different things; mixing them makes "this machine has no DSN configured" indistinguishable from "staging is down".
 #
-# 安全约定：
-#   - **只读**：只发 HTTP GET，且只打运维/只读端点；不构造、不签名、不广播；
-#   - **绝不打印 API Key**：只报告"已设置/未设置"，失败时只回显 HTTP 状态；
-#   - 缺失即 fail-closed（退出码 1），不猜测、不降级；
-#   - 鉴权**反向**验证：不带 Key 打 /v1/chains 必须是 401 —— staging 若把鉴权配漏了，
-#     本脚本必须发现它，否则整场演练的结论都不成立。
+# Safety rules:
+#   - **Read-only**: only HTTP GET, and only to ops/read-only endpoints; no building, signing, or broadcasting;
+#   - **Never print an API Key**: only report "is set / is not set", and on failure only echo the HTTP status;
+#   - Missing means fail-closed (exit code 1); no guessing, no downgrading;
+#   - Auth is verified in **reverse**: hitting /v1/chains without a Key must return 401 — if staging missed the auth config,
+#     this script must catch it, or the conclusions of the whole drill would not hold.
 #
-# 用法：
+# Usage:
 #   export DFR_STAGING_BASE_URL='https://dfr-staging.example'
-#   export DFR_STAGING_API_KEY='dfr_<keyId>_<secret>'   # 只放环境变量，不进文件/命令
+#   export DFR_STAGING_API_KEY='dfr_<keyId>_<secret>'   # Environment variables only; never in a file or command line
 #   ./scripts/staging-preflight.sh
 #
-# 可选：
-#   DFR_STAGING_EXPECT_CHAINS='base-sepolia,arbitrum-sepolia'  # 逗号分隔；缺链即失败
-#   DFR_STAGING_SKIP_METRICS=1                                 # 本轮不校验 /metrics
-#   DFR_STAGING_TIMEOUT_S=10                                   # 单请求超时
+# Optional:
+#   DFR_STAGING_EXPECT_CHAINS='base-sepolia,arbitrum-sepolia'  # Comma-separated; a missing chain fails the check
+#   DFR_STAGING_SKIP_METRICS=1                                 # Skip the /metrics check this round
+#   DFR_STAGING_TIMEOUT_S=10                                   # Per-request timeout
 #
-# 退出码：0 = READY；1 = 有缺失项；2 = 用法错误（缺必需变量）。
+# Exit codes: 0 = READY; 1 = something is missing; 2 = usage error (a required variable is missing).
 set -uo pipefail
 
 FAILED=0
@@ -48,71 +48,71 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-head_ 'DFR staging 前置检查'
+head_ 'DFR staging preflight check'
 
 # ---------------------------------------------------------------------------
-# 0. 必需输入
+# 0. Required inputs
 # ---------------------------------------------------------------------------
-head_ '0) 输入'
+head_ '0) Inputs'
 if [ -z "${BASE}" ]; then
-  bad 'DFR_STAGING_BASE_URL 未设置'
-  hint "指向 staging 实例根地址（不带尾斜杠），例如 https://dfr-staging.example"
-  printf '\n  \033[31mNOT READY\033[0m：缺少必需输入。\n'
+  bad 'DFR_STAGING_BASE_URL is not set'
+  hint "Point at the staging instance root URL (no trailing slash), e.g. https://dfr-staging.example"
+  printf '\n  \033[31mNOT READY\033[0m: required input is missing.\n'
   exit 2
 fi
 if [ -z "${KEY}" ]; then
-  bad 'DFR_STAGING_API_KEY 未设置'
-  hint '只放环境变量（不进文件、不进命令历史）；形如 dfr_<8位keyId>_<secret>'
-  printf '\n  \033[31mNOT READY\033[0m：缺少必需输入。\n'
+  bad 'DFR_STAGING_API_KEY is not set'
+  hint 'Environment variables only (never in files or command history); of the form dfr_<8-char keyId>_<secret>'
+  printf '\n  \033[31mNOT READY\033[0m: required input is missing.\n'
   exit 2
 fi
 BASE="${BASE%/}"
-ok "DFR_STAGING_BASE_URL 已设置（${BASE}）"
-ok 'DFR_STAGING_API_KEY 已设置（值不回显）'
+ok "DFR_STAGING_BASE_URL is set (${BASE})"
+ok 'DFR_STAGING_API_KEY is set (value is not echoed)'
 
-# 不把 Key 展开到 curl argv：同机上可见进程参数的主体不应能在请求窗口读取凭证。
-# curl 的 @file 语法会读取完整 Header 行；文件名本身不含 Key，且退出时必删。
+# Do not expand the Key into curl argv: a party on the same machine that can see process arguments must not be able to read the credential during the request window.
+# curl @file syntax reads the full header line; the filename itself contains no Key, and the file is always deleted on exit.
 AUTH_HEADER_FILE="$(mktemp -t dfr-staging-header.XXXXXX)"
 chmod 600 "${AUTH_HEADER_FILE}"
 printf 'X-DFR-Key: %s\n' "${KEY}" > "${AUTH_HEADER_FILE}"
 
-# 取 HTTP 状态码；curl 不可用或超时返回 000。
+# Get the HTTP status code; curl unavailable or timed out returns 000.
 status_of() {
   curl -s -o /dev/null -w '%{http_code}' --max-time "${TIMEOUT}" "$@" 2>/dev/null || printf '000'
 }
-# 取响应体（供 JSON 解析）；失败返回空串。
+# Get the response body (for JSON parsing); on failure return an empty string.
 body_of() {
   curl -s --max-time "${TIMEOUT}" "$@" 2>/dev/null || true
 }
 
 # ---------------------------------------------------------------------------
-# 1. 存活：/healthz 不鉴权、不查依赖
+# 1. Liveness: /healthz needs no auth and checks no dependencies
 # ---------------------------------------------------------------------------
-head_ '1) 存活（GET /healthz）'
+head_ '1) Liveness (GET /healthz)'
 code="$(status_of "${BASE}/healthz")"
 if [ "${code}" = '200' ]; then
-  ok '/healthz 200（进程存活）'
+  ok '/healthz 200 (process is alive)'
 else
-  bad "/healthz 返回 ${code}（期望 200）"
-  hint '进程没起来或不接受连接；先看容器状态与启动日志，再谈演练'
+  bad "/healthz returned ${code} (expected 200)"
+  hint 'The process is not up or is not accepting connections; check container status and startup logs before talking about a drill'
 fi
 
 # ---------------------------------------------------------------------------
-# 2. 就绪：/readyz 区分"活着"与"能接流量"
+# 2. Readiness: /readyz distinguishes "alive" from "able to take traffic"
 # ---------------------------------------------------------------------------
-head_ '2) 就绪（GET /readyz）'
+head_ '2) Readiness (GET /readyz)'
 ready_body="$(body_of "${BASE}/readyz")"
 code="$(status_of "${BASE}/readyz")"
 if [ "${code}" = '200' ]; then
-  ok '/readyz 200（依赖就绪）'
+  ok '/readyz 200 (dependencies are ready)'
 elif [ "${code}" = '503' ]; then
-  bad '/readyz 503（进程存活但依赖未就绪）'
-  hint '依赖故障时进程保持存活但不接流量——这是设计行为，不是崩溃'
+  bad '/readyz 503 (process is alive but dependencies are not ready)'
+  hint 'When a dependency fails the process stays alive but takes no traffic — this is designed behavior, not a crash'
 else
-  bad "/readyz 返回 ${code}（期望 200 或 503）"
+  bad "/readyz returned ${code} (expected 200 or 503)"
 fi
 
-# 就地解析 JSON（node 已在仓库工具链里；不用 jq，避免引入额外依赖）。
+# Parse the JSON in place (node is already in the repo toolchain; no jq, to avoid an extra dependency).
 if [ -n "${ready_body}" ]; then
   printf '%s' "${ready_body}" | node -e '
     let raw="";
@@ -120,10 +120,10 @@ if [ -n "${ready_body}" ]; then
     process.stdin.on("end", () => {
       let body; try { body = JSON.parse(raw); } catch { process.exit(2); }
       const chains = Array.isArray(body.chains) ? body.chains : [];
-      // 语义区分（诚实口径）：
-      //   providers > 0 且 available == 0 → 配了但全不可用（真故障，要拦）
-      //   providers == 0                → 未配置该链的端点（信息项，不是故障）
-      // 把"未配置"当故障会让脚本对正常部署误报 NOT READY，操作者会去查不存在的问题。
+      // Semantic distinction (honest wording):
+      //   providers > 0 and available == 0 -> configured but all unavailable (a real failure; block it)
+      //   providers == 0                -> no endpoint configured for this chain (informational, not a failure)
+      // Treating "unconfigured" as a failure makes the script report NOT READY for a healthy deployment, and the operator goes chasing a problem that does not exist.
       const down = chains.filter((c) => (c.providers ?? 0) > 0 && (c.available ?? 0) === 0);
       const unconfigured = chains.filter((c) => (c.providers ?? 0) === 0);
       const stores = body.stores;
@@ -140,28 +140,28 @@ fi
 if [ -f /tmp/dfr-staging-ready.txt ]; then
   stores_line="$(grep '^STORES:' /tmp/dfr-staging-ready.txt | head -1 | cut -d: -f2-)"
   if [ -n "${stores_line}" ]; then
-    bad "事务存储不可用（stores=${stores_line}）"
-    hint 'M1 写路径要求持久化 Store；staging 必须在演练前修好存储连通'
+    bad "Transaction store is unavailable (stores=${stores_line})"
+    hint 'The M1 write path requires a persistent Store; staging must fix store connectivity before the drill'
   else
-    ok '事务存储就绪（或本部署为只读、未配置 Store）'
+    ok 'Transaction store is ready (or this deployment is read-only with no Store configured)'
   fi
 
   down="$(grep '^DOWN:' /tmp/dfr-staging-ready.txt | cut -d: -f2- | tr '\n' ',' | sed 's/,$//')"
   unconfigured="$(grep '^UNCONFIGURED:' /tmp/dfr-staging-ready.txt | cut -d: -f2- | tr '\n' ',' | sed 's/,$//')"
   listed="$(grep '^CHAINS:' /tmp/dfr-staging-ready.txt | head -1 | cut -d: -f2-)"
   if [ -n "${down}" ]; then
-    bad "以下链配置了 Provider 但全部不可用：${down}"
-    hint '演练前先确认这些链的端点可达；只有部分链不可用时，演练范围要相应收窄'
+    bad "The following chains have Providers configured but all are unavailable: ${down}"
+    hint 'Before the drill, confirm the endpoints of these chains are reachable; if only some chains are unavailable, narrow the drill scope accordingly'
   elif [ -n "${listed}" ]; then
-    ok "就绪链：${listed}"
+    ok "Ready chains: ${listed}"
   fi
   if [ -n "${unconfigured}" ]; then
-    ok "未配置端点的链（信息项，非故障）：${unconfigured}"
+    ok "Chains with no configured endpoints (informational, not a failure): ${unconfigured}"
   fi
   rm -f /tmp/dfr-staging-ready.txt
 fi
 
-# 期望链必须都在列（缺链会让演练覆盖不到约定的范围）。
+# Every expected chain must be listed (a missing chain leaves the agreed drill scope uncovered).
 if [ -n "${EXPECT_CHAINS}" ]; then
   missing=''
   IFS=',' read -r -a want <<< "${EXPECT_CHAINS}"
@@ -173,43 +173,43 @@ if [ -n "${EXPECT_CHAINS}" ]; then
     fi
   done
   if [ -n "${missing}" ]; then
-    bad "期望链缺失：${missing%,}"
-    hint '检查 DFR_DEPLOY_MILESTONE 与注册表；M4+ 的链需要显式里程碑才加载'
+    bad "Expected chains missing: ${missing%,}"
+    hint 'Check DFR_DEPLOY_MILESTONE and the registry; M4+ chains only load with an explicit milestone'
   else
-    ok "期望链齐备：${EXPECT_CHAINS}"
+    ok "Expected chains are all present: ${EXPECT_CHAINS}"
   fi
 
-  head_ '2b) 期望链详情（GET /v1/chains/{chain}，带 Key）'
+  head_ '2b) Expected chain details (GET /v1/chains/{chain}, with Key)'
   IFS=',' read -r -a detail_want <<< "${EXPECT_CHAINS}"
   for chain in "${detail_want[@]}"; do
     chain="$(printf '%s' "${chain}" | tr -d '[:space:]')"
     [ -z "${chain}" ] && continue
     detail_code="$(status_of -H "@${AUTH_HEADER_FILE}" "${BASE}/v1/chains/${chain}")"
     if [ "${detail_code}" = '200' ]; then
-      ok "${chain} 详情 200"
+      ok "${chain} details 200"
     else
-      bad "${chain} 详情返回 ${detail_code}（期望 200）"
-      hint '链清单虽存在，但详情读取失败；在演练前修复该链的部署或路由'
+      bad "${chain} details returned ${detail_code} (expected 200)"
+      hint 'The chain list exists, but reading the details failed; fix the deployment or routing for this chain before the drill'
     fi
   done
 fi
 
 # ---------------------------------------------------------------------------
-# 3. 鉴权**反向**验证：不带 Key 必须 401
+# 3. Auth **reverse** check: no Key must give 401
 # ---------------------------------------------------------------------------
-head_ '3) 鉴权（反向验证）'
+head_ '3) Auth (reverse check)'
 code="$(status_of "${BASE}/v1/chains")"
 if [ "${code}" = '401' ]; then
-  ok '不带 Key 访问 /v1/chains → 401（鉴权确实生效）'
+  ok 'Accessing /v1/chains without a Key -> 401 (auth is actually enforced)'
 else
-  bad "不带 Key 访问 /v1/chains 返回 ${code}（期望 401）"
-  hint '这是**必须**拦下的问题：鉴权配漏会让整场演练的结论不成立'
+  bad "Accessing /v1/chains without a Key returned ${code} (expected 401)"
+  hint 'This is a **must-block** problem: missing auth config invalidates the conclusions of the whole drill'
 fi
 
 # ---------------------------------------------------------------------------
-# 4. 只读业务面：带 Key 取链清单
+# 4. Read-only surface: fetch the chain list with a Key
 # ---------------------------------------------------------------------------
-head_ '4) 只读业务面（GET /v1/chains，带 Key）'
+head_ '4) Read-only surface (GET /v1/chains, with Key)'
 chains_body="$(body_of -H "@${AUTH_HEADER_FILE}" "${BASE}/v1/chains")"
 code="$(status_of -H "@${AUTH_HEADER_FILE}" "${BASE}/v1/chains")"
 if [ "${code}" = '200' ]; then
@@ -218,40 +218,41 @@ if [ "${code}" = '200' ]; then
     process.stdin.on("end",()=>{ try { const b=JSON.parse(raw); console.log(Array.isArray(b.items)?b.items.length:0);} catch { console.log("ERR"); } });
   ' 2>/dev/null || printf 'ERR')"
   if [ "${count}" = 'ERR' ]; then
-    bad '链清单不是合法 JSON 对象（响应形状与契约不符）'
-    hint '按 ADR-009 契约，应为 {items:[...], requestId}'
+    bad 'Chain list is not a valid JSON object (response shape does not match the contract)'
+    hint 'Per the ADR-009 contract, it should be {items:[...], requestId}'
   elif [ "${count}" = '0' ]; then
-    bad '链清单为空（没有可见链，演练无从下手）'
-    hint '检查注册表加载与里程碑开关；空清单通常意味着配置没生效'
+    bad 'Chain list is empty (no visible chains; there is nothing to drill against)'
+    hint 'Check registry loading and the milestone switches; an empty list usually means the configuration did not take effect'
   else
-    ok "链清单返回 ${count} 条"
+    ok "Chain list returned ${count} entries"
   fi
 else
-  bad "/v1/chains 返回 ${code}（期望 200）"
-  hint 'Key 可能无效/过期，或 scope 不允许读；错误码见响应 dfr_code'
+  bad "/v1/chains returned ${code} (expected 200)"
+  hint 'The Key may be invalid/expired, or its scope may not allow reads; see dfr_code in the response for the error code'
 fi
 
 # ---------------------------------------------------------------------------
-# 5. 指标：需鉴权且包含约定指标族
+# 5. Metrics: require auth and include the agreed metric families
 # ---------------------------------------------------------------------------
 if [ "${DFR_STAGING_SKIP_METRICS:-0}" = '1' ]; then
-  head_ '5) 指标（已按 DFR_STAGING_SKIP_METRICS=1 跳过）'
+  head_ '5) Metrics (skipped per DFR_STAGING_SKIP_METRICS=1)'
 else
-  head_ '5) 指标（GET /metrics，带 Key）'
+  head_ '5) Metrics (GET /metrics, with Key)'
   code_noauth="$(status_of "${BASE}/metrics")"
   if [ "${code_noauth}" = '401' ]; then
-    ok '/metrics 不带 Key → 401（指标端点已纳入鉴权）'
+    ok '/metrics without a Key -> 401 (the metrics endpoint is covered by auth)'
   else
-    bad "/metrics 不带 Key 返回 ${code_noauth}（期望 401）"
-    hint '指标含用量与链路拓扑，未鉴权会泄漏运营信息'
+    bad "/metrics without a Key returned ${code_noauth} (expected 401)"
+    hint 'Metrics include usage and link topology; without auth they would leak operational information'
   fi
 
   code="$(status_of -H "@${AUTH_HEADER_FILE}" "${BASE}/metrics")"
   if [ "${code}" = '200' ]; then
-    # 落临时文件再 grep，**不要** `printf ... | grep -q`：
-    # 指标体可达数十 KB，`grep -q` 命中即退出会让 printf 收到 SIGPIPE，
-    # 在 `set -o pipefail` 下整条管道返回非零 —— 于是"指标明明存在"却被判缺失。
-    # 这是 2026-10-08 对真实实例实测时发现的假失败（75KB 响应）。
+    # Write to a temp file and grep it; **do not** `printf ... | grep -q`:
+    # The metrics body can be tens of KB; `grep -q` exits as soon as it matches,
+    # which gives printf a SIGPIPE, and under `set -o pipefail` the whole pipeline
+    # returns non-zero — so "the metric clearly exists" is judged missing.
+    # This was a false failure found on 2026-10-08 while testing against a real instance (75KB response).
     metrics_file="$(mktemp)"
     body_of -H "@${AUTH_HEADER_FILE}" "${BASE}/metrics" > "${metrics_file}"
     missing=''
@@ -259,27 +260,27 @@ else
       grep -q "^${family}" "${metrics_file}" || missing="${missing}${family},"
     done
     if [ -n "${missing}" ]; then
-      bad "指标缺族：${missing%,}"
-      hint 'Prometheus 抓取不到关键指标，演练期间就看不清状态'
+      bad "Metric families missing: ${missing%,}"
+      hint 'Prometheus cannot scrape the key metrics, so the drill would run blind'
     else
       lines="$(grep -cE '^[a-z]' "${metrics_file}" || true)"
-      ok "/metrics 200，含 ${lines} 行样本（关键指标族齐备）"
+      ok "/metrics 200, ${lines} sample lines (key metric families are all present)"
     fi
     rm -f "${metrics_file}"
   else
-    bad "/metrics 返回 ${code}（期望 200）"
+    bad "/metrics returned ${code} (expected 200)"
   fi
 fi
 
 # ---------------------------------------------------------------------------
-# 汇总
+# Summary
 # ---------------------------------------------------------------------------
-head_ '汇总'
+head_ 'Summary'
 if [ "${FAILED}" -eq 0 ]; then
-  printf '  \033[32mREADY\033[0m：staging 前置齐备，可按 docs/runbooks/staging-drill.md 开始演练。\n'
-  printf '  下一步：按 runbook §3 逐项执行，并把证据写进 docs/development/deliveries/DFR-M5-E01.md。\n'
+  printf '  \033[32mREADY\033[0m: staging preflight is complete; start the drill per docs/runbooks/staging-drill.md.\n'
+  printf '  Next: work through runbook §3 item by item, and write the evidence into docs/development/deliveries/DFR-M5-E01.md.\n'
   exit 0
 fi
 
-printf '  \033[31mNOT READY\033[0m：存在缺失项（见上）。演练不得开始，也不得用离线测试替代。\n'
+printf '  \033[31mNOT READY\033[0m: there are missing items (see above). The drill must not start, and offline tests must not be substituted.\n'
 exit 1

@@ -1,7 +1,7 @@
 /**
- * Provider 模型（见 docs/architecture/provider-spec-v0.1.md）。
+ * Provider model (see docs/architecture/provider-spec-v0.1.md).
  *
- * 边界：Provider 只负责传输与端点管理，不理解链语义。
+ * Boundary: the Provider only handles transport and endpoint management; it does not understand chain semantics.
  */
 import type {
   ChainId,
@@ -22,21 +22,21 @@ export type IdempotencyClass =
 export interface ProviderDescriptor {
   id: ProviderId;
   chain: ChainId;
-  /** 由 chain 推导，注册表不单独配置（审计修正 A-08）。 */
+  /** Derived from chain; the registry does not configure it separately (audit fix A-08). */
   network: NetworkId;
   kind: ProviderKind;
-  /** 必须为引用（env:/file:/vault:），禁止内联明文 URL 凭证。 */
+  /** Must be a reference (env:/file:/vault:); inline plaintext URL credentials are forbidden. */
   endpointRef: EndpointRef;
-  /** 公开端点使用 "none"。 */
+  /** Public endpoints use "none". */
   credentialRef: CredentialRef | 'none';
-  /** 该端点实际支持的能力子集。 */
+  /** The subset of capabilities this endpoint actually supports. */
   capabilities: readonly CapabilityId[];
   /**
-   * 是否为归档节点（可查询历史状态 / 日志）。
+   * Whether it is an archive node (can query historical state / logs).
    *
-   * 审计修正 A-26：provider-spec 第 8 章的负载均衡第 1 步要求按 `requiresArchive`
-   * 过滤候选，但 `ProviderDescriptor` 与 JSON Schema 都没有承载"这个端点是不是归档节点"
-   * 的字段，该过滤规则无法实现。这里补一个可选布尔字段（新增可选字段属兼容变更）。
+   * Audit fix A-26: step 1 of load balancing in provider-spec chapter 8 requires filtering candidates by `requiresArchive`,
+   * but neither `ProviderDescriptor` nor the JSON Schema carried a field for "whether this endpoint is an archive node",
+   * so the filter rule could not be implemented. Add an optional boolean field here (adding an optional field is a compatible change).
    */
   archive?: boolean;
   priority: number;
@@ -49,31 +49,31 @@ export interface ProviderDescriptor {
 export interface ProviderQuota {
   requestsPerSecond?: number;
   requestsPerDay?: number;
-  /** 已用额度由 Provider Manager 统计，不写入配置文件。 */
+  /** Used quota is counted by the Provider Manager; it is not written into the config file. */
 }
 
 /**
- * Provider 日配额的原子预占端口（E5）。
+ * Atomic pre-occupation port for the Provider daily quota (E5).
  *
- * 语义：`consume` 必须先原子地判断并消耗一次额度，返回是否允许调用；
- * 调用方只有在 `allowed=true` 时才可以向上游发请求。计数必须跨进程共享，
- * 不能把“读计数”和“写计数”拆成两个非原子步骤。
+ * Semantics: `consume` must first atomically check and consume one unit of quota, returning whether the call is allowed;
+ * the caller may only send a request upstream when `allowed=true`. The counter must be shared across processes;
+ * "read the counter" and "write the counter" must not be split into two non-atomic steps.
  *
- * 端口放在 `@dfr/types`，使 Provider 层定义调用形状、Storage 层实现 SQL，
- * 两者不需要互相依赖。
+ * The port lives in `@dfr/types` so the Provider layer defines the call shape and the Storage layer implements the SQL,
+ * with neither needing to depend on the other.
  */
 export interface ProviderQuotaConsumeInput {
   readonly providerId: string;
   readonly chain: ChainId;
-  /** UTC 自然日，格式 `YYYY-MM-DD`。 */
+  /** UTC calendar day, format `YYYY-MM-DD`. */
   readonly day: string;
   readonly limit: number;
 }
 
 export interface ProviderQuotaConsumeResult {
-  /** 是否允许本次调用；false 表示额度已满或原子预占失败。 */
+  /** Whether this call is allowed; false means the quota is full or atomic pre-occupation failed. */
   readonly allowed: boolean;
-  /** 当前已消耗额度（允许时为本次成功预占后的值）。 */
+  /** Currently consumed quota (on allow, the value after this successful pre-occupation). */
   readonly used: number;
 }
 
@@ -85,25 +85,25 @@ export interface ProviderQuotaUsageInput {
 
 export interface ProviderQuotaStore {
   /**
-   * 原子预占一次额度。实现必须保证并发调用不会超过 `limit`。
-   * 存储不可用时抛错；调用方必须 fail-closed，不得继续发请求。
+   * Atomically pre-occupy one unit of quota. The implementation must guarantee concurrent calls cannot exceed `limit`.
+   * Throws when storage is unavailable; the caller must fail closed and must not keep sending requests.
    */
   consume(input: ProviderQuotaConsumeInput): Promise<ProviderQuotaConsumeResult>;
-  /** 读取当前已用额度；无记录时返回 0。 */
+  /** Read the currently used quota; returns 0 when there is no record. */
   usage(input: ProviderQuotaUsageInput): Promise<number>;
 }
 
 export interface ProviderCost {
   unit: 'request' | 'compute-unit' | 'gb';
-  /** 美元单价，十进制字符串。 */
+  /** USD unit price, decimal string. */
   priceUsd: string;
 }
 
 export interface ProviderCall {
-  /** 例如 "eth_getBalance"；由 Adapter 构造，Provider 不理解其语义。 */
+  /** E.g. "eth_getBalance"; constructed by the Adapter, the Provider does not understand its semantics. */
   method: string;
   params: readonly unknown[];
-  /** 重试策略的唯一依据。 */
+  /** The only basis for the retry policy. */
   idempotency: IdempotencyClass;
   timeoutMs: number;
 }
@@ -115,28 +115,28 @@ export interface ProviderContext {
   signal: AbortSignal;
 }
 
-/** 单次调用的 Provider 约束（R-04）。 */
+/** Per-call Provider constraints (R-04). */
 export interface ProviderRequirements {
   /**
-   * 需要该端点支持的能力（审计修正 A-03）。
+   * The capabilities this endpoint must support (audit fix A-03).
    *
-   * provider-spec 第 8 章第 1 步要求按 Capability 过滤候选 Provider，
-   * 但旧版 `ProviderRequirements` 没有表达能力需求，路由无法实现该过滤规则。
-   * Adapter 必须在 acquire 时声明它要执行的能力，例如 `transaction.read`。
+   * provider-spec chapter 8 step 1 requires filtering candidate Providers by Capability,
+   * but the old `ProviderRequirements` could not express a capability need, so routing could not implement the filter rule.
+   * The Adapter must declare the capability it is about to execute when acquiring, e.g. `transaction.read`.
    */
   capability?: CapabilityId;
-  /** 需要的传输类型，例如订阅需要 json-rpc-ws。 */
+  /** The transport type needed, e.g. subscriptions need json-rpc-ws. */
   kind?: ProviderKind;
-  /** 需要归档数据（例如历史状态/日志查询）。 */
+  /** Archive data needed (e.g. historical state/log queries). */
   requiresArchive?: boolean;
   /**
-   * 粘滞键：同一值必须路由到同一 Provider（例如确认跟踪期间的连续读取）。
-   * 典型取值：链上交易哈希。
+   * Stickiness key: the same value must route to the same Provider (e.g. consecutive reads during confirmation tracking).
+   * Typical value: the on-chain transaction hash.
    */
   stickyKey?: string;
 }
 
-/** Adapter 持有的 Provider 句柄：只能发起调用，不能访问端点或凭证。 */
+/** A Provider handle held by the Adapter: it can only make calls, never access endpoints or credentials. */
 export interface ProviderHandle {
   readonly id: ProviderId;
   readonly chain: ChainId;
@@ -144,14 +144,14 @@ export interface ProviderHandle {
 }
 
 /**
- * Adapter 通过路由器按需获取句柄（R-04）。
+ * The Adapter acquires handles on demand via the router (R-04).
  *
- * 只注入单一 ProviderHandle 无法表达"这次要 archive"、"订阅要 WS"、
- * "确认跟踪必须粘在同一 Provider"，因此 AdapterContext 注入路由器而非句柄。
+ * Injecting a single ProviderHandle cannot express "this call needs archive", "subscriptions need WS", or
+ * "confirmation tracking must stay pinned to the same Provider", so AdapterContext injects the router, not a handle.
  */
 export interface ProviderRouter {
   readonly chain: ChainId;
-  /** 按约束选择一个可用 Provider；无满足条件的 Provider 时抛 DFR_CHAIN_UNAVAILABLE。 */
+  /** Select an available Provider by constraints; throws DFR_CHAIN_UNAVAILABLE when no Provider meets them. */
   acquire(requirements?: ProviderRequirements): Promise<ProviderHandle>;
 }
 
@@ -161,7 +161,7 @@ export interface ProviderHealth {
   status: ProviderStatus;
   latencyP50Ms?: number;
   latencyP95Ms?: number;
-  /** 0..1，滑动窗口。 */
+  /** 0..1, sliding window. */
   errorRate?: number;
   lastCheckedAt: Iso8601;
   consecutiveFailures: number;
@@ -169,7 +169,7 @@ export interface ProviderHealth {
 
 export interface ProviderScore {
   providerId: ProviderId;
-  /** 0..100，越大越优。 */
+  /** 0..100, larger is better. */
   score: number;
   inputs: {
     latency: number;

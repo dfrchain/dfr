@@ -1,28 +1,28 @@
 /**
- * @dfr/transaction —— 交易引擎（M1）。
+ * @dfr/transaction — the transaction engine (M1).
  *
- * 责任（见 docs/development/module-catalog.md 第 3 节）：
- *   - 交易状态机；
- *   - Store **端口**（接口所有权在本包，实现由 packages/storage-postgres 提供）；
- *   - 幂等协调、nonce 协调、确认跟踪与恢复。
+ * Responsibilities (see docs/development/module-catalog.md section 3):
+ *   - the transaction state machine;
+ *   - Store **ports** (interface ownership lives in this package; implementations come from packages/storage-postgres);
+ *   - idempotency coordination, nonce coordination, confirmation tracking, and recovery.
  *
- * 不负责：
- *   - HTTP 层、Provider 选择、链 RPC 编码、数据库驱动。
+ * Not responsible for:
+ *   - the HTTP layer, Provider selection, chain RPC encoding, or database drivers.
  *
- * 依赖方向：本包只依赖 `@dfr/types` 与 `@dfr/errors`。
- * 不得依赖 Core / Adapter / Provider / Registry / Storage——
- * 该边界由 tests/contract/module-boundaries.test.ts 自动守卫。
+ * Dependency direction: this package only depends on `@dfr/types` and `@dfr/errors`.
+ * It must not depend on Core / Adapter / Provider / Registry / Storage —
+ * that boundary is guarded automatically by tests/contract/module-boundaries.test.ts.
  *
- * 状态：状态机（A05）、Store 端口（A06）与 build 编排（B04）已落地；
- * simulate / broadcast / confirm 编排按任务书顺序后续落地。
+ * Status: the state machine (A05), Store ports (A06), and build orchestration (B04) have landed;
+ * simulate / broadcast / confirm orchestration lands later, in task-book order.
  */
 
 /**
- * 本包遵循的领域契约版本。
+ * The domain-contract version this package follows.
  *
- * 与 `docs/architecture/versioning-compatibility.md` 的规范版本对齐；
- * 因为业务代码尚未落地，此常量是 A04 阶段唯一可被引用的公开面，
- * 用于证明包在 workspace 中可被解析与 typecheck。
+ * Aligned with the spec version in `docs/architecture/versioning-compatibility.md`;
+ * because the business code has not landed yet, this constant is the only public surface referenceable from phase A04,
+ * proving the package can be resolved and typechecked in the workspace.
  */
 export const TRANSACTION_SPEC_VERSION = '0.1' as const;
 
@@ -43,7 +43,7 @@ export type {
   TransactionEvent,
 } from './state-machine.js';
 
-// 广播结果分类与 unknown 解析（DFR-M1-C03b，ADR-019）。
+// Broadcast result classification and unknown resolution (DFR-M1-C03b, ADR-019).
 export { classifyBroadcastFailure, resolveUnknownOutcome } from './broadcast-outcome.js';
 export type { BroadcastFailureClass, ChainBroadcastObservation } from './broadcast-outcome.js';
 
@@ -90,7 +90,7 @@ export type {
 export { RecoveryCoordinator } from './recovery.js';
 export type { RecoveryDeps, StrandedSignedReconcileOutcome } from './recovery.js';
 
-// build 阶段编排（DFR-M1-B04）。
+// Build-phase orchestration (DFR-M1-B04).
 export { TransactionEngine, fingerprintBuildRequest } from './engine.js';
 export type {
   BroadcastTransactionInput,
@@ -114,6 +114,6 @@ export type {
   TransactionEngineStores,
 } from './engine.js';
 
-// Store 端口（DFR-M1-A06）。用通配转出避免"加了端口却忘了导出"，
-// 端口集合本身由 docs/architecture/m1-storage-model.md 第 8 节约束。
+// Store ports (DFR-M1-A06). Wildcard re-export, so a newly added port is never forgotten in the exports;
+// the port set itself is constrained by docs/architecture/m1-storage-model.md section 8.
 export * from './stores.js';

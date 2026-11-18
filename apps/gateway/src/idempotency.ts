@@ -1,9 +1,9 @@
 /**
- * Gateway 幂等协调器（DFR-M1-C04）。
+ * Gateway idempotency coordinator (DFR-M1-C04).
  *
- * Gateway 只负责把 HTTP 请求体变成稳定指纹并建立作用域；并发、租约、接管、
- * replay 与 conflict 的状态判定仍由 Transaction 的 IdempotencyStore 负责。
- * 这里不缓存记录，也不复制 Store 状态机。
+ * The Gateway only turns the HTTP request body into a stable fingerprint and establishes the scope; concurrency, leases, takeovers,
+ * replay, and conflict state decisions remain the Transaction IdempotencyStore's job.
+ * No records are cached here, and the Store state machine is not duplicated.
  */
 import { createHash, randomUUID } from 'node:crypto';
 import type {
@@ -38,14 +38,14 @@ function canonicalize(value: unknown): string | undefined {
   return JSON.stringify(value);
 }
 
-/** RFC 8785 风格的 M1 JSON 子集：UTF-16 键排序、undefined 丢弃、数组顺序保留。 */
+/** RFC 8785-style M1 JSON subset: UTF-16 key sorting, undefined dropped, array order preserved. */
 export function canonicalJson(value: unknown): string {
   const encoded = canonicalize(value);
   if (encoded === undefined) throw new TypeError('Cannot fingerprint non-JSON input');
   return encoded;
 }
 
-/** 请求体 SHA-256 指纹；header、requestId 与 trace 信息不参与。 */
+/** SHA-256 fingerprint of the request body; headers, requestId, and trace information do not participate. */
 export function fingerprintRequest(value: unknown): string {
   return createHash('sha256').update(canonicalJson(value)).digest('hex');
 }

@@ -1,17 +1,17 @@
 /**
- * M1 写路径离线 E2E 用的**测试替身** Store（DFR-M1-B10）。
+ * **Test stand-in** Store used by the M1 write-path offline E2E (DFR-M1-B10).
  *
- * 为什么存在：`DfrCore` 在 M1 里程碑要求完整的交易 Store，而 DFR 刻意**没有**
- * 提供生产用 in-memory Store（M1 启用广播时必须持久化，见 ADR-014）。为了让
- * "SDK → Gateway → Core → Adapter → TransactionEngine" 这条链路能在离线门禁里
- * 被真实驱动，本文件提供语义对齐的行为替身。
+ * Why it exists: `DfrCore` requires a complete transaction Store at the M1 milestone, while DFR deliberately has **no**
+ * production in-memory Store (broadcast at M1 must be persisted, see ADR-014). So that
+ * the "SDK → Gateway → Core → Adapter → TransactionEngine" chain can be driven for real in the offline gate,
+ * this file provides a behavior stand-in aligned with the semantics.
  *
- * 三条边界，务必遵守：
- * 1. **不是生产实现**：不跨重启、不跨进程、无真实并发控制。生产路径必须用
- *    `@dfr/storage-postgres`（`pnpm test:db` 覆盖）；
- * 2. **语义对齐规范**：行为按 `docs/architecture/m1-storage-model.md` 与
- *    Store 端口的判别联合实现；这里不"发明"新的失败分支；
- * 3. **不碰 Secret**：不保存 `signedPayload`，与 `TransactionRecord` 的字段集一致。
+ * Three boundaries, must be respected:
+ * 1. **Not a production implementation**: does not survive restarts, does not span processes, has no real concurrency control. The production path must use
+ *    `@dfr/storage-postgres` (covered by `pnpm test:db`);
+ * 2. **Semantics aligned with the spec**: behavior follows `docs/architecture/m1-storage-model.md` and
+ *    the Store port's discriminated unions; no new failure branches are "invented" here;
+ * 3. **No secrets**: does not store `signedPayload`, consistent with the `TransactionRecord` field set.
  */
 import type {
   AdvanceNonceLeaseResult,
@@ -57,7 +57,7 @@ export interface InMemoryStores {
   readonly tracker: TrackerLeaseStore;
 }
 
-/** 注入时钟，保证租约过期等行为在测试里确定。 */
+/** Injected clock, so lease expiry and similar behavior is deterministic in tests. */
 export function createInMemoryTransactionStores(
   now: () => Date = () => new Date(),
 ): InMemoryStores {
@@ -124,7 +124,7 @@ export function createInMemoryTransactionStores(
           : !TERMINAL.has(record.status),
       );
       const after = input.afterTransactionId;
-      // ADR-023：`updatedAfter` 是查询条件（不是取回后再过滤），与 Postgres 实现语义一致。
+      // ADR-023: `updatedAfter` is a query condition (not filter-after-fetch), consistent with the Postgres implementation's semantics.
       const updatedAfter = input.updatedAfter;
       const inWindow =
         updatedAfter === undefined
@@ -164,7 +164,7 @@ export function createInMemoryTransactionStores(
         return { kind: 'replayed', record: existing };
       }
       if (new Date(existing.leaseExpiresAt).getTime() <= now().getTime()) {
-        // 进程崩溃后的接管：换 owner token，旧执行者无法回写。
+        // Takeover after a process crash: swap the owner token, and the old executor cannot write back.
         const taken: IdempotencyRecord = {
           ...existing,
           ownerToken: input.ownerToken,
@@ -233,8 +233,8 @@ export function createInMemoryTransactionStores(
     async reserve(input: ReserveNonceInput): Promise<ReserveNonceResult> {
       const aKey = accountKey(input.chain, input.account.address);
 
-      // 规范（storage model §4）把 nonce account 行当作同一账户的串行化点。
-      // 交易行在 build 成功后才创建，因此这里**不**要求交易行存在。
+      // The spec (storage model §4) treats the nonce account row as the serialization point for one account.
+      // The transaction row is only created after build succeeds, so its existence is **not** required here.
       const existingForTx = [...leases.values()].find(
         (lease) => lease.transactionId === input.transactionId,
       );
@@ -311,7 +311,7 @@ export function createInMemoryTransactionStores(
     const key = leaseKey(ref.chain, ref.account.address, ref.nonce);
     const lease = leases.get(key);
     if (lease === undefined || ref.transactionId !== lease.transactionId) return { kind: 'not_found' };
-    // consumed 是终态，迟到的 broadcast 不得把它降级。
+    // consumed is a terminal state; a late broadcast must not downgrade it.
     if (lease.status === 'consumed' && status === 'broadcast') {
       return { kind: 'updated', lease };
     }

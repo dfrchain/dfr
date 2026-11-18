@@ -1,6 +1,8 @@
 # DFR HTTP API
 
-`openapi.yaml` 是 HTTP 机器契约的单一事实来源。实现顺序固定为：契约测试先失败 → 更新 OpenAPI/types → Gateway → SDK → E2E。
+`openapi.yaml` is the single source of truth for the HTTP machine contract.
+The implementation order is fixed: contract test fails first → update
+OpenAPI/types → Gateway → SDK → E2E.
 
 Connecting to an **already deployed** DFR: start with the
 quickstart “connect to an existing deployment” (not included in this
@@ -8,20 +10,22 @@ public snapshot); for the key authorization model (why a chain-supported
 call still returns 403), see “API keys and scopes” (not included in this
 public snapshot).
 
-当前已实现的端点（与 `openapi.yaml` 的 `paths` 一一对应）：
+Endpoints currently implemented (matching `openapi.yaml`'s `paths` one to
+one):
 
-- 只读：`GET /v1/chains`、`GET /v1/chains/{chainId}`、`GET /v1/balances`、
-  `GET /v1/blocks/{blockRef}`、`GET /v1/transactions/{txHash}`、
-  `GET /v1/accounts/{address}`（ADR-036）；
+- Read-only: `GET /v1/chains`, `GET /v1/chains/{chainId}`, `GET /v1/balances`,
+  `GET /v1/blocks/{blockRef}`, `GET /v1/transactions/{txHash}`,
+  `GET /v1/accounts/{address}` (ADR-036);
 - Write path: `POST /v1/transactions/preflight` (read-only precheck, ADR-037),
   `POST /v1/transactions/{build,simulate,broadcast}`,
   `POST /v1/transactions/{transactionId}/abandon` (void an unbroadcast transaction, ADR-037),
   `POST /v1/transactions/{txHash}/confirm`;
-- 合约只读：`POST /v1/contracts/read`（ADR-035）、`POST /v1/logs`（ADR-034）；
-- 事件：`POST /v1/events/tickets`、`GET /v1/events/subscribe`（SSE，M2）。
+- Contract read-only: `POST /v1/contracts/read` (ADR-035), `POST /v1/logs` (ADR-034);
+- Events: `POST /v1/events/tickets`, `GET /v1/events/subscribe` (SSE, M2).
 
-M0 只读端点、M1 写端点、M2 SSE 与 M4 只读能力均已实现；registry 未启用的能力
-在运行时按 `DFR_UNSUPPORTED_CAPABILITY`（HTTP 422）fail-closed。
+The M0 read-only endpoints, M1 write endpoints, M2 SSE, and M4 read-only
+capabilities are all implemented; a capability the registry has not enabled
+fails closed at runtime with `DFR_UNSUPPORTED_CAPABILITY` (HTTP 422).
 
 All endpoints authenticate with the `x-dfr-key: dfr_<keyId>_<secret>` header.
 The examples below omit the header; `$DFR_BASE` denotes the target

@@ -1,5 +1,5 @@
-# Grafana 看板自动加载：把挂载目录里的 JSON 全部导入。
-# `allowUiUpdates: false` —— 生产看板以仓库为准，避免"在 UI 上改好后丢失"。
+# Grafana dashboard auto-loading: import every JSON file in the mounted directory.
+# `allowUiUpdates: false` — production dashboards are sourced from the repository, to avoid losing edits made in the UI.
 apiVersion: 1
 
 providers:

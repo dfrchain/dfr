@@ -1,12 +1,12 @@
 /**
- * `contract.logs` 真实链只读联调（ADR-034，M4）。
+ * `contract.logs` real-chain read-only integration test (ADR-034, M4).
  *
- * 默认跳过；显式开启：
+ * Skipped by default; enable explicitly:
  *   DFR_RUN_TESTNET=1 \
  *   DFR_PROVIDER_BASE_SEPOLIA_PRIMARY_URL=https://sepolia.base.org \
  *   pnpm vitest run tests/integration/logs-reconcile.test.ts
  *
- * 只读：拒绝在链上无法满足的请求（超区间），并验证真实窗口能取回日志。
+ * Read-only: reject requests the chain cannot satisfy (out-of-range) and verify a real window retrieves logs.
  */
 import { describe, expect, it } from 'vitest';
 import { ChainRegistry } from '@dfr/registry';
@@ -52,8 +52,8 @@ async function rpc(method: string, params: readonly unknown[]): Promise<unknown>
   return json.result;
 }
 
-describe.skipIf(!ENABLED)('contract.logs 真实链只读联调（ADR-034）', () => {
-  it('窄窗口查询返回可映射的 ChainLog（含 blockRef/logIndex）', async () => {
+describe.skipIf(!ENABLED)('contract.logs real-chain read-only integration test (ADR-034)', () => {
+  it('a narrow-window query returns a mappable ChainLog (with blockRef/logIndex)', async () => {
     const head = (await rpc('eth_getBlockByNumber', ['latest', false])) as BlockRpc;
     const latest = BigInt(head.number);
     const from = (latest - 1n).toString(10) as DecimalUint;
@@ -64,7 +64,7 @@ describe.skipIf(!ENABLED)('contract.logs 真实链只读联调（ADR-034）', ()
       { chain: CHAIN, fromBlock: { kind: 'number', number: from }, toBlock: { kind: 'number', number: to } },
       { requestId: newRequestId() },
     );
-    // Base Sepolia 每块都有大量日志；至少能取回并映射。
+    // Every Base Sepolia block has plenty of logs; at least some must be retrievable and mappable.
     expect(Array.isArray(logs)).toBe(true);
     for (const log of logs.slice(0, 5)) {
       expect(typeof log.address).toBe('string');
@@ -73,7 +73,7 @@ describe.skipIf(!ENABLED)('contract.logs 真实链只读联调（ADR-034）', ()
     }
   }, 30_000);
 
-  it('超 maxBlockRange 的请求被 400 拒绝（fail-closed，不静默截断）', async () => {
+  it('a request exceeding maxBlockRange is rejected with 400 (fail-closed, no silent truncation)', async () => {
     const head = (await rpc('eth_getBlockByNumber', ['latest', false])) as BlockRpc;
     const latest = BigInt(head.number);
     await expect(

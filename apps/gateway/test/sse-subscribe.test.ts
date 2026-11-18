@@ -1,8 +1,8 @@
 /**
- * SSE 订阅端点测试（M2-C03，ADR-006 / ADR-029）。
+ * SSE subscription endpoint test (M2-C03, ADR-006 / ADR-029).
  *
- * 用真实 `createGatewayServer` + 真实 `EventBus` 驱动，覆盖：
- * 票据鉴权与单次消费、header 鉴权、filter 生效、事件投递、断线清理。
+ * Drives with the real `createGatewayServer` + real `EventBus`, covering:
+ * ticket auth and single-use, header auth, filter effectiveness, event delivery, and disconnect cleanup.
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import type { AddressInfo } from 'node:net';
@@ -65,7 +65,7 @@ async function start(options: {
   return `http://127.0.0.1:${port}`;
 }
 
-/** 读取 SSE 直到收到 `count` 个 data 帧或超时。 */
+/** Read SSE until `count` data frames arrive or it times out. */
 async function readEvents(res: Response, count: number, timeoutMs = 3_000): Promise<unknown[]> {
   const reader = res.body!.getReader();
   const decoder = new TextDecoder();
@@ -88,7 +88,7 @@ async function readEvents(res: Response, count: number, timeoutMs = 3_000): Prom
   return events;
 }
 
-describe('GET /v1/events/subscribe（M2-C03）', () => {
+describe('GET /v1/events/subscribe (M2-C03)', () => {
   it('rejects a ticket from a different project even when key IDs collide', async () => {
     const tickets = new SseTicketStore();
     const base = await start({ tickets });
@@ -212,7 +212,7 @@ describe('GET /v1/events/subscribe（M2-C03）', () => {
     controller.abort();
     await first.body?.cancel().catch(() => undefined);
   }, 15_000);
-  it('受限链 Key 不得用 header 建立全局事件流', async () => {
+  it('a restricted-chain Key may not use a header to establish a global event stream', async () => {
     const base = await start({ chains: ['solana-devnet' as never] });
     const res = await fetch(`${base}/v1/events/subscribe`, { headers: { 'x-dfr-key': KEY } });
     if (res.status === 200) await res.body?.cancel();
@@ -220,7 +220,7 @@ describe('GET /v1/events/subscribe（M2-C03）', () => {
     expect((await res.json()) as { dfr_code: string }).toMatchObject({ dfr_code: 'DFR_PROJECT_SCOPE_DENIED' });
   });
 
-  it('消费票据时重新按当前 Key scope 校验链与全局过滤器', async () => {
+  it('consuming a ticket re-validates chains and the global filter against the current Key scope', async () => {
     const tickets = new SseTicketStore();
     const base = await start({ tickets, chains: ['solana-devnet' as never] });
     const cases = [
@@ -236,7 +236,7 @@ describe('GET /v1/events/subscribe（M2-C03）', () => {
     }
   });
 
-  it('受限链 Key 的授权链仍可通过 header 和 ticket 建立事件流', async () => {
+  it('a restricted-chain Key's authorized chains can still establish event streams via header and ticket', async () => {
     const tickets = new SseTicketStore();
     const base = await start({ tickets, chains: ['solana-devnet' as never] });
     const headerStream = await fetch(`${base}/v1/events/subscribe?chain=solana-devnet`, {
@@ -255,7 +255,7 @@ describe('GET /v1/events/subscribe（M2-C03）', () => {
     await ticketStream.body?.cancel();
   });
 
-  it('签发 Key 已从当前配置撤销时，未到期票据也不能建立事件流', async () => {
+  it('when the issuing Key has been revoked from the current configuration, an unexpired ticket cannot establish an event stream either', async () => {
     const tickets = new SseTicketStore();
     const issued = tickets.issue({
       projectId: 'sse-sub', apiKeyId: KEY_ID, ip: '127.0.0.1', filter: { chain: 'solana-devnet' as never },
@@ -269,14 +269,14 @@ describe('GET /v1/events/subscribe（M2-C03）', () => {
     expect((await res.json()) as { dfr_code: string }).toMatchObject({ dfr_code: 'DFR_INVALID_TICKET' });
   });
 
-  it('缺少凭证 → 401', async () => {
+  it('missing credential → 401', async () => {
     const base = await start();
     const res = await fetch(`${base}/v1/events/subscribe`);
     expect(res.status).toBe(401);
     await res.body?.cancel();
   });
 
-  it('AUTH-02：受限 API Key 的 SSE header 订阅必须指定授权链', async () => {
+  it('AUTH-02: an SSE header subscription by a restricted API Key must specify an authorized chain', async () => {
     const base = await start({ chains: ['ethereum-sepolia' as never] });
     for (const suffix of ['', '?chain=solana-devnet']) {
       const response = await fetch(`${base}/v1/events/subscribe${suffix}`, {
@@ -293,7 +293,7 @@ describe('GET /v1/events/subscribe（M2-C03）', () => {
     controller.abort();
   }, 15_000);
 
-  it('AUTH-02：旧版或内部签发的越权 ticket 不能绕过现有链权限', async () => {
+  it('AUTH-02: a legacy or internally issued over-privileged ticket cannot bypass existing chain permissions', async () => {
     const tickets = new SseTicketStore();
     const base = await start({ tickets, chains: ['ethereum-sepolia' as never] });
     for (const chain of ['solana-devnet', undefined] as const) {
@@ -309,7 +309,7 @@ describe('GET /v1/events/subscribe（M2-C03）', () => {
     }
   }, 15_000);
 
-  it('header 鉴权可建立流，收到的帧是 SSE 格式（id/event/data）', async () => {
+  it('header auth can establish a stream, and received frames are in SSE format (id/event/data)', async () => {
     const bus = new EventBus();
     const base = await start({ bus });
     const controller = new AbortController();
@@ -330,7 +330,7 @@ describe('GET /v1/events/subscribe（M2-C03）', () => {
     controller.abort();
   }, 15_000);
 
-  it('filter 生效：仅收到该链的事件', async () => {
+  it('filter takes effect: only events for that chain are received', async () => {
     const bus = new EventBus();
     const base = await start({ bus });
     const controller = new AbortController();
@@ -346,7 +346,7 @@ describe('GET /v1/events/subscribe（M2-C03）', () => {
     controller.abort();
   }, 15_000);
 
-  it('ticket 鉴权可建立流，且票据被消费（第二次连接失败 401）', async () => {
+  it('ticket auth can establish a stream, and the ticket is consumed (a second connection fails with 401)', async () => {
     const bus = new EventBus();
     const tickets = new SseTicketStore();
     const base = await start({ bus, tickets });
@@ -363,7 +363,7 @@ describe('GET /v1/events/subscribe（M2-C03）', () => {
     expect(ok.status).toBe(200);
     controller.abort();
 
-    // 同一票据再连：已消费 → 401 DFR_INVALID_TICKET。
+    // Reconnecting with the same ticket: already consumed → 401 DFR_INVALID_TICKET.
     const reuse = await fetch(
       `${base}/v1/events/subscribe?chain=solana-devnet&ticket=${encodeURIComponent(issued.ticket)}`,
     );
@@ -372,13 +372,13 @@ describe('GET /v1/events/subscribe（M2-C03）', () => {
     expect(body.dfr_code).toBe('DFR_INVALID_TICKET');
   }, 15_000);
 
-  it('ticket 的 filter 被绑定：URL 扩大 filter 无法建立流', async () => {
+  it('a ticket's filter is bound: widening the filter in the URL cannot establish a stream', async () => {
     const tickets = new SseTicketStore();
     const base = await start({ tickets });
     const issued = tickets.issue({
       projectId: 'sse-sub', apiKeyId: KEY_ID, ip: '127.0.0.1', filter: { chain: 'solana-devnet' as never },
     })!;
-    // 票据绑定 chain=solana-devnet；连接时改带 types（filter 摘要不同）→ 拒绝。
+    // The ticket binds chain=solana-devnet; connecting with types instead (different filter digest) → rejected.
     const res = await fetch(
       `${base}/v1/events/subscribe?chain=solana-devnet&types=tx.finalized&ticket=${encodeURIComponent(issued.ticket)}`,
     );
@@ -386,7 +386,7 @@ describe('GET /v1/events/subscribe（M2-C03）', () => {
     await res.body?.cancel();
   }, 15_000);
 
-  it('未装配事件总线 → 404（部署无事件流），不是 500', async () => {
+  it('no event bus assembled → 404 (deployment has no event stream), not 500', async () => {
     const server = createGatewayServer({ core, auth: auth() });
     servers.push(server);
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));

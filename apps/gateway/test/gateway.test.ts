@@ -14,7 +14,7 @@ import type { RequestId } from '@dfr/types';
 
 const REQ = 'req_01J8Z6W3Q2K9M4ABCDEFGHJKMN' as RequestId;
 
-describe('M0 静态 API Key 鉴权（auth-tenancy-spec 第 3 章）', () => {
+describe('M0 static API Key authentication (auth-tenancy-spec chapter 3)', () => {
   const secret = 'abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG';
   const pepper = 'pepper-value';
   const config: StaticApiKeyConfig = {
@@ -25,12 +25,12 @@ describe('M0 静态 API Key 鉴权（auth-tenancy-spec 第 3 章）', () => {
     scope: { chains: '*', capabilities: '*', allowWrite: false },
   };
 
-  it('哈希是 sha256(secret+pepper)，且不等于明文', () => {
+  it('the hash is sha256(secret+pepper), and differs from the plaintext', () => {
     expect(config.currentHash).toMatch(/^[0-9a-f]{64}$/);
     expect(config.currentHash).not.toContain(secret);
   });
 
-  it('合法 Key 通过，返回 keyId 与 projectId', () => {
+  it('a valid Key passes, returning keyId and projectId', () => {
     const result = verifyApiKey(`dfr_7Kq2mXpA_${secret}`, config);
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -39,7 +39,7 @@ describe('M0 静态 API Key 鉴权（auth-tenancy-spec 第 3 章）', () => {
     }
   });
 
-  it('缺少 / 格式非法 / 哈希不匹配都归一化为同一种失败，不泄漏 keyId 是否存在', () => {
+  it('missing / malformed / hash-mismatched Keys all normalize to the same failure, without leaking whether the keyId exists', () => {
     const missing = verifyApiKey(undefined, config);
     const malformed = verifyApiKey('not-a-key', config);
     const wrongSecret = verifyApiKey('dfr_7Kq2mXpA_zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz', config);
@@ -47,7 +47,7 @@ describe('M0 静态 API Key 鉴权（auth-tenancy-spec 第 3 章）', () => {
 
     expect(missing.ok).toBe(false);
     expect(malformed.ok).toBe(false);
-    // keyId 正确但 secret 错 → 与 keyId 不存在走同一条失败路径。
+    // Correct keyId but wrong secret → follows the same failure path as a nonexistent keyId.
     expect(wrongSecret.ok).toBe(false);
     expect(unknownKeyId.ok).toBe(false);
     if (!wrongSecret.ok && !unknownKeyId.ok) {
@@ -56,7 +56,7 @@ describe('M0 静态 API Key 鉴权（auth-tenancy-spec 第 3 章）', () => {
     }
   });
 
-  it('轮换双活：current 与 previous 同时可用（无中断轮换）', () => {
+  it('rotation dual-active: current and previous are both usable (zero-downtime rotation)', () => {
     const newSecret = 'brandnewsecretbrandnewsecretbrandnew';
     const rotated: StaticApiKeyConfig = {
       ...config,
@@ -65,20 +65,20 @@ describe('M0 静态 API Key 鉴权（auth-tenancy-spec 第 3 章）', () => {
       previousKeyId: '7Kq2mXpA',
       previousHash: hashSecret(secret, pepper),
     };
-    // 新 Key 与旧 Key 在轮换窗口内都可用。
+    // New and old Keys are both usable inside the rotation window.
     expect(verifyApiKey(`dfr_NewKey01_${newSecret}`, rotated).ok).toBe(true);
     expect(verifyApiKey(`dfr_7Kq2mXpA_${secret}`, rotated).ok).toBe(true);
-    // 旧 keyId 配新 secret 必须失败（哈希与 keyId 绑定，不允许交叉组合）。
+    // An old keyId with a new secret must fail (the hash is bound to the keyId; cross-combinations are not allowed).
     expect(verifyApiKey(`dfr_7Kq2mXpA_${newSecret}`, rotated).ok).toBe(false);
   });
 
-  it('恒定时间比较：长度不同不抛错且返回 false', () => {
+  it('constant-time comparison: different lengths do not throw and return false', () => {
     expect(constantTimeEqualHex('ab', 'ab')).toBe(true);
     expect(constantTimeEqualHex('ab', 'abcd')).toBe(false);
     expect(constantTimeEqualHex('ab', 'cd')).toBe(false);
   });
 
-  it('作用域检查：链与能力', () => {
+  it('scope checks: chains and capabilities', () => {
     const scoped = { chains: ['ethereum-sepolia' as never], capabilities: ['block.read' as never], allowWrite: false };
     expect(scopeAllows(scoped, { chain: 'ethereum-sepolia', capability: 'block.read' })).toBe(true);
     expect(scopeAllows(scoped, { chain: 'solana-devnet' })).toBe(false);
@@ -87,8 +87,8 @@ describe('M0 静态 API Key 鉴权（auth-tenancy-spec 第 3 章）', () => {
   });
 });
 
-describe('令牌桶限流（gateway-spec 第 5 章）', () => {
-  it('容量内放行，超出拒绝并给出 Retry-After 依据', () => {
+describe('token bucket rate limiting (gateway-spec chapter 5)', () => {
+  it('admits within capacity, rejects beyond it, and gives a Retry-After basis', () => {
     let now = 0;
     const limiter = new TokenBucketLimiter(DEFAULT_BUCKETS, () => now);
     const capacity = DEFAULT_BUCKETS.read.capacity;
@@ -100,24 +100,24 @@ describe('令牌桶限流（gateway-spec 第 5 章）', () => {
     expect(denied.allowed).toBe(false);
     expect(denied.retryAfterMs).toBeGreaterThan(0);
 
-    // 补充 1 秒后至少可再放行 1 次。
+    // After 1s of refill, at least 1 more admission is possible.
     now += 1000;
     expect(limiter.check('default:key1', 'read').allowed).toBe(true);
   });
 
-  it('不是固定窗口：边界不会出现 2 倍放行', () => {
+  it('not a fixed window: no 2x admission at the boundary', () => {
     let now = 0;
     const limiter = new TokenBucketLimiter(DEFAULT_BUCKETS, () => now);
     const capacity = DEFAULT_BUCKETS.read.capacity;
     for (let i = 0; i < capacity; i += 1) limiter.check('p:k', 'read');
-    // 固定窗口会在窗口翻转时瞬间再放行一整桶（capacity）。令牌桶不会。
-    now += 1000; // 仅补充 20 个令牌（read 的补充速率）
+    // A fixed window would instantly admit a whole bucket (capacity) when the window flips. A token bucket does not.
+    now += 1000; // refills only 20 tokens (the read refill rate)
     let allowed = 0;
     while (limiter.check('p:k', 'read').allowed) allowed += 1;
     expect(allowed).toBeLessThan(capacity);
   });
 
-  it('时钟回拨不能凭空补充令牌或绕过限流', () => {
+  it('a clock moving backwards cannot conjure tokens or bypass rate limiting', () => {
     let now = 10_000;
     const limiter = new TokenBucketLimiter({
       read: { capacity: 1, refillPerSecond: 1 },
@@ -126,7 +126,7 @@ describe('令牌桶限流（gateway-spec 第 5 章）', () => {
     }, () => now);
 
     expect(limiter.check('p:k', 'read').allowed).toBe(true);
-    // 时间回拨后不能把 updatedAt 倒退，否则时钟恢复时会无中生有令牌。
+    // After the clock moves backwards, updatedAt must not move backwards too, or tokens would appear from nowhere when the clock recovers.
     now = 0;
     expect(limiter.check('p:k', 'read').allowed).toBe(false);
     now = 10_000;
@@ -135,7 +135,7 @@ describe('令牌桶限流（gateway-spec 第 5 章）', () => {
     expect(limiter.check('p:k', 'read').allowed).toBe(true);
   });
 
-  it('桶按 (project,key,routeClass) 隔离', () => {
+  it('buckets are isolated by (project,key,routeClass)', () => {
     const limiter = new TokenBucketLimiter(DEFAULT_BUCKETS, () => 0);
     for (let i = 0; i < DEFAULT_BUCKETS.read.capacity; i += 1) limiter.check('p:k1', 'read');
     expect(limiter.check('p:k1', 'read').allowed).toBe(false);
@@ -144,15 +144,15 @@ describe('令牌桶限流（gateway-spec 第 5 章）', () => {
   });
 });
 
-describe('BlockRef 语法解析（评审修正 R-20）', () => {
-  it('四种带标签语法都能解析为判别联合', () => {
+describe('BlockRef syntax parsing (review fix R-20)', () => {
+  it('all four tagged syntaxes parse into a discriminated union', () => {
     expect(parseBlockRef('number:123', REQ)).toEqual({ kind: 'number', number: '123' });
     expect(parseBlockRef('hash:0xabc', REQ)).toEqual({ kind: 'hash', hash: '0xabc' });
     expect(parseBlockRef('slot:7', REQ)).toEqual({ kind: 'slot', slot: '7' });
     expect(parseBlockRef('tag:finalized', REQ)).toEqual({ kind: 'tag', tag: 'finalized' });
   });
 
-  it('裸数字 / 未知标签 → DFR_VALIDATION_FAILED', () => {
+  it('bare numbers / unknown tags → DFR_VALIDATION_FAILED', () => {
     for (const bad of ['123', 'tag:newest', 'number:-1', 'block:0x1']) {
       try {
         parseBlockRef(bad, REQ);
@@ -164,8 +164,8 @@ describe('BlockRef 语法解析（评审修正 R-20）', () => {
   });
 });
 
-describe('错误分类只在该出现的层构造', () => {
-  it('网关只构造 auth / policy / client 类错误', () => {
+describe('error categories are only constructed at the layer where they belong', () => {
+  it('the gateway only constructs auth / policy / client errors', () => {
     const codes = ['DFR_UNAUTHENTICATED', 'DFR_RATE_LIMITED', 'DFR_VALIDATION_FAILED', 'DFR_NOT_FOUND'];
     for (const code of codes) {
       const err = createDfrError(code as never, { requestId: REQ });

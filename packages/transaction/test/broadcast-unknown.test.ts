@@ -1,14 +1,14 @@
 /**
- * TransactionEngine 广播超时与 `unknown` 解析（DFR-M1-C03b）。
+ * TransactionEngine broadcast timeout and `unknown` resolution (DFR-M1-C03b).
  *
- * 权威来源：ADR-019（Accepted）、transaction-lifecycle §3.1/§3.2、m1-api-contract §5。
+ * Authoritative sources: ADR-019 (Accepted), transaction-lifecycle §3.1/§3.2, m1-api-contract §5.
  *
- * 本任务关闭 TODO-006：广播结果不确定时**不得**判成功也不得判失败，
- * 先落 `unknown`，再按链上观测解析到 `pending / included / replaced`；
- * 查不到且 nonce 未被占用时**保持 `unknown`**（mempool 传播是异步的，
- * "此刻查不到"不等于"已丢弃"——`unknown → dropped` 留给 M1-D03 的 dropTimeoutMs 窗口）。
+ * This task closes TODO-006: when a broadcast result is indeterminate, it must be judged **neither** success nor failure;
+ * first land on `unknown`, then resolve by on-chain observation to `pending / included / replaced`;
+ * when nothing is found and the nonce is unoccupied, **stay `unknown`** (mempool propagation is asynchronous;
+ * "not found right now" is not "already dropped" — `unknown → dropped` is left to M1-D03's dropTimeoutMs window).
  *
- * 全部用内存替身：只验证编排、分类与状态事实，不验证 SQL。
+ * All with in-memory test doubles: only orchestration, classification, and state facts are verified, not SQL.
  */
 import { describe, expect, it } from 'vitest';
 import { createDfrError, isDfrError } from '@dfr/errors';
@@ -66,7 +66,7 @@ const SIGNED: SignedTransaction = {
   signerRef: 'external:test',
 };
 
-/* ------------------------------ 替身 ------------------------------ */
+/* ------------------------------ Test doubles ------------------------------ */
 
 class FakeTransactionStore implements TransactionStore {
   records = new Map<TransactionId, TransactionRecord>();
@@ -147,7 +147,7 @@ interface PortOptions {
   broadcastResult?: BroadcastResult;
   observation?: ChainBroadcastObservation;
   observeError?: unknown;
-  /** true 表示完全不装配 observe（模拟老部署）。 */
+  /** true means observe is not wired up at all (simulating an old deployment). */
   withoutObserve?: boolean;
 }
 
@@ -209,7 +209,7 @@ function makeEngine(port: TransactionChainPort, stores: FakeTransactionStore): T
 const TIMEOUT = () =>
   createDfrError('DFR_PROVIDER_TIMEOUT', {
     requestId: REQUEST_ID,
-    message: '广播请求超时',
+    message: 'Broadcast request timed out',
     chain: CHAIN,
     details: { method: 'eth_sendRawTransaction' },
   });
@@ -224,9 +224,9 @@ async function run(port: PortOptions, status: TransactionStatus = 'simulated') {
   return { stores, port: fake, error, record: stores.records.get(TX_ID)! };
 }
 
-/* ------------------------------ 测试 ------------------------------ */
+/* ------------------------------ Tests ------------------------------ */
 
-describe('广播失败分类（ADR-019 第 3 节，纯函数）', () => {
+describe('Broadcast failure classification (ADR-019, section 3, pure function)', () => {
   it('TX-02: peer rejection cannot prove an already-signed transaction never propagated', () => {
     const classify = (code: never) => {
       const err = createDfrError(code, { requestId: REQUEST_ID, message: 'x', chain: CHAIN });
@@ -239,7 +239,7 @@ describe('广播失败分类（ADR-019 第 3 节，纯函数）', () => {
     expect(classify('DFR_BLOCKHASH_EXPIRED' as never)).toBe('rejected');
   });
 
-  it('Provider 超时 / 不可用 / 熔断 / nonce 冲突都是不确定，不是拒绝', () => {
+  it('Provider timeout / unavailable / circuit breaker / nonce conflict are all indeterminate, not rejections', () => {
     for (const code of [
       'DFR_PROVIDER_TIMEOUT',
       'DFR_PROVIDER_UNAVAILABLE',
@@ -251,7 +251,7 @@ describe('广播失败分类（ADR-019 第 3 节，纯函数）', () => {
     }
   });
 
-  it('非 DfrError 一律按不确定处理（不猜测，也不当成可证明的拒绝）', () => {
+  it('Non-DfrError values are always treated as indeterminate (never guessed, never treated as a provable rejection)', () => {
     expect(classifyBroadcastFailure(new Error('boom'))).toBe('indeterminate');
   });
 
@@ -259,49 +259,49 @@ describe('广播失败分类（ADR-019 第 3 节，纯函数）', () => {
     ['already known', 'DFR_TRANSACTION_REJECTED', 'indeterminate'],
     ['underpriced', 'DFR_PROVIDER_UNAVAILABLE', 'indeterminate'],
     ['replacement transaction underpriced', 'DFR_PROVIDER_UNAVAILABLE', 'indeterminate'],
-  ] as const)('%s 失败按矩阵分类为 %s', (_label, code, expected) => {
+  ] as const)('%s failure is classified as %s by the matrix', (_label, code, expected) => {
     const err = createDfrError(code, { requestId: REQUEST_ID, message: 'provider response', chain: CHAIN });
     expect(classifyBroadcastFailure(err)).toBe(expected);
   });
 });
 
-describe('链上观测 → unknown 解析（ADR-019 第 2 节，纯函数）', () => {
+describe('On-chain observation → unknown resolution (ADR-019, section 2, pure function)', () => {
   it.each([
     ['pending', 'mempool.entered'],
     ['included', 'included'],
     ['replaced', 'replaced'],
-  ] as const)('%s 观测解析为 %s 事件', (kind, event) => {
+  ] as const)('%s observation resolves to the %s event', (kind, event) => {
     expect(resolveUnknownOutcome({ kind } as ChainBroadcastObservation)).toBe(event);
   });
 
-  it('absent 观测不解析为任何事件（保持 unknown，等 D03 的 dropTimeoutMs 窗口）', () => {
+  it('an absent observation resolves to no event (stay unknown; wait for D03's dropTimeoutMs window)', () => {
     expect(resolveUnknownOutcome({ kind: 'absent' })).toBeNull();
   });
 });
 
-describe('TransactionEngine 广播超时（DFR-M1-C03b）', () => {
-  it('超时且查不到 → 落 unknown，并上抛原始错误（既非成功也非失败）', async () => {
+describe('TransactionEngine broadcast timeout (DFR-M1-C03b)', () => {
+  it('timeout with nothing found → land on unknown and rethrow the original error (neither success nor failure)', async () => {
     const { record, error, port, stores } = await run({ broadcastError: TIMEOUT() });
 
     expect(isDfrError(error) && error.code).toBe('DFR_PROVIDER_TIMEOUT');
     expect(record.status).toBe('unknown');
-    // 状态边：sign → broadcast.indeterminate（不含 rejected）。
+    // State edge: sign → broadcast.indeterminate (no rejected).
     expect(stores.transitionCalls.map((c) => c.reason)).toEqual([
       'sign',
       'broadcast.indeterminate',
     ]);
-    // 查询用的是 expectedHash 与记录里的 from/nonce。
+    // The query uses expectedHash and the record's from/nonce.
     expect(port.observeCalls).toHaveLength(1);
     expect(port.observeCalls[0]).toMatchObject({
       txHash: TX_HASH,
       from: FROM,
       nonce: '42',
     });
-    // 只广播一次：超时后绝不自动重发。
+    // Broadcast exactly once: never auto-resend after a timeout.
     expect(port.broadcastCalls).toHaveLength(1);
   });
 
-  it('超时但查询发现已进 mempool → 解析为 pending', async () => {
+  it('timeout but the query finds it in the mempool → resolve to pending', async () => {
     const { record, error } = await run({
       broadcastError: TIMEOUT(),
       observation: { kind: 'pending', txHash: TX_HASH },
@@ -310,7 +310,7 @@ describe('TransactionEngine 广播超时（DFR-M1-C03b）', () => {
     expect(record.status).toBe('pending');
   });
 
-  it('超时但查询发现已上链 → 解析为 included 并持久化区块高度/hash 锚点', async () => {
+  it('timeout but the query finds it on-chain → resolve to included and persist the block height/hash anchor', async () => {
     const blockRef: BlockRef = { kind: 'number', number: dec('18000000') };
     const { record } = await run({
       broadcastError: TIMEOUT(),
@@ -327,7 +327,7 @@ describe('TransactionEngine 广播超时（DFR-M1-C03b）', () => {
     expect(record.canonicalBlockHash).toBe('0x' + '12'.repeat(32));
   });
 
-  it('超时且该 nonce 已被别人消耗 → 解析为 replaced（终态）', async () => {
+  it('timeout with the nonce already consumed by someone else → resolve to replaced (terminal state)', async () => {
     const { record } = await run({
       broadcastError: TIMEOUT(),
       observation: { kind: 'replaced', nonce: dec('42'), byTxHash: OTHER_HASH },
@@ -335,12 +335,12 @@ describe('TransactionEngine 广播超时（DFR-M1-C03b）', () => {
     expect(record.status).toBe('replaced');
   });
 
-  it('查询本身失败时保持 unknown，不让查询故障改变分类', async () => {
+  it('when the query itself fails, stay unknown; do not let a query failure change the classification', async () => {
     const { record, error } = await run({
       broadcastError: TIMEOUT(),
       observeError: createDfrError('DFR_PROVIDER_UNAVAILABLE', {
         requestId: REQUEST_ID,
-        message: '查询不可用',
+        message: 'Query unavailable',
         chain: CHAIN,
       }),
     });
@@ -348,7 +348,7 @@ describe('TransactionEngine 广播超时（DFR-M1-C03b）', () => {
     expect(record.status).toBe('unknown');
   });
 
-  it('部署未装配 observe → 停在 unknown（不假装 dropped，也不假装失败）', async () => {
+  it('deployment without observe wired up → stop at unknown (pretend neither dropped nor failed)', async () => {
     const { record, error } = await run({ broadcastError: TIMEOUT(), withoutObserve: true });
     expect(isDfrError(error) && error.code).toBe('DFR_PROVIDER_TIMEOUT');
     expect(record.status).toBe('unknown');
@@ -358,7 +358,7 @@ describe('TransactionEngine 广播超时（DFR-M1-C03b）', () => {
     const { record, port, stores, error } = await run({
       broadcastError: createDfrError('DFR_INSUFFICIENT_FUNDS', {
         requestId: REQUEST_ID,
-        message: '余额不足',
+        message: 'Insufficient balance',
         chain: CHAIN,
       }),
       observation: { kind: 'included', txHash: TX_HASH },
@@ -407,11 +407,11 @@ describe('TransactionEngine 广播超时（DFR-M1-C03b）', () => {
     expect(port.observeCalls).toHaveLength(1);
   });
 
-  it('nonce too low（DFR_NONCE_CONFLICT）走不确定路径，不直接判 failed', async () => {
+  it('nonce too low (DFR_NONCE_CONFLICT) takes the indeterminate path; it is not judged failed directly', async () => {
     const { record, port } = await run({
       broadcastError: createDfrError('DFR_NONCE_CONFLICT', {
         requestId: REQUEST_ID,
-        message: 'nonce 冲突',
+        message: 'nonce conflict',
         chain: CHAIN,
       }),
       observation: { kind: 'replaced', nonce: dec('42') },
@@ -420,12 +420,12 @@ describe('TransactionEngine 广播超时（DFR-M1-C03b）', () => {
     expect(port.observeCalls).toHaveLength(1);
   });
 
-  it('unknown 不是终态：可被后续观测继续解析（D03 恢复扫描的前提）', async () => {
+  it('unknown is not terminal: later observations can keep resolving it (the premise of the D03 recovery scan)', async () => {
     const first = await run({ broadcastError: TIMEOUT() });
     expect(first.record.status).toBe('unknown');
     expect(first.stores.transitionCalls.some((c) => c.toStatus === 'pending')).toBe(false);
 
-    // 同一记录被"再次观测"（模拟恢复扫描）时，仍能沿 unknown → included 推进。
+    // When the same record is "observed again" (simulating a recovery scan), it can still advance along unknown → included.
     const engine = makeEngine(
       new FakeChainPort({
         observation: { kind: 'included', txHash: `0x${'aa'.repeat(32)}` },
@@ -439,12 +439,12 @@ describe('TransactionEngine 广播超时（DFR-M1-C03b）', () => {
     expect(resolved?.status).toBe('included');
   });
 
-  it('恢复路径再观测为 absent 且已超时 → dropped（ADR-023 补上这条无触发路径的边）', async () => {
+  it('re-observation on the recovery path finds absent and the timeout has passed → dropped (ADR-023 fills this trigger-less edge)', async () => {
     const first = await run({ broadcastError: TIMEOUT() });
     expect(first.record.status).toBe('unknown');
 
-    // 默认观测即 absent；`dropClock` 未注入时用真实时钟，而记录 updatedAt 是固定的
-    // 测试时间 → 静默远超 dropTimeoutMs，因此应判 dropped。
+    // The default observation is absent; with no `dropClock` injected the real clock is used, while the record's updatedAt is fixed
+    // test time → the silence far exceeds dropTimeoutMs, so it should be judged dropped.
     const engine = makeEngine(new FakeChainPort({}), first.stores);
     const resolved = await engine.resolveIndeterminate({
       transactionId: TX_ID,
@@ -453,9 +453,9 @@ describe('TransactionEngine 广播超时（DFR-M1-C03b）', () => {
     expect(resolved?.status).toBe('dropped');
   });
 
-  it('同一次广播请求内的 absent 观测绝不判 dropped（ADR-019 第 142 行约束不得被 ADR-023 破坏）', async () => {
-    // 这是最容易被"顺手实现超时"破坏的约束：mempool 传播是异步的，
-    // 请求内此刻查不到不代表已丢弃。
+  it('an absent observation inside the same broadcast request never judges dropped (the ADR-019 line-142 constraint must not be broken by ADR-023)', async () => {
+    // This is the constraint most easily broken by "adding timeout handling on the side": mempool propagation is asynchronous,
+    // and not finding it right now inside the request does not mean it is dropped.
     const { record } = await run({ broadcastError: TIMEOUT(), observation: { kind: 'absent' } });
     expect(record.status).toBe('unknown');
   });
@@ -477,7 +477,7 @@ describe('TransactionEngine 广播超时（DFR-M1-C03b）', () => {
     expect(port.broadcastCalls).toHaveLength(1);
   });
 
-  it('广播成功路径不受影响（回归）：accepted → broadcast，且不做观测查询', async () => {
+  it('the success path is unaffected (regression): accepted → broadcast, with no observation query', async () => {
     const { record, port } = await run({});
     expect(record.status).toBe('broadcast');
     expect(port.observeCalls).toHaveLength(0);

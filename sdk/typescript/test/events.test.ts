@@ -1,8 +1,8 @@
 /**
- * SDK 事件路径契约测试（M4 前置：BEX 需要消费事件，ADR-008）。
+ * SDK event-path contract tests (M4 prerequisite: BEX needs to consume events, ADR-008).
  *
- * 覆盖：`createEventTicket`（POST /v1/events/tickets）与 `subscribeEvents` /
- * `subscribeEventsWithTicket`（GET /v1/events/subscribe 的 SSE 帧解析）。
+ * Covers: `createEventTicket` (POST /v1/events/tickets) and `subscribeEvents` /
+ * `subscribeEventsWithTicket` (SSE frame parsing for GET /v1/events/subscribe).
  */
 import { describe, expect, it } from 'vitest';
 import { DFR, isDfrApiError } from '../src/index.js';
@@ -53,7 +53,7 @@ function event(id: string, type: string): string {
 }
 
 describe('SDK createEventTicket', () => {
-  it('POST /v1/events/tickets，带 filter 与可选 ttlMs，解包票据', async () => {
+  it('POST /v1/events/tickets, with filter and optional ttlMs, unpacking the ticket', async () => {
     const seen: Captured[] = [];
     const client = new DFR({
       apiKey: KEY, baseUrl: BASE,
@@ -67,7 +67,7 @@ describe('SDK createEventTicket', () => {
     expect(JSON.parse(seen[0]!.body!)).toEqual({ filter: { chain: 'ethereum-sepolia', types: ['tx.finalized'] }, ttlMs: 30000 });
   });
 
-  it('票据无效 → DFR_INVALID_TICKET（不泄漏票据原文）', async () => {
+  it('invalid ticket → DFR_INVALID_TICKET (without leaking the raw ticket)', async () => {
     const client = new DFR({
       apiKey: KEY, baseUrl: BASE,
       fetchImpl: capture(() => jsonResponse(401, { dfr_code: 'DFR_INVALID_TICKET', detail: 'invalid ticket', request_id: 'req_x' }), []),
@@ -84,7 +84,7 @@ describe('SDK createEventTicket', () => {
 });
 
 describe('SDK subscribeEvents', () => {
-  it('header 鉴权：GET /v1/events/subscribe?chain=&types=，逐条解析 SSE 帧', async () => {
+  it('header auth: GET /v1/events/subscribe?chain=&types=, parsing SSE frames one by one', async () => {
     const seen: Captured[] = [];
     const client = new DFR({
       apiKey: KEY, baseUrl: BASE,
@@ -101,12 +101,12 @@ describe('SDK subscribeEvents', () => {
     expect(seen[0]!.url).toContain('/v1/events/subscribe?');
     expect(seen[0]!.url).toContain('chain=ethereum-sepolia');
     expect(seen[0]!.url).toContain('types=tx.finalized');
-    // header 路径带 Key，且接受 SSE。
+    // The header path carries a Key and accepts SSE.
     expect(seen[0]!.headers['x-dfr-key']).toBe(KEY);
     expect(seen[0]!.headers['accept']).toBe('text/event-stream');
   });
 
-  it('ticket 路径：query 带 ticket 且**不带** Key header（票据即凭据）', async () => {
+  it('ticket path: query carries a ticket and **no** Key header (the ticket is the credential)', async () => {
     const seen: Captured[] = [];
     const client = new DFR({
       apiKey: KEY, baseUrl: BASE,
@@ -120,7 +120,7 @@ describe('SDK subscribeEvents', () => {
     expect(seen[0]!.headers['x-dfr-key']).toBeUndefined();
   });
 
-  it('close() 关闭流（迭代器随之中止，不再产出）', async () => {
+  it('close() closes the stream (the iterator aborts with it and yields no more)', async () => {
     const client = new DFR({
       apiKey: KEY, baseUrl: BASE,
       fetchImpl: capture(
@@ -133,12 +133,12 @@ describe('SDK subscribeEvents', () => {
     const first = await iterator.next();
     expect(first.done).toBe(false);
     close();
-    // 关闭后再次 next 不应抛错（done 或正常结束）。
+    // Calling next again after closing must not throw (done or a normal end).
     const second = await iterator.next().catch((err) => ({ done: true, value: err }));
     expect(second.done === true || second.done === false).toBe(true);
   });
 
-  it('非 2xx（票据失效）→ DFR_INVALID_TICKET 错误', async () => {
+  it('non-2xx (expired ticket) → DFR_INVALID_TICKET error', async () => {
     const client = new DFR({
       apiKey: KEY, baseUrl: BASE,
       fetchImpl: capture(

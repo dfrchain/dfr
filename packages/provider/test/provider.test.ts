@@ -44,7 +44,7 @@ function makeManager(
     resolveCredential: noCredential,
     fetchImpl: createStubFetch({ behaviors }),
     sleep: async () => {},
-    random: () => 0, // 确定性：命中 top-1 / 无抖动
+    random: () => 0, // Deterministic: hits top-1 / no jitter
     onCall: (r) => records.push(r),
     ...(options.quotaStore !== undefined ? { quotaStore: options.quotaStore } : {}),
   });
@@ -55,8 +55,8 @@ const readCall = (method = 'eth_getBalance') =>
   ({ method, params: ['0xabc'], idempotency: 'safe-read' as const, timeoutMs: 200 });
 const ctx = { requestId: 'req_01J8Z6W3Q2K9M4ABCDEFGHJKMN', signal: new AbortController().signal };
 
-describe('Provider 传输（DFR-006）', () => {
-  it('成功时返回 result 并记录健康', async () => {
+  describe('Provider transport (DFR-006)', () => {
+    it('returns result on success and records health', async () => {
     const fetchImpl = createStubFetch({ behaviors: { p: [{ kind: 'result', value: '0x1' }] } });
     const provider = new JsonRpcHttpProvider({
       descriptor: stubDescriptor('p', CHAIN),
@@ -68,7 +68,7 @@ describe('Provider 传输（DFR-006）', () => {
     expect(provider.healthSnapshot(Date.now()).latencyP50Ms).toBeGreaterThanOrEqual(0);
   });
 
-  it('向 RPC 注入 W3C traceparent，Provider call record 保留同一关联字段', async () => {
+    it('injects the W3C traceparent into the RPC; the Provider call record keeps the same correlation field', async () => {
     let sentTraceparent: string | null = null;
     const fetchImpl: typeof fetch = async (_input, init) => {
       sentTraceparent = new Headers(init?.headers).get('traceparent');
@@ -95,7 +95,7 @@ describe('Provider 传输（DFR-006）', () => {
     expect(records[0]?.spanId).not.toBe('d'.repeat(16));
   });
 
-  it('HTTP 5xx → DFR_PROVIDER_UNAVAILABLE；429 → DFR_PROVIDER_RATE_LIMITED', async () => {
+    it('HTTP 5xx -> DFR_PROVIDER_UNAVAILABLE; 429 -> DFR_PROVIDER_RATE_LIMITED', async () => {
     const five = new JsonRpcHttpProvider({
       descriptor: stubDescriptor('p', CHAIN),
       endpoint: 'https://stub.local/p',
@@ -111,7 +111,7 @@ describe('Provider 传输（DFR-006）', () => {
     await expect(limited.request(readCall(), ctx)).rejects.toMatchObject({ code: 'DFR_PROVIDER_RATE_LIMITED' });
   });
 
-  it('JSON-RPC 错误按 error-spec 映射表归一化', async () => {
+    it('JSON-RPC errors are normalized per the error-spec mapping table', async () => {
     const cases: [string, string][] = [
       ['nonce too low', 'DFR_NONCE_CONFLICT'],
       ['insufficient funds for gas', 'DFR_INSUFFICIENT_FUNDS'],
@@ -128,7 +128,7 @@ describe('Provider 传输（DFR-006）', () => {
     }
   });
 
-  it('错误详情不回显端点与凭证（脱敏回归）', async () => {
+    it('error details do not echo the endpoint or credentials (redaction regression)', async () => {
     const provider = new JsonRpcHttpProvider({
       descriptor: stubDescriptor('p', CHAIN),
       endpoint: 'https://rpc.example.com/v1?apikey=SUPERSECRET',
@@ -143,7 +143,7 @@ describe('Provider 传输（DFR-006）', () => {
     }
   });
 
-  it('超时 → DFR_PROVIDER_TIMEOUT', async () => {
+    it('timeout -> DFR_PROVIDER_TIMEOUT', async () => {
     const provider = new JsonRpcHttpProvider({
       descriptor: stubDescriptor('p', CHAIN, { timeoutMs: 1000 }),
       endpoint: 'https://stub.local/p',
@@ -155,8 +155,8 @@ describe('Provider 传输（DFR-006）', () => {
   });
 });
 
-describe('Provider Manager 故障切换（DFR-007 验收：主 Provider 5xx 自动切换）', () => {
-  it('主 Provider 返回 5xx 时切换到备用，调用方无感知且结果一致', async () => {
+  describe('Provider Manager failover (DFR-007 acceptance: primary Provider 5xx auto-switches)', () => {
+    it('switches to the standby when the primary Provider returns 5xx; the caller notices nothing and results agree', async () => {
     const { manager, records } = makeManager({
       primary: [{ kind: 'http', status: 503 }],
       secondary: [{ kind: 'result', value: '0x42' }],
@@ -171,7 +171,7 @@ describe('Provider Manager 故障切换（DFR-007 验收：主 Provider 5xx 自�
     expect(records[1]?.retryCount).toBe(1);
   });
 
-  it('主 Provider 恢复后会重新被选择，不会永久黏在备用端', async () => {
+    it('the primary Provider is selected again after it recovers; it never stays stuck on the standby', async () => {
     const { manager, records } = makeManager({
       primary: [{ kind: 'http', status: 503 }, { kind: 'result', value: 'primary-recovered' }],
       secondary: [{ kind: 'result', value: 'secondary' }],
@@ -180,7 +180,7 @@ describe('Provider Manager 故障切换（DFR-007 验收：主 Provider 5xx 自�
     const first = await manager.acquire({ capability: 'account.balance' });
     expect(await first.request<string>(readCall(), ctx)).toBe('secondary');
 
-    // 周期健康探针连续三次成功后，主端从 unknown 恢复为 healthy。
+    // After three consecutive successful periodic health probes, the primary recovers from unknown to healthy.
     await manager.probe('primary');
     await manager.probe('primary');
     await manager.probe('primary');
@@ -190,7 +190,7 @@ describe('Provider Manager 故障切换（DFR-007 验收：主 Provider 5xx 自�
     expect(records.map((record) => record.providerId)).toEqual(['primary', 'secondary', 'primary']);
   });
 
-  it('每次调用产出规范第 9 章要求的全部字段', async () => {
+    it('each call produces all fields required by chapter 9 of the spec', async () => {
     const { manager, records } = makeManager({ primary: [{ kind: 'result', value: '0x1' }] });
     const handle = await manager.acquire({ capability: 'account.balance' });
     await handle.request(readCall(), { ...ctx, traceId: 'trace-1' });
@@ -205,7 +205,7 @@ describe('Provider Manager 故障切换（DFR-007 验收：主 Provider 5xx 自�
     expect(r.traceId).toBe('trace-1');
   });
 
-  it('全部 Provider 不可用 → 抛出最后一次归一化错误，不返回过期缓存', async () => {
+    it('all Providers unavailable -> throws the last normalized error, no stale cache returned', async () => {
     const { manager } = makeManager({
       primary: [{ kind: 'http', status: 503 }],
       secondary: [{ kind: 'network-error', message: 'ECONNRESET' }],
@@ -214,7 +214,7 @@ describe('Provider Manager 故障切换（DFR-007 验收：主 Provider 5xx 自�
     await expect(handle.request(readCall(), ctx)).rejects.toSatisfy(isDfrError);
   });
 
-  it('能力过滤：不满足 capability 的 Provider 被剔除', async () => {
+    it('capability filtering: Providers not meeting the capability are removed', async () => {
     const descriptors = [
       stubDescriptor('balance-only', CHAIN, { capabilities: ['account.balance'], priority: 10 }),
       stubDescriptor('block-only', CHAIN, { capabilities: ['block.read'], priority: 9 }),
@@ -228,7 +228,7 @@ describe('Provider Manager 故障切换（DFR-007 验收：主 Provider 5xx 自�
     expect(records.map((r) => r.providerId)).toEqual(['block-only']);
   });
 
-  it('requiresArchive 只命中标记为归档的 Provider（审计修正 A-26）', async () => {
+    it('requiresArchive only hits Providers marked as archive (audit fix A-26)', async () => {
     const descriptors = [
       stubDescriptor('hot', CHAIN, { priority: 10 }),
       stubDescriptor('archive', CHAIN, { priority: 1, archive: true }),
@@ -244,8 +244,8 @@ describe('Provider Manager 故障切换（DFR-007 验收：主 Provider 5xx 自�
   });
 });
 
-describe('重试策略（provider-spec 第 6 章）', () => {
-  it('广播类（non-idempotent-write）绝不自动重试 —— 防资金事故', async () => {
+  describe('Retry policy (provider-spec chapter 6)', () => {
+    it('broadcast class (non-idempotent-write) never retries automatically — prevents fund accidents', async () => {
     const { manager, records } = makeManager({
       primary: [{ kind: 'http', status: 503 }],
       secondary: [{ kind: 'result', value: '0xok' }],
@@ -261,7 +261,7 @@ describe('重试策略（provider-spec 第 6 章）', () => {
     expect(records[0]?.providerId).toBe('primary');
   });
 
-  it('safe-read 不重复同一 Provider', async () => {
+    it('safe-read does not repeat the same Provider', async () => {
     const { manager, records } = makeManager({
       primary: [{ kind: 'http', status: 503 }],
       secondary: [{ kind: 'http', status: 503 }],
@@ -272,7 +272,7 @@ describe('重试策略（provider-spec 第 6 章）', () => {
     expect(new Set(records.map((r) => r.providerId)).size).toBe(records.length);
   });
 
-  it('idempotent-write 默认不重试（需显式授权）', async () => {
+    it('idempotent-write does not retry by default (explicit authorization required)', async () => {
     const { manager, records } = makeManager({ primary: [{ kind: 'http', status: 503 }] });
     const handle = await manager.acquire();
     await expect(
@@ -282,7 +282,7 @@ describe('重试策略（provider-spec 第 6 章）', () => {
   });
 });
 
-describe('决定重试的纯函数（错误映射表逐条覆盖）', () => {
+  describe('Pure function deciding retries (error mapping table covered entry by entry)', () => {
   const base = {
     idempotency: 'safe-read' as const,
     attempts: 1,
@@ -292,14 +292,14 @@ describe('决定重试的纯函数（错误映射表逐条覆盖）', () => {
     jitter: 0.5,
   };
 
-  it('禁止重试的错误码一律不重试', () => {
+    it('error codes that forbid retry never retry', async () => {
     for (const code of ['DFR_INVALID_ACCOUNT', 'DFR_UNSUPPORTED_CAPABILITY', 'DFR_TRANSACTION_REVERTED', 'DFR_POLICY_DENIED']) {
       const error = createDfrError(code as never, { requestId: ctx.requestId as never });
       expect(decideRetry({ ...base, error }).retry, code).toBe(false);
     }
   });
 
-  it('HTTP 4xx（除 408/429）不重试', () => {
+    it('HTTP 4xx (except 408/429) does not retry', async () => {
     const error = createDfrError('DFR_PROVIDER_INVALID_RESPONSE', {
       requestId: ctx.requestId as never,
       details: { httpStatus: 404 },
@@ -307,26 +307,26 @@ describe('决定重试的纯函数（错误映射表逐条覆盖）', () => {
     expect(decideRetry({ ...base, error }).retry).toBe(false);
   });
 
-  it('网络/超时类可重试，退避 50/150/400 加抖动', () => {
+    it('network/timeout classes are retryable, backoff 50/150/400 plus jitter', async () => {
     const error = createDfrError('DFR_PROVIDER_TIMEOUT', { requestId: ctx.requestId as never });
-    // 退避表有三档，因此需要 4 次尝试预算才能观察到第三档。
+    // The backoff table has three tiers, so a budget of 4 attempts is needed to observe the third tier.
     const budget4 = { ...base, safeReadBudget: 4 };
     expect(decideRetry({ ...budget4, error }).delayMs).toBe(50);
     expect(decideRetry({ ...budget4, attempts: 2, error }).delayMs).toBe(150);
     expect(decideRetry({ ...budget4, attempts: 3, error }).delayMs).toBe(400);
-    // 默认预算 3 只有两次重试，第三档不可达（与"最多 min(3, Provider 数)"一致）。
+    // Default budget 3 allows only two retries, so the third tier is unreachable (consistent with "at most min(3, Provider count)").
     expect(decideRetry({ ...base, attempts: 3, error }).retry).toBe(false);
   });
 
-  it('重试预算耗尽后停止', () => {
+    it('stops after the retry budget is exhausted', async () => {
     const error = createDfrError('DFR_PROVIDER_TIMEOUT', { requestId: ctx.requestId as never });
     expect(decideRetry({ ...base, attempts: 3, safeReadBudget: 3, error }).retry).toBe(false);
     expect(decideRetry({ ...base, attempts: 1, safeReadBudget: 3, hasUntriedProvider: false, error }).retry).toBe(false);
   });
 });
 
-describe('熔断状态机（DFR-007 验收：opened → half-open → closed）', () => {
-  it('连续 5 次失败打开，到期半开，连续 3 次成功关闭', () => {
+  describe('Circuit breaker state machine (DFR-007 acceptance: opened -> half-open -> closed)', () => {
+    it('5 consecutive failures open it, it half-opens on expiry, 3 consecutive successes close it', async () => {
     let now = 0;
     const cb = new CircuitBreaker(DEFAULT_CIRCUIT_OPTIONS);
     expect(cb.current).toBe('closed');
@@ -347,7 +347,7 @@ describe('熔断状态机（DFR-007 验收：opened → half-open → closed）'
     expect(cb.current).toBe('closed');
   });
 
-  it('半开期间失败立即重新打开，且打开时长指数退避', () => {
+    it('a failure during half-open reopens it immediately, and the open duration backs off exponentially', async () => {
     let now = 0;
     const cb = new CircuitBreaker(DEFAULT_CIRCUIT_OPTIONS);
     for (let i = 0; i < 5; i += 1) cb.onFailure(now);
@@ -356,12 +356,12 @@ describe('熔断状态机（DFR-007 验收：opened → half-open → closed）'
     expect(cb.current).toBe('half-open');
     cb.onFailure(now);
     expect(cb.current).toBe('open');
-    // 第二次打开：退避翻倍（60s），30s 时仍不放行。
+    // Second open: backoff doubles (60s); at 30s it still does not admit.
     expect(cb.allow(now + DEFAULT_CIRCUIT_OPTIONS.openBaseMs)).toBe(false);
     expect(cb.allow(now + DEFAULT_CIRCUIT_OPTIONS.openBaseMs * 2)).toBe(true);
   });
 
-  it('熔断按 (providerId, method 类别) 粒度：读类失败不影响写类', async () => {
+    it('circuit breaker granularity is (providerId, method category): read-class failures do not affect write class', async () => {
     const { manager } = makeManager({
       primary: [
         { kind: 'http', status: 503 },
@@ -381,15 +381,15 @@ describe('熔断状态机（DFR-007 验收：opened → half-open → closed）'
   });
 });
 
-describe('评分公式（provider-spec 第 4 章）', () => {
-  it('无观测数据时得分受优先级上限约束在 0..100', () => {
+  describe('Scoring formula (provider-spec chapter 4)', () => {
+    it('with no observation data, the score is bounded by the priority cap at 0..100', async () => {
     const score = scoreProvider({ descriptor: stubDescriptor('p', CHAIN, { priority: 10 }), now: 0 });
     expect(score.score).toBeLessThanOrEqual(100);
     expect(score.score).toBeGreaterThanOrEqual(0);
     expect(score.inputs.priority).toBe(10);
   });
 
-  it('高延迟与高错误率降低得分', () => {
+    it('high latency and high error rate lower the score', async () => {
     const descriptor = stubDescriptor('p', CHAIN, { priority: 0 });
     const healthy = scoreProvider({ descriptor, latencyP95Ms: 50, errorRate: 0, now: 0 });
     const sick = scoreProvider({ descriptor, latencyP95Ms: 2000, errorRate: 0.9, now: 0 });
@@ -397,7 +397,7 @@ describe('评分公式（provider-spec 第 4 章）', () => {
     expect(healthy.score - sick.score).toBeGreaterThan(30);
   });
 
-  it('优先级奖励与 Registry 的 0..10 量纲一致（评审修正 R-14）', () => {
+    it('the priority reward uses the same 0..10 scale as the Registry (review fix R-14)', async () => {
     const low = scoreProvider({ descriptor: stubDescriptor('l', CHAIN, { priority: 0 }), latencyP95Ms: 1000, now: 0 });
     const high = scoreProvider({ descriptor: stubDescriptor('h', CHAIN, { priority: 10 }), latencyP95Ms: 1000, now: 0 });
     expect(high.score - low.score).toBe(10);
@@ -405,27 +405,27 @@ describe('评分公式（provider-spec 第 4 章）', () => {
 });
 
 
-describe('半开状态只放行一个探针（spec 第 7 章）', () => {
-  it('半开期间并发放行被限制为 1 个', () => {
+  describe('Half-open state admits only one probe (spec chapter 7)', () => {
+    it('concurrent admission during half-open is limited to 1', async () => {
     let now = 0;
     const cb = new CircuitBreaker(DEFAULT_CIRCUIT_OPTIONS);
     for (let i = 0; i < 5; i += 1) cb.onFailure(now);
     now += DEFAULT_CIRCUIT_OPTIONS.openBaseMs;
 
-    // 到期后的第一次 allow() 放行探针；后续并发请求必须立即失败。
+    // The first allow() after expiry admits the probe; later concurrent requests must fail immediately.
     expect(cb.allow(now)).toBe(true);
     expect(cb.current).toBe('half-open');
     expect(cb.allow(now)).toBe(false);
     expect(cb.allow(now)).toBe(false);
 
-    // 探针成功后重新放行。
+    // After the probe succeeds, admission resumes.
     cb.onSuccess(now);
     expect(cb.allow(now)).toBe(true);
   });
 });
 
-describe('熔断打开时的错误码（error-spec 4.5）', () => {
-  it('全部 Provider 熔断 → DFR_PROVIDER_CIRCUIT_OPEN，而不是 DFR_CHAIN_UNAVAILABLE', async () => {
+  describe('Error code when the circuit breaker is open (error-spec 4.5)', () => {
+    it('all Providers circuit-open -> DFR_PROVIDER_CIRCUIT_OPEN, not DFR_CHAIN_UNAVAILABLE', async () => {
     const { manager } = makeManager({
       primary: Array.from({ length: 6 }, () => ({ kind: 'http' as const, status: 503 })),
       secondary: Array.from({ length: 6 }, () => ({ kind: 'http' as const, status: 503 })),
@@ -441,8 +441,8 @@ describe('熔断打开时的错误码（error-spec 4.5）', () => {
   });
 });
 
-describe('健康检查循环（spec 第 5 章：禁止高频探测）', () => {
-  it('sweepHealth 只在到期时探测，且不产生重复并发探测', async () => {
+  describe('Health check loop (spec chapter 5: no high-frequency probing)', () => {
+    it('sweepHealth only probes when due, and never produces duplicate concurrent probes', async () => {
     let now = 1_000_000;
     let rpcCalls = 0;
     const descriptors = [stubDescriptor('p', CHAIN, { priority: 10 })];
@@ -461,15 +461,15 @@ describe('健康检查循环（spec 第 5 章：禁止高频探测）', () => {
       }),
     });
 
-    // 首次巡检：unknown 状态 → 允许探测。
+    // First sweep: unknown state -> probing allowed.
     await manager.sweepHealth();
     expect(rpcCalls).toBe(1);
 
-    // 同一时刻再次巡检：未到期，不应再探测。
+    // Sweeping again at the same moment: not due, must not probe again.
     await manager.sweepHealth();
     expect(rpcCalls).toBe(1);
 
-    // 前进到健康 Provider 的下一个周期（60s）。
+    // Advance to the healthy Provider's next cycle (60s).
     now += 60_001;
     await manager.sweepHealth();
     expect(rpcCalls).toBe(2);
@@ -478,20 +478,20 @@ describe('健康检查循环（spec 第 5 章：禁止高频探测）', () => {
   });
 });
 
-describe('Provider 当日配额强制（provider-spec §8 第 1 步：配额耗尽 → 剔除）', () => {
-  // 背景：spec §8 的过滤步骤把"配额耗尽"列为与熔断、能力并列的剔除条件，
-  // 但实现里此前只把 requestsPerDay 用作**观测**（gauge + 评分），从不拦截。
-  // 结果是声明 requestsPerDay: 500000 的 Provider 会被发到第 500001 次，
-  // 把上游额度打爆。这一组测试锁定强制语义。
+  describe('Provider daily quota enforcement (provider-spec §8 step 1: quota exhausted -> excluded)', () => {
+  // Background: the filter steps in spec §8 list "quota exhausted" alongside circuit breaker and capability as exclusion conditions,
+  // but the implementation previously used requestsPerDay only as an **observation** (gauge + score), never blocking.
+  // As a result, a Provider declaring requestsPerDay: 500000 would be sent a 500001st request,
+  // blowing up the upstream quota. This group of tests locks in the enforcement semantics.
   //
-  // API 口径：每次调用都要 `acquire()`（路由）后 `handle.request()`；
-  // 配额在路由阶段判定，因此耗尽后应路由到备用 Provider。
+  // API convention: every call must `acquire()` (route) then `handle.request()`;
+  // quota is decided at the routing stage, so after exhaustion it should route to the standby Provider.
   const callOnce = async (manager: ProviderManager, capability: 'account.balance' = 'account.balance'): Promise<string> => {
     const handle = await manager.acquire({ capability });
     return handle.request<string>(readCall(), ctx);
   };
 
-  it('达到 requestsPerDay 上限后该 Provider 被剔除（转投备用）', async () => {
+    it('after reaching the requestsPerDay limit, that Provider is excluded (falls over to the standby)', async () => {
     const { manager, records } = makeManager(
       {
         primary: [{ kind: 'result', value: '0x1' }],
@@ -499,7 +499,7 @@ describe('Provider 当日配额强制（provider-spec §8 第 1 步：配额耗�
       },
       {
         descriptors: [
-          // 上限 2：前两次命中 primary，第三次起 primary 被剔除
+          // Limit 2: the first two hit primary; from the third, primary is excluded
           stubDescriptor('primary', CHAIN, { priority: 10, weight: 1, quota: { requestsPerDay: 2 } }),
           stubDescriptor('secondary', CHAIN, { priority: 9, weight: 1 }),
         ],
@@ -508,8 +508,8 @@ describe('Provider 当日配额强制（provider-spec §8 第 1 步：配额耗�
 
     await callOnce(manager); // primary #1
     await callOnce(manager); // primary #2
-    await callOnce(manager); // primary 已耗尽 → secondary
-    await callOnce(manager); // 继续 → secondary
+    await callOnce(manager); // primary exhausted -> secondary
+    await callOnce(manager); // continue -> secondary
 
     expect(records.map((r) => r.providerId)).toEqual([
       'primary',
@@ -519,7 +519,7 @@ describe('Provider 当日配额强制（provider-spec §8 第 1 步：配额耗�
     ]);
   });
 
-  it('未配置 requestsPerDay 的 Provider 不限额（行为与从前一致）', async () => {
+    it('a Provider without requestsPerDay configured is unlimited (behavior as before)', async () => {
     const { manager, records } = makeManager(
       {
         primary: [
@@ -534,7 +534,7 @@ describe('Provider 当日配额强制（provider-spec §8 第 1 步：配额耗�
     expect(records.every((r) => r.providerId === 'primary')).toBe(true);
   });
 
-  it('requestsPerDay <= 0 视为不限额（不把 0 当作“一次都不许”）', async () => {
+    it('requestsPerDay <= 0 counts as unlimited (do not treat 0 as "no calls at all")', async () => {
     const { manager, records } = makeManager(
       { primary: [{ kind: 'result', value: '0x1' }] },
       {
@@ -547,7 +547,7 @@ describe('Provider 当日配额强制（provider-spec §8 第 1 步：配额耗�
     expect(records).toHaveLength(1);
   });
 
-  it('全部 Provider 配额耗尽 → acquire 抛 DFR_QUOTA_EXCEEDED（可区分，不超发）', async () => {
+    it('all Providers quota-exhausted -> acquire throws DFR_QUOTA_EXCEEDED (distinguishable, no over-issuing)', async () => {
     const { manager, records } = makeManager(
       {
         primary: [
@@ -562,20 +562,20 @@ describe('Provider 当日配额强制（provider-spec §8 第 1 步：配额耗�
         ],
       },
     );
-    // 每个 Provider 各消耗 1 次，配额随即耗尽
+    // Each Provider consumes 1 call, then its quota is exhausted
     await callOnce(manager);
     await callOnce(manager);
     const before = records.length;
-    // 配额在**路由阶段**判定：全部耗尽时 acquire 直接抛错，不产生句柄，
-    // 更不会发出第 N+1 次调用。错误码必须是 DFR_QUOTA_EXCEEDED 而不是
-    // DFR_CHAIN_UNAVAILABLE —— 后者会让运维误判成上游故障。
+    // Quota is decided at the **routing stage**: when all are exhausted, acquire throws directly with no handle,
+    // and never issues call N+1. The error code must be DFR_QUOTA_EXCEEDED, not
+    // DFR_CHAIN_UNAVAILABLE — the latter would mislead ops into thinking it is an upstream outage.
     await expect(manager.acquire({ capability: 'account.balance' })).rejects.toSatisfy(
       (e: unknown) => isDfrError(e) && e.code === 'DFR_QUOTA_EXCEEDED',
     );
     expect(records.length).toBe(before);
   });
 
-  it('配额耗尽不影响 gauge 口径：usedRatio 在达到上限时为 1', async () => {
+    it('quota exhaustion does not affect the gauge: usedRatio is 1 when the limit is reached', async () => {
     const { manager } = makeManager(
       { primary: [{ kind: 'result', value: '0x1' }] },
       {
@@ -590,7 +590,7 @@ describe('Provider 当日配额强制（provider-spec §8 第 1 步：配额耗�
   });
 });
 
-describe('Provider 配额持久 Store（E5）', () => {
+  describe('Provider quota persistent Store (E5)', () => {
   class FakeQuotaStore implements ProviderQuotaStore {
     readonly consumed: ProviderQuotaConsumeInput[] = [];
     constructor(
@@ -610,7 +610,7 @@ describe('Provider 配额持久 Store（E5）', () => {
     }
   }
 
-  it('达到持久 Store 上限后拒绝调用，且不再触达上游', async () => {
+    it('calls are refused after the persistent Store limit is reached, and upstream is no longer touched', async () => {
     const quotaStore = new FakeQuotaStore(0);
     const { manager, records } = makeManager(
       {
@@ -634,7 +634,7 @@ describe('Provider 配额持久 Store（E5）', () => {
     expect(quotaStore.consumed).toHaveLength(1);
   });
 
-  it('持久 Store 故障时 fail-closed，不调用上游', async () => {
+    it('on persistent Store failure, fail-closed, no upstream call', async () => {
     const quotaStore = new FakeQuotaStore(1, true);
     const { manager, records } = makeManager(
       { primary: [{ kind: 'result', value: '0x1' }] },
@@ -650,7 +650,7 @@ describe('Provider 配额持久 Store（E5）', () => {
     expect(records).toHaveLength(0);
   });
 
-  it('可观测快照从持久 Store 读取全局用量，而不是只读本进程计数', async () => {
+    it('the observability snapshot reads global usage from the persistent Store, not just this process's counter', async () => {
     const quotaStore: ProviderQuotaStore = {
       consume: async () => ({ allowed: true, used: 7 }),
       usage: async () => 7,

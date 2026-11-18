@@ -1,11 +1,11 @@
 /**
- * @dfr/telemetry —— span 身份、上下文与 OTLP 导出（M5 生产加固 E6）。
+ * @dfr/telemetry — span identity, context, and OTLP export (M5 production hardening E6).
  *
- * 规范来源：docs/architecture/observability-spec-v0.1.md §3/§4/§10
- * （最后一条未决项："真正的 parent/child span + 独立 spanId"）。
+ * Spec source: docs/architecture/observability-spec-v0.1.md §3/§4/§10
+ * (last open item: "true parent/child spans + independent spanIds").
  *
- * 刻意零第三方依赖：`pnpm verify` 必须离线可复现。导出格式是公开的
- * OTLP/JSON，接 OpenTelemetry Collector 不需要本包引入 SDK。
+ * Deliberately zero third-party dependencies: `pnpm verify` must be reproducible offline. The export format is the public
+ * OTLP/JSON; connecting an OpenTelemetry Collector needs no SDK in this package.
  */
 export {
   isValidSpanId,

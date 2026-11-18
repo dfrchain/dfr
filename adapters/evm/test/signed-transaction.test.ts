@@ -1,14 +1,14 @@
 /**
- * EVM 签名载荷解析与绑定（DFR-M1-C01）。
+ * EVM signed-payload parsing and binding (DFR-M1-C01).
  *
- * 权威来源：ADR-016 §7、docs/architecture/m1-api-contract.md 第 3 节
- * （"广播前 Adapter 必须从 signedPayload 重新计算或解析 chain ID / from / nonce /
- * to / value-data / txHash，并与保存的 unsigned transaction 一致；客户端提供的
- * expectedHash 只作比较，不能作为真相"）。
+ * Authoritative sources: ADR-016 §7, docs/architecture/m1-api-contract.md Section 3
+ * ("before broadcast, the Adapter must recompute or re-parse chain ID / from / nonce /
+ * to / value-data / txHash from signedPayload and match them against the saved unsigned transaction; the client-provided
+ * expectedHash is only for comparison and cannot serve as ground truth").
  *
- * 本文件用 **真实签名**（viem 纯函数 + 运行时派生的测试私钥）而不是手写向量：
- * from 必须由 secp256k1 恢复得出，手写向量无法证明恢复逻辑正确。
- * 私钥在运行时由字符串派生，因此仓库里不存在任何私钥字面量。
+ * This file uses **real signatures** (viem pure functions + test private keys derived at runtime) instead of hand-written vectors:
+ * from must be recovered via secp256k1; hand-written vectors cannot prove the recovery logic correct.
+ * Private keys are derived from strings at runtime, so no private-key literals exist in the repo.
  */
 import { dirname, resolve } from 'node:path';
 import { readFileSync } from 'node:fs';
@@ -29,7 +29,7 @@ const CHAIN = 'ethereum-sepolia' as ChainId;
 const CHAIN_ID = '11155111' as DecimalUint;
 const TO = '0x2222222222222222222222222222222222222222' as const;
 
-/** 运行时派生：仓库内不出现 64 位十六进制私钥字面量（check-secrets 红线的要求）。 */
+/** Derived at runtime: no 64-hex-digit private-key literals appear in the repo (required by the check-secrets red line). */
 const TEST_KEY = keccak256(toBytes('dfr-m1-c01-signer'));
 const TEST_FROM = privateKeyToAddress(TEST_KEY);
 const OTHER_KEY = keccak256(toBytes('dfr-m1-c01-other-signer'));
@@ -67,7 +67,7 @@ async function sign(
   return signTransaction({ privateKey, transaction: { ...TX, ...overrides } });
 }
 
-/** 期望抛出 EvmCodecError 且 reason 稳定。 */
+/** Expect an EvmCodecError with a stable reason. */
 async function expectBindingError(
   promise: Promise<unknown>,
   reason: EvmCodecErrorReason,
@@ -76,7 +76,7 @@ async function expectBindingError(
     () => undefined,
     (err: unknown) => err,
   );
-  expect(error, `期望 EvmCodecError(${reason})，实际 ${String(error)}`).toBeInstanceOf(
+  expect(error, `expected EvmCodecError(${reason}), got ${String(error)}`).toBeInstanceOf(
     EvmCodecError,
   );
   const typed = error as EvmCodecError;
@@ -84,8 +84,8 @@ async function expectBindingError(
   return typed;
 }
 
-describe('parseSignedTransaction（DFR-M1-C01）', () => {
-  it('从真实签名载荷恢复 from / nonce / to / value / data / txHash', async () => {
+describe('parseSignedTransaction (DFR-M1-C01)', () => {
+  it('recovers from / nonce / to / value / data / txHash from a really signed payload', async () => {
     const payload = await sign();
     const parsed = await parseSignedTransaction(CHAIN, payload);
 
@@ -96,11 +96,11 @@ describe('parseSignedTransaction（DFR-M1-C01）', () => {
     expect(parsed.data).toBe('0x');
     expect(parsed.type).toBe('eip1559');
     expect(parsed.chainId).toBe(CHAIN_ID);
-    // txHash 必须由载荷重新计算，而不是由调用方提供。
+    // txHash must be recomputed from the payload, not provided by the caller.
     expect(parsed.txHash).toBe(keccak256(payload as `0x${string}`));
   });
 
-  it('返回值里不含签名原文，避免被顺手写进日志或数据库', async () => {
+  it('return value contains no raw signature, so it is not casually written into logs or databases', async () => {
     const payload = await sign();
     const parsed = await parseSignedTransaction(CHAIN, payload);
 
@@ -112,14 +112,14 @@ describe('parseSignedTransaction（DFR-M1-C01）', () => {
     }
   });
 
-  it('未签名载荷 → not_signed（不能拿未签名原文当广播输入）', async () => {
+  it('unsigned payload → not_signed (an unsigned payload cannot be used as broadcast input)', async () => {
     await expectBindingError(
       parseSignedTransaction(CHAIN, await signUnsignedRaw()),
       'not_signed',
     );
   });
 
-  it('pre-EIP-155 legacy 签名无法确定 chainId → chain_id_unknown', async () => {
+  it('pre-EIP-155 legacy signature cannot determine chainId → chain_id_unknown', async () => {
     const legacy = await signTransaction({
       privateKey: TEST_KEY,
       transaction: { nonce: 0, gasPrice: 1000000000n, gas: 21000n, to: TO, value: 1n, data: '0x' },
@@ -128,8 +128,8 @@ describe('parseSignedTransaction（DFR-M1-C01）', () => {
   });
 });
 
-describe('bindSignedTransaction（DFR-M1-C01）', () => {
-  it('签名与保存的 unsigned 载荷逐项一致 → 通过', async () => {
+describe('bindSignedTransaction (DFR-M1-C01)', () => {
+  it('signature matches the saved unsigned payload item by item → pass', async () => {
     const payload = await sign();
     const unsigned = await bindSignedTransaction(payload, {
       chain: CHAIN,
@@ -143,7 +143,7 @@ describe('bindSignedTransaction（DFR-M1-C01）', () => {
     expect(unsigned.txHash).toBe(keccak256(payload as `0x${string}`));
   });
 
-  it('from 与记录不一致 → sender_mismatch（用另一个密钥签同一笔交易）', async () => {
+  it('from differs from the record → sender_mismatch (sign the same transaction with a different key)', async () => {
     const payload = await sign({}, OTHER_KEY);
     await expectBindingError(
       bindSignedTransaction(payload, {
@@ -156,7 +156,7 @@ describe('bindSignedTransaction（DFR-M1-C01）', () => {
     );
   });
 
-  it('chainId 与记录不一致 → chain_id_mismatch', async () => {
+  it('chainId differs from the record → chain_id_mismatch', async () => {
     const payload = await sign({ chainId: 84532 });
     await expectBindingError(
       bindSignedTransaction(payload, {
@@ -189,7 +189,7 @@ describe('bindSignedTransaction（DFR-M1-C01）', () => {
     ],
   ];
 
-  it.each(cases)('签名后的 %s 与保存载荷不一致 → unsigned_payload_mismatch', async (field, override) => {
+  it.each(cases)('signed %s differs from the saved payload → unsigned_payload_mismatch', async (field, override) => {
     const payload = await sign(override);
     const error = await expectBindingError(
       bindSignedTransaction(payload, {
@@ -203,14 +203,14 @@ describe('bindSignedTransaction（DFR-M1-C01）', () => {
     expect(error.field).toBe(field);
   });
 
-  it('另一个密钥签出的载荷不会被误判为记录中的发送方（OTHER_FROM 反证）', async () => {
+  it('a payload signed by another key must not be mistaken for the sender in the record (OTHER_FROM counter-proof)', async () => {
     const payload = await sign({}, OTHER_KEY);
     const parsed = await parseSignedTransaction(CHAIN, payload);
     expect(parsed.from.address).toBe(OTHER_FROM.toLowerCase());
     expect(parsed.from.address).not.toBe(TEST_FROM.toLowerCase());
   });
 
-  it('客户端 expectedHash 与重算结果不一致 → expected_hash_mismatch', async () => {
+  it('client expectedHash differs from the recomputed result → expected_hash_mismatch', async () => {
     const payload = await sign();
     await expectBindingError(
       bindSignedTransaction(payload, {
@@ -224,7 +224,7 @@ describe('bindSignedTransaction（DFR-M1-C01）', () => {
     );
   });
 
-  it('失败信息不含签名原文（脱敏）', async () => {
+  it('failure messages contain no raw signature (redacted)', async () => {
     const payload = await sign({ value: 999n });
     const error = await expectBindingError(
       bindSignedTransaction(payload, {
@@ -243,10 +243,10 @@ describe('bindSignedTransaction（DFR-M1-C01）', () => {
   });
 });
 
-describe('脱敏（error-spec 第 6 章）', () => {
-  it('载荷无法解析时也不回显签名原文', async () => {
+describe('Redaction (error-spec Chapter 6)', () => {
+  it('unparsable payloads do not echo the raw signature either', async () => {
     const payload = await sign();
-    // 截断尾部：RLP 一定解析失败，走 invalid_payload 分支。
+    // Truncate the tail: RLP parsing must fail, taking the invalid_payload branch.
     const malformed = payload.slice(0, payload.length - 6);
     const error = await parseSignedTransaction(CHAIN, malformed).then(
       () => undefined,
@@ -261,8 +261,8 @@ describe('脱敏（error-spec 第 6 章）', () => {
   });
 });
 
-describe('输入边界（fail-closed）', () => {
-  it('记录里的发送方非法 → invalid_expectation（不抛 DFR_* 错误）', async () => {
+describe('Input boundaries (fail-closed)', () => {
+  it('invalid sender in the record → invalid_expectation (no DFR_* error thrown)', async () => {
     const payload = await sign();
     await expectBindingError(
       bindSignedTransaction(payload, {
@@ -275,7 +275,7 @@ describe('输入边界（fail-closed）', () => {
     );
   });
 
-  it('记录里的 unsigned payload 实际已签名 → invalid_expectation', async () => {
+  it('recorded unsigned payload is actually signed → invalid_expectation', async () => {
     const payload = await sign();
     await expectBindingError(
       bindSignedTransaction(payload, {
@@ -289,13 +289,13 @@ describe('输入边界（fail-closed）', () => {
   });
 });
 
-describe('源码守卫（ADR-016 §1）', () => {
-  it('signed-transaction.ts 只导入允许的模块，且不含 client / wallet / 签名能力', () => {
+describe('Source guard (ADR-016 §1)', () => {
+  it('signed-transaction.ts only imports allowed modules, with no client / wallet / signing capability', () => {
     const source = readFileSync(resolve(here, '..', 'src', 'signed-transaction.ts'), 'utf8');
     const specifiers = [...source.matchAll(/from\s+'([^']+)'/g)].map((m) => m[1]);
     const allowed = new Set(['viem', '@dfr/types', './address.js', './transaction-codec.js']);
     for (const specifier of specifiers) {
-      expect(allowed.has(specifier as string), `不允许导入 ${specifier}`).toBe(true);
+      expect(allowed.has(specifier as string), `import not allowed: ${specifier}`).toBe(true);
     }
     for (const banned of [
       'createPublicClient',
@@ -308,12 +308,12 @@ describe('源码守卫（ADR-016 §1）', () => {
       'signTransaction',
       'sendRawTransaction',
     ]) {
-      expect(source.includes(banned), `不得出现 ${banned}`).toBe(false);
+      expect(source.includes(banned), `must not appear: ${banned}`).toBe(false);
     }
   });
 });
 
-/** 与签名载荷字段完全一致、但**未签名**的载荷：绑定比较的真值来自它。 */
+/** A payload identical to the signed payload in every field but **unsigned**: the binding comparison takes its ground truth from it. */
 async function signUnsignedRaw(): Promise<string> {
   const { serializeTransaction } = await import('viem');
   return serializeTransaction({

@@ -1,12 +1,15 @@
-# DFR 跨包测试
+# DFR cross-package tests
 
-- `contract/`：规范一致性与 Adapter Contract Test，无公网依赖。
-- `integration/`：组件组合与显式真实网络测试。
-- `e2e/`：SDK → HTTP Gateway → Core → Adapter → Provider 全链路。
+- `contract/`: spec consistency and Adapter Contract Tests, with no public-network dependency.
+- `integration/`: component composition and explicitly enabled real-network tests.
+- `e2e/`: the full SDK → HTTP Gateway → Core → Adapter → Provider chain.
 
-包内单元测试放 `<package>/test/`；不要把所有测试集中到这里。
+Unit tests inside a package live in `<package>/test/`; do not centralize
+all tests here.
 
-默认 `pnpm test` 必须离线、快速、确定性。公网用例由 `DFR_RUN_TESTNET=1` 显式开启；
-并发、超时、熔断、重组必须用可编程替身或本地依赖验证，不能依赖公网偶发行为。
+By default `pnpm test` must be offline, fast, and deterministic. Public-network
+cases are explicitly enabled with `DFR_RUN_TESTNET=1`; concurrency, timeouts,
+circuit breaking, and reorgs must be verified with programmable doubles or
+local dependencies, never by relying on occasional public-network behavior.
 
-M1 完整矩阵见 `docs/development/test-plan.md`。
+See `docs/development/test-plan.md` for the full M1 matrix.

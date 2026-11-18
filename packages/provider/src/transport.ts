@@ -1,10 +1,10 @@
 /**
- * JSON-RPC over HTTP 传输实现（见 docs/architecture/provider-spec-v0.1.md 第 2 章）。
+ * JSON-RPC over HTTP transport implementation (see docs/architecture/provider-spec-v0.1.md, chapter 2).
  *
- * 边界：Provider 只负责传输与错误归一化，**不理解链语义**。
- * `method` / `params` 由 Adapter 构造，Provider 原样转发。
+ * Boundary: the Provider only handles transport and error normalization; it does **not** understand chain semantics.
+ * `method` / `params` are constructed by the Adapter; the Provider forwards them verbatim.
  *
- * 安全：endpoint 与 credential 只存在于实例私有字段，永不进入日志或错误。
+ * Security: endpoint and credential live only in instance private fields, never entering logs or errors.
  */
 import { createDfrError, isDfrError } from '@dfr/errors';
 import type {
@@ -18,7 +18,7 @@ import type {
 import type { MethodClass } from './circuit.js';
 import { HealthTracker } from './health.js';
 
-/** 规范的传输接口（provider-spec 第 2 章）。 */
+/** The canonical transport interface (provider-spec chapter 2). */
 export interface Provider {
   readonly id: ProviderId;
   readonly chain: ChainId;
@@ -27,11 +27,11 @@ export interface Provider {
   readonly descriptor: ProviderDescriptor;
   request<T>(call: TransportCall, ctx: TransportContext): Promise<T>;
   health(): Promise<ProviderHealth>;
-  /** 低权重探针方法名，例如 EVM 的 eth_chainId。 */
+  /** The low-weight probe method name, e.g. EVM's eth_chainId. */
   readonly probeMethod: string;
-  /** 供评分使用的健康快照（由 request() 自动记录，无需外部再报）。 */
+  /** Health snapshot for scoring (recorded automatically by request(); no external reporting needed). */
   healthSnapshot(now: number): ProviderHealth;
-  /** 探针是否需要运行（单飞 + 间隔控制由 Manager 负责）。 */
+  /** Whether the probe needs to run (single-flight + interval control is the Manager's job). */
   readonly tracker: HealthTracker;
 }
 
@@ -49,7 +49,7 @@ export interface TransportContext {
   signal: AbortSignal;
 }
 
-/** 从幂等性推导熔断器/指标的方法类别。 */
+/** Method categories derived from idempotency for circuit breaker / metrics. */
 export function methodClassOf(idempotency: TransportCall['idempotency']): MethodClass {
   return idempotency === 'safe-read' ? 'read' : 'write';
 }
@@ -58,17 +58,17 @@ export interface JsonRpcProviderOptions {
   descriptor: ProviderDescriptor;
   endpoint: string;
   credential?: string | undefined;
-  /** 注入 fetch 以便测试与 sandbox 环境替换。 */
+  /** Inject fetch so tests and sandbox environments can replace it. */
   fetchImpl?: typeof fetch;
-  /** 探针方法；EVM 默认 eth_chainId。 */
+  /** Probe method; EVM default eth_chainId. */
   probeMethod?: string;
-  /** 凭证注入方式；默认 Authorization: Bearer。 */
+  /** Credential injection method; default Authorization: Bearer. */
   credentialHeader?: (credential: string) => Record<string, string>;
   /**
-   * 单调时钟；默认 Date.now()。
+   * Monotonic clock; default Date.now().
    *
-   * 必须可注入：健康窗口、评分与健康检查调度都基于同一个时钟，
-   * 如果这里偷偷用 Date.now() 而调度用注入时钟，两者的时间轴会错位。
+   * Must be injectable: the health window, scoring, and health-check scheduling all run on the same clock;
+   * if this secretly used Date.now() while scheduling used the injected clock, their timelines would drift apart.
    */
   now?: () => number;
 }
@@ -157,7 +157,7 @@ export class JsonRpcHttpProvider implements Provider {
       } catch (cause) {
         throw createDfrError('DFR_PROVIDER_INVALID_RESPONSE', {
           requestId: ctx.requestId as never,
-          message: `Provider ${this.id} 返回非 JSON 响应`,
+          message: `Provider ${this.id} returned a non-JSON response`,
           provider: this.id,
           chain: this.chain,
           cause,
@@ -170,7 +170,7 @@ export class JsonRpcHttpProvider implements Provider {
       if (parsed.result === undefined) {
         throw createDfrError('DFR_PROVIDER_INVALID_RESPONSE', {
           requestId: ctx.requestId as never,
-          message: `Provider ${this.id} 响应缺少 result`,
+          message: `Provider ${this.id} response is missing result`,
           provider: this.id,
           chain: this.chain,
         });
@@ -178,7 +178,7 @@ export class JsonRpcHttpProvider implements Provider {
       this.tracker.recordSuccess(this.now() - started, this.now());
       return parsed.result;
     } catch (err) {
-      // 已归一化的错误直接上抛，避免二次分类。
+      // An already-normalized error is rethrown directly to avoid double classification.
       if (isDfrError(err)) throw err;
 
       const abortedByUs = controller.signal.aborted;
@@ -189,8 +189,8 @@ export class JsonRpcHttpProvider implements Provider {
       throw createDfrError(code, {
         requestId: ctx.requestId as never,
         message: timedOut
-          ? `Provider ${this.id} 在 ${timeoutMs}ms 后超时`
-          : `Provider ${this.id} 连接失败`,
+          ? `Provider ${this.id} timed out after ${timeoutMs}ms`
+          : `Provider ${this.id} connection failed`,
         provider: this.id,
         chain: this.chain,
         details: { timeoutMs, elapsedMs: elapsed, method: call.method },
@@ -214,7 +214,7 @@ export class JsonRpcHttpProvider implements Provider {
     if (status === 429) {
       return createDfrError('DFR_PROVIDER_RATE_LIMITED', {
         requestId: requestId as never,
-        message: `Provider ${this.id} 触发上游限流`,
+        message: `Provider ${this.id} triggered upstream rate limiting`,
         provider: this.id,
         chain: this.chain,
         details: { status, method },
@@ -223,7 +223,7 @@ export class JsonRpcHttpProvider implements Provider {
     if (status >= 500) {
       return createDfrError('DFR_PROVIDER_UNAVAILABLE', {
         requestId: requestId as never,
-        message: `Provider ${this.id} 返回 HTTP ${status}`,
+        message: `Provider ${this.id} returned HTTP ${status}`,
         provider: this.id,
         chain: this.chain,
         details: { status, method },
@@ -231,7 +231,7 @@ export class JsonRpcHttpProvider implements Provider {
     }
     return createDfrError('DFR_PROVIDER_INVALID_RESPONSE', {
       requestId: requestId as never,
-      message: `Provider ${this.id} 返回 HTTP ${status}`,
+      message: `Provider ${this.id} returned HTTP ${status}`,
       provider: this.id,
       chain: this.chain,
       details: { status, method },
@@ -239,9 +239,9 @@ export class JsonRpcHttpProvider implements Provider {
   }
 
   /**
-   * JSON-RPC error → DFR error（error-spec 第 5.1 章映射表）。
+   * JSON-RPC error -> DFR error (error-spec section 5.1 mapping table).
    *
-   * 注意：不把原始 message 直接作为 message，只放进已脱敏的 chainError。
+   * Note: the raw message is never used directly as the message; it only goes into the redacted chainError.
    */
   private rpcError(
     error: { code?: number; message?: string },
@@ -257,7 +257,7 @@ export class JsonRpcHttpProvider implements Provider {
     if (raw.includes('nonce too low')) {
       return createDfrError('DFR_NONCE_CONFLICT', {
         requestId: requestId as never,
-        message: `nonce 冲突（${method}）`,
+        message: `nonce conflict (${method})`,
         provider: this.id,
         chain: this.chain,
         chainError,
@@ -266,7 +266,7 @@ export class JsonRpcHttpProvider implements Provider {
     if (raw.includes('insufficient funds')) {
       return createDfrError('DFR_INSUFFICIENT_FUNDS', {
         requestId: requestId as never,
-        message: `余额不足以支付费用（${method}）`,
+        message: `insufficient balance to pay the fee (${method})`,
         provider: this.id,
         chain: this.chain,
         chainError,
@@ -275,16 +275,16 @@ export class JsonRpcHttpProvider implements Provider {
     if (raw.includes('execution reverted')) {
       return createDfrError('DFR_TRANSACTION_REVERTED', {
         requestId: requestId as never,
-        message: `执行回滚（${method}）`,
+        message: `execution reverted (${method})`,
         provider: this.id,
         chain: this.chain,
         chainError,
       });
     }
-    // 分类不确定时降级，不猜测（error-spec 第 5.2 章第 2 条）。
+    // On uncertain classification, degrade rather than guess (error-spec section 5.2, rule 2).
     return createDfrError('DFR_PROVIDER_UNAVAILABLE', {
       requestId: requestId as never,
-      message: `Provider ${this.id} 返回 JSON-RPC 错误`,
+      message: `Provider ${this.id} returned a JSON-RPC error`,
       provider: this.id,
       chain: this.chain,
       chainError,

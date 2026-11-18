@@ -5,9 +5,10 @@
 > models behind one interface, so applications do not have to maintain
 > separate RPC, retry, failover, and confirmation logic per chain.
 >
-> DFR 是多链开发者接入层：把多链接入、RPC 抽象、交易生命周期、事件与错误
-> 模型收敛为统一接口，让上层应用不再各自维护多套 RPC、重试、失败切换与
-> 确认逻辑。
+> DFR is a multi-chain developer access layer: it converges multi-chain
+> access, RPC abstraction, transaction lifecycle, and event and error
+> models into a unified interface, so upstream applications no longer
+> maintain separate RPC, retry, failover, and confirmation logic per chain.
 
 DFR currently supports the Base Sepolia, Arbitrum Sepolia, and Ethereum
 Sepolia testnets, and Solana devnet.

@@ -1,8 +1,8 @@
 /**
- * SDK 事件面离线 E2E（DFR-M4-C04）。
+ * SDK events surface offline E2E (DFR-M4-C04).
  *
- * 链路：SDK → 真实 Gateway（/v1/events/tickets + /v1/events/subscribe）→ 真实 EventBus。
- * 证明 SDK 新增的事件方法不是只对着 mock 正确，而是能真的建立 SSE 流并消费事件。
+ * Chain: SDK → real Gateway (/v1/events/tickets + /v1/events/subscribe) → real EventBus.
+ * Proves the SDK's new event methods are not just correct against a mock, but can really establish an SSE stream and consume events.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { AddressInfo } from 'node:net';
@@ -55,18 +55,18 @@ afterAll(async () => {
   await new Promise<void>((resolve) => server?.close(() => resolve()));
 });
 
-describe('SDK 事件面 E2E（M4-C04）', () => {
-  it('createEventTicket 真实签发（201），返回 ticket/expiresAt', async () => {
+describe('SDK events surface E2E (M4-C04)', () => {
+  it('createEventTicket really issues a ticket (201), returning ticket/expiresAt', async () => {
     const result = await dfr.createEventTicket({ filter: { chain: CHAIN as never }, ttlMs: 30_000 });
     expect(typeof result.ticket).toBe('string');
     expect(result.ticket.length).toBeGreaterThan(0);
     expect(typeof result.expiresAt).toBe('string');
   });
 
-  it('header 鉴权订阅：SDK 收到真实 EventBus 发布的事件', async () => {
+  it('header-authenticated subscription: the SDK receives events really published by the EventBus', async () => {
     const { events, close } = dfr.subscribeEvents({ chain: CHAIN as never });
     const iterator = events[Symbol.asyncIterator]();
-    // 建立连接后再发布（EventBus 是实时流，不重放历史帧）。
+    // Publish after establishing the connection (the EventBus is a live stream and does not replay historical frames).
     await new Promise((resolve) => setTimeout(resolve, 150));
     bus.publish({ type: 'tx.finalized' as never, chain: CHAIN as never, payload: { marked: 'header-path' } });
     let matched: { type: string; payload: { marked?: string } } | undefined;
@@ -80,13 +80,13 @@ describe('SDK 事件面 E2E（M4-C04）', () => {
     expect(matched?.type).toBe('tx.finalized');
   }, 15_000);
 
-  it('票据订阅：SDK 用 ticket 建立流并消费事件（不带 Key header）', async () => {
+  it('ticket subscription: the SDK uses a ticket to establish a stream and consume events (without a Key header)', async () => {
     const issued = await dfr.createEventTicket({ filter: { chain: CHAIN as never } });
     const { events, close } = dfr.subscribeEventsWithTicket(issued.ticket, { chain: CHAIN as never });
     const iterator = events[Symbol.asyncIterator]();
     await new Promise((resolve) => setTimeout(resolve, 150));
     bus.publish({ type: 'tx.confirmed' as never, chain: CHAIN as never, payload: { marked: 'ticket-path' } });
-    // 订阅会从会话起点开始投递（含此前发布过的帧），因此按 payload 标记挑选本次事件。
+    // A subscription delivers from the start of the session (including frames published earlier), so pick this run's event by its payload marker.
     let matched: { type: string; payload: { marked?: string } } | undefined;
     for (let i = 0; i < 10 && matched === undefined; i += 1) {
       const next = await iterator.next();
@@ -98,7 +98,7 @@ describe('SDK 事件面 E2E（M4-C04）', () => {
     close();
   }, 15_000);
 
-  it('无效票据 → DFR_INVALID_TICKET（不泄漏票据原文）', async () => {
+  it('invalid ticket → DFR_INVALID_TICKET (without leaking the ticket itself)', async () => {
     const { events } = dfr.subscribeEventsWithTicket('tk_definitely_invalid', { chain: CHAIN as never });
     await expect(
       (async () => { for await (const e of events) { void e; } })(),

@@ -1,18 +1,18 @@
 /**
- * M1 真实持久化写路径集成验收（DFR-M1-C00）。
+ * M1 real-persistence write-path integration acceptance (DFR-M1-C00).
  *
- * 与 `tests/integration/m1-storage.integration.test.ts`（A14，只直接测四个 Store）
- * 的区别：这里用**生产** `TransactionEngine` + 真实 PostgreSQL Store + 链端口替身，
- * 跑完整的 `build` 编排。B10 在准备这条路径时发现并实测复现：
+ * Difference from `tests/integration/m1-storage.integration.test.ts` (A14, which only tests the four Stores directly):
+ * this file uses the **production** `TransactionEngine` + real PostgreSQL Store + chain-port stand-in,
+ * running the full `build` orchestration. While preparing this path, B10 found and reproduced in a live test:
  *
- *   Error: reserve: 交易 txn_… 不存在   （PostgresNonceStore.reserve）
+ *   Error: reserve: transaction txn_... does not exist   (PostgresNonceStore.reserve)
  *
- * 根因是引擎顺序 `reserve → chain.build → create` 与 `nonce_leases.transaction_id`
- * 外键（要求交易行先存在）互相矛盾。本用例是该缺陷的回归闸门：
- * 修复前必须 RED，修复后必须 GREEN。
+ * The root cause is the engine order `reserve → chain.build → create` conflicting with the `nonce_leases.transaction_id`
+ * foreign key (which requires the transaction row to exist first). This case is the regression gate for that defect:
+ * it must be RED before the fix and GREEN after it.
  *
- * 链上 RPC 用替身（离线、确定性）；数据库是真的，因为要验证的正是存储层顺序契约。
- * 需要 `DFR_TRANSACTION_DATABASE_URL`，因此只在 `pnpm test:db` 中运行。
+ * The on-chain RPC uses a stand-in (offline, deterministic); the database is real, because what must be verified is exactly the storage-layer ordering contract.
+ * Requires `DFR_TRANSACTION_DATABASE_URL`, so it only runs under `pnpm test:db`.
  */
 import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
@@ -42,7 +42,7 @@ afterEach(async () => {
   }
 });
 
-/** 链端口替身：只回答 build 所需的三件事，绝不联网。 */
+/** Chain-port stand-in: only answers the three things build needs, never touches the network. */
 function stubChain() {
   return {
     getPendingNonce: async (): Promise<DecimalUint> => '7' as DecimalUint,
@@ -57,7 +57,7 @@ function stubChain() {
   };
 }
 
-describe.skipIf(!ENABLED)('M1 真实持久化写路径（DFR-M1-C00）', () => {
+describe.skipIf(!ENABLED)('M1 real-persistence write path (DFR-M1-C00)', () => {
   it('B37: two real PostgreSQL pools — concurrent sign wins manual abandon CAS without nonce release', async () => {
     const first = await openRuntime();
     const second = await openRuntime();
@@ -226,7 +226,7 @@ describe.skipIf(!ENABLED)('M1 真实持久化写路径（DFR-M1-C00）', () => {
     }
   });
 
-  it('engine.build 在真实 Postgres 上成功落库 built，且 nonce 与租约一致', async () => {
+  it('engine.build successfully persists built on real Postgres, with nonce and lease consistent', async () => {
     const runtime = await openRuntime();
     const suffix = randomUUID().replaceAll('-', '');
     const request: TransactionRequest = {
@@ -258,8 +258,8 @@ describe.skipIf(!ENABLED)('M1 真实持久化写路径（DFR-M1-C00）', () => {
     expect(record?.status).toBe('built');
     expect(record?.nonce).toBe('7');
 
-    // 租约必须与记录同账户同 nonce —— 外键被移除后，这条不变式由 create 的
-    // fail-closed 校验 + 本断言共同守住。
+    // The lease must share the record's account and nonce -- after the foreign key is removed, this invariant is upheld by create's
+    // fail-closed validation together with this assertion.
     const lease = await runtime.stores.nonce.reserve({
       chain: CHAIN,
       account: request.from,
@@ -271,7 +271,7 @@ describe.skipIf(!ENABLED)('M1 真实持久化写路径（DFR-M1-C00）', () => {
   });
 
   it.each(['accepted', 'timeout'] as const)(
-    'B27 两 Engine + 两 PostgreSQL Pool 同时重播 dropped（Adapter %s），只发出一次',
+    'B27 two Engines + two PostgreSQL Pools replay dropped at the same time (Adapter %s), broadcasting only once',
     async (outcome) => {
       const first = await openRuntime();
       const second = await openRuntime();
@@ -329,7 +329,7 @@ describe.skipIf(!ENABLED)('M1 真实持久化写路径（DFR-M1-C00）', () => {
       });
 
       const results = await Promise.allSettled(Array.from({ length: 8 }, (_, i) => attempt(i)));
-      expect(broadcastCalls, '同一已签名交易不能向链端口广播两次').toBe(1);
+      expect(broadcastCalls, 'the same signed transaction must not be broadcast to the chain port twice').toBe(1);
       if (outcome === 'accepted') {
         expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
       } else {
@@ -344,7 +344,7 @@ describe.skipIf(!ENABLED)('M1 真实持久化写路径（DFR-M1-C00）', () => {
         .toBe(outcome === 'timeout' ? 'unknown' : 'broadcast');
       expect((await first.stores.transaction.get(transactionId))?.expectedHash).toBe(expectedHash);
       await expect(attempt(0)).rejects.toMatchObject({ code: 'DFR_TRANSACTION_REJECTED' });
-      expect(broadcastCalls, '并发完成后不得自动或显式重复广播').toBe(1);
+      expect(broadcastCalls, 'after concurrency completes, it must not be broadcast again, automatically or explicitly').toBe(1);
       engines.forEach((engine) => engine.close());
     },
   );
@@ -543,7 +543,7 @@ describe.skipIf(!ENABLED)('M1 真实持久化写路径（DFR-M1-C00）', () => {
     expect((await runtime.stores.idempotency.get(scope))?.transactionId).toBeUndefined();
   });
 
-  it('幂等重放不推进 nonce 水位（同 key 返回同一 transactionId）', async () => {
+  it('idempotent replay does not advance the nonce watermark (same key returns the same transactionId)', async () => {
     const runtime = await openRuntime();
     const suffix = randomUUID().replaceAll('-', '');
     const request: TransactionRequest = {

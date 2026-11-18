@@ -1,8 +1,8 @@
 /**
- * Solana JSON-RPC 调用封装（与 EVM 的 rpc.ts 同约定）。
+ * Solana JSON-RPC call wrapper (same conventions as the EVM rpc.ts).
  *
- * 所有读调用标记 `safe-read`；Adapter 负责构造 method/params，Provider 只做传输。
- * 单次 Adapter 操作若发出多个 RPC，必须复用同一句柄（否则端点可能不一致）。
+ * All read calls are tagged `safe-read`; the Adapter builds method/params, the Provider only transports.
+ * If one Adapter operation makes multiple RPCs, it must reuse the same handle (otherwise endpoints may differ).
  */
 import type { AdapterContext, ProviderCall, ProviderHandle } from '@dfr/types';
 

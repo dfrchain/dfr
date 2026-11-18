@@ -1,18 +1,18 @@
 /**
- * Gateway 的 span 导出接线（M5 生产加固 E6）。
+ * Gateway span-export wiring (M5 production hardening E6).
  *
- * 把 observability-spec §4 的四层记录（`core.operation` / `adapter.call` /
- * `provider.request` / `store.read|write`）转成**真实 span**，并交给 `SpanExporter`。
+ * Convert the four layers of observability-spec §4 records (`core.operation` / `adapter.call` /
+ * `provider.request` / `store.read|write`) into **real spans** and hand them to the `SpanExporter`.
  *
- * 与已有日志出口的关系：**并存，不替换**。
- * - 日志出口（`*-call-log.ts`）保持原样：它们是运维检索的主入口；
- * - 本模块额外产出 OTLP span，供 Trace 后端（Collector/Jaeger/Tempo）重建层级。
+ * Relationship to the existing log outlets: **coexist, not replace**.
+ * - Log outlets (`*-call-log.ts`) stay as-is: they are the main entry point for operations retrieval;
+ * - This module additionally produces OTLP spans, for Trace backends (Collector/Jaeger/Tempo) to rebuild the hierarchy.
  *
- * 为什么 opt-in（`DFR_OTLP_SPANS=true`）：现有部署可能没有 Trace 后端，
- * 无条件输出会让 stdout 翻倍。默认关闭即"行为不变"，这是本仓对既有部署的一贯要求。
+ * Why opt-in (`DFR_OTLP_SPANS=true`): existing deployments may have no Trace backend,
+ * and unconditional output would double stdout. Off by default means "behavior unchanged", this repo's standing requirement for existing deployments.
  *
- * 为什么属性走各层自己的白名单函数：白名单已经在日志路径上被测试锁定；
- * 复用它意味着 span 不会引入**新的**字段暴露面——不存在"日志过滤了、span 泄漏了"。
+ * Why attributes go through each layer's own allowlist function: the allowlists are already test-locked on the log path;
+ * reusing them means spans introduce **no new** field-exposure surface — there is no "logs filtered it, spans leaked it".
  */
 import {
   createSpanBridge,
@@ -27,24 +27,24 @@ import { adapterCallLogFields } from './adapter-call-log.js';
 import { coreOperationLogFields } from './core-operation-log.js';
 import { storeCallLogFields } from './store-call-log.js';
 
-/** 一层观测记录 → span 名称的映射（与 observability-spec §4 的层级名一一对应）。 */
+/** Mapping from one layer's observability record → span name (one-to-one with the observability-spec §4 layer names). */
 export const SPAN_NAMES = {
   coreOperation: 'core.operation',
   adapterCall: 'adapter.call',
   providerRequest: 'provider.request',
 } as const;
 
-/** store 的 span 名称由 kind 决定（`store.read` / `store.write`），与日志口径一致。 */
+/** A store span's name is decided by kind (`store.read` / `store.write`), matching the log convention. */
 export function storeSpanName(kind: StoreCallRecord['kind']): string {
   return kind === 'read' ? 'store.read' : 'store.write';
 }
 
 /**
- * 把日志白名单产出的 `snake_case` 字段转成 span 属性。
+ * Convert the log allowlist's `snake_case` fields into span attributes.
  *
- * `request_id`/`trace_id`/`span_id` 三个**关联字段不进属性**：它们是 span 自身的
- * 身份与父子关系，放进属性会把同一信息存两份并可能不一致。`span`/`level`/`msg`
- * 是日志专用键，同样不属于 span 属性。
+ * The three **correlation fields `request_id`/`trace_id`/`span_id` do not enter attributes**: they are the span's own
+ * identity and parent/child relations; putting them in attributes would store the same information twice and possibly inconsistently. `span`/`level`/`msg`
+ * are log-only keys and likewise do not belong in span attributes.
  */
 const NON_ATTRIBUTE_KEYS = new Set(['request_id', 'trace_id', 'span_id', 'span', 'level', 'msg']);
 
@@ -59,7 +59,7 @@ export function attributesFromLogFields(fields: Record<string, unknown>): Record
   return out;
 }
 
-/** 四层桥接器集合；`undefined` 表示该层未装配。 */
+/** Set of four layer bridges; `undefined` means that layer is not assembled. */
 export interface SpanEmitters {
   readonly coreOperation?: (record: CoreOperationRecord) => void;
   readonly adapterCall?: (record: AdapterCallRecord) => void;
@@ -68,9 +68,9 @@ export interface SpanEmitters {
 }
 
 /**
- * 构造四层 span 发射器。
+ * Construct the four-layer span emitters.
  *
- * 传 `exporter` 便于测试注入内存导出器；生产用默认 stdout JSONL。
+ * Pass `exporter` so tests can inject an in-memory exporter; production uses the default stdout JSONL.
  */
 export function createSpanEmitters(exporter?: SpanExporter): SpanEmitters {
   const sink: SpanExporter =
@@ -93,8 +93,8 @@ export function createSpanEmitters(exporter?: SpanExporter): SpanEmitters {
       attributesOf: (record) => attributesFromLogFields(providerCallLogFields(record as ProviderCallRecord)),
     }),
     storeCall: (record) => {
-      // store 层的 span 名称依赖 kind，因此每次调用构造一个桥接器；
-      // 桥接器本身无状态（只有 name 与 exporter），这点开销可接受。
+      // The store layer's span name depends on kind, so a bridge is constructed per call;
+      // the bridge itself is stateless (only name and exporter), so this cost is acceptable.
       createSpanBridge({
         spanName: storeSpanName(record.kind),
         exporter: sink,

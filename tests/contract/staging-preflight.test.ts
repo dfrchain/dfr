@@ -1,11 +1,11 @@
-// staging 演练前置检查脚本的行为测试（M5-E01）。
+// staging drill preflight script behavior tests (M5-E01).
 //
-// 为什么值得测：这个脚本是"这次 staging 演练能不能开始"的唯一闸门。
-// 两种失效模式都会造成损害：
-//   1. 未就绪却报 READY → 人在依赖故障的实例上开始演练，证据全废；
-//   2. 已就绪却报 NOT READY → 反复排查其实没问题的环境。
-// 还有一条**最危险**的：鉴权配漏时脚本若没发现，整场演练的结论都不成立，
-// 因此鉴权用**反向**断言锁定（不带 Key 必须 401）。
+// Why this is worth testing: this script is the only gate for "can this staging drill start".
+// Both failure modes cause harm:
+//   1. Not ready but reports READY -> people start the drill on a broken instance and all the evidence is wasted;
+//   2. Ready but reports NOT READY -> repeated debugging of an environment that is actually fine.
+// And the **most dangerous** one: if the script misses a missing auth config, the conclusions of the whole drill do not hold,
+// so auth is locked in with a **reverse** assertion (no Key must give 401).
 import { spawn } from 'node:child_process';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { readFileSync } from 'node:fs';
@@ -36,27 +36,27 @@ function readBody(req: IncomingMessage): Promise<string> {
 }
 
 interface StubOptions {
-  /** /v1/chains 不带 Key 时返回的状态码；默认 401（鉴权正常）。 */
+  /** Status code returned by /v1/chains without a Key; default 401 (auth is fine). */
   readonly unauthChainsStatus?: number;
-  /** /metrics 不带 Key 时返回的状态码；默认 401。 */
+  /** Status code returned by /metrics without a Key; default 401. */
   readonly unauthMetricsStatus?: number;
-  /** /readyz 返回体里的 chains；默认两条都可用。 */
+  /** chains in the /readyz body; by default both are available. */
   readonly readyChains?: Array<{ chain: string; providers: number; available: number }>;
-  /** /readyz 的 stores 字段；默认 ok。 */
+  /** The stores field in /readyz; default ok. */
   readonly stores?: string;
-  /** /readyz 的状态码；默认 200。 */
+  /** Status code for /readyz; default 200. */
   readonly readyStatus?: number;
-  /** /v1/chains 带 Key 的 items 数量；默认 2。 */
+  /** Number of items in /v1/chains with a Key; default 2. */
   readonly chainsCount?: number;
-  /** /v1/chains/{id} 的状态码；默认 200。 */
+  /** Status code for /v1/chains/{id}; default 200. */
   readonly detailStatus?: number;
-  /** /metrics 带 Key 的响应体；默认含两个关键指标族。 */
+  /** Response body for /metrics with a Key; by default contains the two key metric families. */
   readonly metricsBody?: string;
-  /** /healthz 状态码；默认 200。 */
+  /** Status code for /healthz; default 200. */
   readonly healthStatus?: number;
 }
 
-/** 最小 staging 替身：只实现脚本会打的那几个端点。 */
+/** Minimal staging stub: only implements the endpoints the script hits. */
 async function startStaging(options: StubOptions = {}): Promise<string> {
   const readyChains = options.readyChains ?? [
     { chain: 'base-sepolia', providers: 1, available: 1 },
@@ -139,15 +139,15 @@ function run(env: Record<string, string>): Promise<Result> {
   });
 }
 
-describe('staging 前置检查脚本', () => {
-  it('缺必需输入 → 退出码 2，不假装检查过', async () => {
+describe('staging preflight script', () => {
+  it('Missing required input -> exit code 2, without pretending a check ran', async () => {
     const result = await run({});
     expect(result.code).toBe(2);
     expect(result.out).toContain('DFR_STAGING_BASE_URL');
     expect(result.out).toContain('NOT READY');
   });
 
-  it('前置齐备 → READY 且退出码 0', async () => {
+  it('All preconditions met -> READY with exit code 0', async () => {
     const base = await startStaging();
     const result = await run({
       DFR_STAGING_BASE_URL: base,
@@ -159,7 +159,7 @@ describe('staging 前置检查脚本', () => {
     expect(result.out).toContain('401');
   });
 
-  it('鉴权配漏（不带 Key 也 200）→ NOT READY（这是必须拦下的）', async () => {
+  it('Auth misconfigured (200 even without a Key) -> NOT READY (this must be blocked)', async () => {
     const base = await startStaging({ unauthChainsStatus: 200, unauthMetricsStatus: 200 });
     const result = await run({
       DFR_STAGING_BASE_URL: base,
@@ -167,10 +167,10 @@ describe('staging 前置检查脚本', () => {
     });
     expect(result.code).toBe(1);
     expect(result.out).toContain('NOT READY');
-    expect(result.out).toContain('鉴权');
+    expect(result.out).toContain('auth');
   });
 
-  it('依赖未就绪（/readyz 503 且 stores 不可用）→ NOT READY', async () => {
+  it('Dependencies not ready (/readyz 503 and stores unavailable) -> NOT READY', async () => {
     const base = await startStaging({ readyStatus: 503, stores: 'unavailable' });
     const result = await run({
       DFR_STAGING_BASE_URL: base,
@@ -181,7 +181,7 @@ describe('staging 前置检查脚本', () => {
     expect(result.out).toContain('503');
   });
 
-  it('某条链没有可用 Provider → NOT READY 并点名该链', async () => {
+  it('A chain with no available Provider -> NOT READY, naming the chain', async () => {
     const base = await startStaging({
       readyChains: [
         { chain: 'base-sepolia', providers: 1, available: 1 },
@@ -196,7 +196,7 @@ describe('staging 前置检查脚本', () => {
     expect(result.out).toContain('arbitrum-sepolia');
   });
 
-  it('期望链缺失 → NOT READY', async () => {
+  it('Expected chain missing -> NOT READY', async () => {
     const base = await startStaging();
     const result = await run({
       DFR_STAGING_BASE_URL: base,
@@ -207,7 +207,7 @@ describe('staging 前置检查脚本', () => {
     expect(result.out).toContain('solana-devnet');
   });
 
-  it('期望链详情不可读 → NOT READY 并点名链', async () => {
+  it('Expected chain details unreadable -> NOT READY, naming the chain', async () => {
     const base = await startStaging({ detailStatus: 404 });
     const result = await run({
       DFR_STAGING_BASE_URL: base,
@@ -216,20 +216,20 @@ describe('staging 前置检查脚本', () => {
     });
     expect(result.code).toBe(1);
     expect(result.out).toContain('base-sepolia');
-    expect(result.out).toContain('详情');
+    expect(result.out).toContain('details');
   });
 
-  it('链清单为空 → NOT READY（演练无从下手）', async () => {
+  it('Chain list is empty -> NOT READY (nothing to drill against)', async () => {
     const base = await startStaging({ chainsCount: 0 });
     const result = await run({
       DFR_STAGING_BASE_URL: base,
       DFR_STAGING_API_KEY: 'dfr_StageK01_supersecretvalue0123456789',
     });
     expect(result.code).toBe(1);
-    expect(result.out).toContain('空');
+    expect(result.out).toContain('empty');
   });
 
-  it('关键指标族缺失 → NOT READY（演练期间看不清状态）', async () => {
+  it('Key metric families missing -> NOT READY (the drill would run blind)', async () => {
     const base = await startStaging({ metricsBody: '# HELP x\ndfr_other_metric 1\n' });
     const result = await run({
       DFR_STAGING_BASE_URL: base,
@@ -239,7 +239,7 @@ describe('staging 前置检查脚本', () => {
     expect(result.out).toContain('dfr_gateway_requests_total');
   });
 
-  it('从不打印 API Key 值', async () => {
+  it('Never prints the API Key value', async () => {
     const base = await startStaging();
     const secret = 'supersecretvalue0123456789';
     const result = await run({
@@ -250,13 +250,13 @@ describe('staging 前置检查脚本', () => {
   });
 });
 
-describe('staging 前置检查：语义边界（防"误报 NOT READY"）', () => {
-  it('链未配置端点（providers=0）不是故障，README 口径下应 READY', async () => {
-    // 真实缺陷（2026-10-08 实测发现）：脚本原先把 `available == 0` 一律当"链不可用"，
-    // 而部署里 **未配置端点的链**（如 solana-devnet 在只启用 EVM 的实例上）
-    // 恰好也是 available=0。于是正常部署被判 NOT READY，操作者会去排查
-    // 一个根本不存在的问题——正是本文件开头警告的第二种失效模式。
-    // 语义应为：providers>0 且 available==0 才是"配了但全挂"。
+describe('staging preflight: semantic boundaries (guards against "false NOT READY")', () => {
+  it('A chain with no configured endpoint (providers=0) is not a failure; per the README wording it should be READY', async () => {
+    // Real defect (found in live testing on 2026-10-08): the script used to treat any `available == 0` as "chain unavailable",
+    // while a **chain with no configured endpoint** in a deployment (e.g. solana-devnet on an instance with only EVM enabled)
+    // also happens to have available=0. So a healthy deployment was judged NOT READY, and the operator went debugging
+    // a problem that does not exist at all — exactly the second failure mode warned about at the top of this file.
+    // The semantics should be: providers>0 and available==0 is "configured but all down".
     const base = await startStaging({
       readyChains: [
         { chain: 'base-sepolia', providers: 1, available: 1 },
@@ -268,13 +268,13 @@ describe('staging 前置检查：语义边界（防"误报 NOT READY"）', () =>
       DFR_STAGING_API_KEY: 'dfr_StageK01_supersecretvalue0123456789',
     });
     expect(result.code, result.out).toBe(0);
-    expect(result.out).toContain('未配置端点的链');
+    expect(result.out).toContain('Chains with no configured endpoints');
   });
 
-  it('指标族名与实现一致（dfr_gateway_inflight_requests，不是 dfr_gateway_inflight）', async () => {
-    // 真实缺陷（2026-10-08 实测发现）：脚本检查的是 `dfr_gateway_inflight`，
-    // 而 Gateway 实际导出的是 `dfr_gateway_inflight_requests`。名字写错会让
-    // 正常实例被判"指标缺族"。
+  it('Metric family names match the implementation (dfr_gateway_inflight_requests, not dfr_gateway_inflight)', async () => {
+    // Real defect (found in live testing on 2026-10-08): the script checked `dfr_gateway_inflight`,
+    // while the Gateway actually exports `dfr_gateway_inflight_requests`. A wrong name judges
+    // a healthy instance as "metric family missing".
     const base = await startStaging({
       metricsBody: [
         '# HELP x',
@@ -291,14 +291,14 @@ describe('staging 前置检查：语义边界（防"误报 NOT READY"）', () =>
   });
 });
 
-describe('staging 前置检查：大响应体（防 SIGPIPE 假失败）', () => {
-  it('指标体很大时仍能正确判定关键族齐备（不因 grep -q 提前退出而假失败）', async () => {
-    // 真实缺陷（2026-10-08 对真实实例实测发现）：
-    // 脚本原先用 `printf '%s' "${metrics}" | grep -q "^family"`。指标体可达数十 KB，
-    // `grep -q` 命中第一条即退出 → printf 收到 SIGPIPE → 在 `set -o pipefail` 下
-    // 整条管道返回非零 → **关键指标明明存在却被判缺失**。
-    // 实测实例的 /metrics 有 75KB，正是这个假失败把 READY 变成 NOT READY。
-    // 修法是先落临时文件再 grep（无管道、无 SIGPIPE）。
+describe('staging preflight: large response body (guards against SIGPIPE false failures)', () => {
+  it('A very large metrics body is still judged correctly as having the key families present (no false failure from grep -q exiting early)', async () => {
+    // Real defect (found in live testing against a real instance on 2026-10-08):
+    // The script used to run `printf '%s' "${metrics}" | grep -q "^family"`. The metrics body can be tens of KB,
+    // `grep -q` exits as soon as it matches the first line -> printf gets SIGPIPE -> under `set -o pipefail`
+    // the whole pipeline returns non-zero -> **the key metrics clearly exist but are judged missing**.
+    // The live instance's /metrics was 75KB, and this false failure turned READY into NOT READY.
+    // The fix is to write to a temp file first, then grep (no pipe, no SIGPIPE).
     const pad = Array.from({ length: 4000 }, (_v, i) => `dfr_filler_metric_${i}{chain="x"} ${i}`).join('\n');
     const base = await startStaging({
       metricsBody: `# HELP x\ndfr_gateway_requests_total{route="listChains"} 1\n${pad}\ndfr_gateway_inflight_requests{route_class="read"} 0\n`,
@@ -308,15 +308,15 @@ describe('staging 前置检查：大响应体（防 SIGPIPE 假失败）', () =>
       DFR_STAGING_API_KEY: 'dfr_StageK01_supersecretvalue0123456789',
     });
     expect(result.code, result.out).toBe(0);
-    expect(result.out).toContain('关键指标族齐备');
+    expect(result.out).toContain('key metric families are all present');
   });
 });
 
-describe('staging 前置检查：凭证进程可见性', () => {
-  it('不会把 API Key 展开为 curl 命令行参数，并会清理受限 Header 临时文件', () => {
-    // API Key 进环境变量是 runbook 的受控输入；但若再展开到 `curl -H "...${KEY}"`
-    // 的 argv，同机可查看进程参数的主体会在请求期间看到它。Header 必须经 0600
-    // 临时文件传给 curl，且脚本退出时删除该文件。
+describe('staging preflight: credential visibility to processes', () => {
+  it('Does not expand the API Key into curl command-line arguments, and cleans up the restricted Header temp file', () => {
+    // Putting the API Key in an environment variable is a controlled runbook input; but if it were expanded again into `curl -H "...${KEY}"`
+    // argv, a party on the same machine that can view process arguments would see it during the request. The Header must go through a 0600
+    // temp file to curl, and the script must delete that file on exit.
     const source = readFileSync(resolve(repoRoot, SCRIPT), 'utf8');
     expect(source).not.toContain('-H "X-DFR-Key: ${KEY}"');
     expect(source).toContain('AUTH_HEADER_FILE');
@@ -325,7 +325,7 @@ describe('staging 前置检查：凭证进程可见性', () => {
     expect(source).toContain('-H "@${AUTH_HEADER_FILE}"');
   });
 
-  it('隔离故障演练也不会把临时 API Key 展开为 curl 命令行参数', () => {
+  it('The isolated fault drill also does not expand the temporary API Key into curl command-line arguments', () => {
     const source = readFileSync(resolve(repoRoot, FAULT_DRILL_SCRIPT), 'utf8');
     expect(source).not.toContain('-H "X-DFR-Key: ${API_KEY}"');
     expect(source).toContain('API_KEY_HEADER_FILE');

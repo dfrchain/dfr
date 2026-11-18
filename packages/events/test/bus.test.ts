@@ -1,10 +1,10 @@
 /**
- * 进程内事件总线契约测试（M2-C01，ADR-006 / ADR-026）。
+ * In-process event bus contract test (M2-C01, ADR-006 / ADR-026).
  *
- * 重点锁定 ADR-006 明确承诺、且容易被后人"顺手加强"而说谎的语义：
- * - cursor 的**作用域**（全局 vs 单链）不可互换；
- * - 进程内重放**有界**，截断必须显式告知；
- * - at-least-once 而不是 exactly-once（不承诺去重）。
+ * Focused on the semantics ADR-006 explicitly promises that are easy for a later author to "helpfully strengthen" into a lie:
+ * - cursor **scope** (global vs single-chain) is not interchangeable;
+ * - in-process replay is **bounded**, and truncation must be reported explicitly;
+ * - at-least-once, not exactly-once (no dedupe promised).
  */
 import { describe, expect, it } from 'vitest';
 import type { ChainId, EventType } from '@dfr/types';
@@ -19,8 +19,8 @@ function bus(options: Partial<EventBusOptions> = {}): EventBus {
   return new EventBus({ newEventId: () => `evt_${++seq}`, now: () => '2026-10-06T00:00:00.000Z', ...options });
 }
 
-describe('EventBus 发布与订阅（M2-C01）', () => {
-  it('发布返回全局流与链流两份事件，各自 cursor 从 1 开始', () => {
+  describe('EventBus publish and subscribe (M2-C01)', () => {
+    it('publish returns two events, one per global and chain stream, each with cursor starting at 1', () => {
     const b = bus();
     const { global, chain } = b.publish({ type: 'tx.included' as EventType, chain: A, payload: {} });
     expect(global.cursor).toBe('1');
@@ -28,15 +28,15 @@ describe('EventBus 发布与订阅（M2-C01）', () => {
     expect(global.eventId).toBe(chain.eventId);
   });
 
-  it('全局流跨链统一递增；单链流各自独立递增（cursor 作用域不可互换）', () => {
+    it('global stream increments uniformly across chains; single-chain streams increment independently (cursor scopes not interchangeable)', () => {
     const b = bus();
     b.publish({ type: 'tx.included' as EventType, chain: A, payload: {} });
     b.publish({ type: 'block.new' as EventType, chain: B, payload: {} });
     const third = b.publish({ type: 'tx.included' as EventType, chain: A, payload: {} });
 
-    // 全局流：1,2,3
+    // Global stream: 1,2,3
     expect(third.global.cursor).toBe('3');
-    // 链 A 流：1,2（B 的事件不占它的号）
+    // Chain A stream: 1,2 (B's events do not take its numbers)
     expect(third.chain.cursor).toBe('2');
 
     expect(b.replayWindow().newest).toBe('3');
@@ -44,7 +44,7 @@ describe('EventBus 发布与订阅（M2-C01）', () => {
     expect(b.replayWindow(B).newest).toBe('1');
   });
 
-  it('跨链订阅收到全局流；单链订阅只收到该链且用链内 cursor', () => {
+    it('cross-chain subscriptions receive the global stream; single-chain subscriptions only receive that chain, with in-chain cursors', () => {
     const b = bus();
     const globalSeen: string[] = [];
     const chainSeen: string[] = [];
@@ -58,7 +58,7 @@ describe('EventBus 发布与订阅（M2-C01）', () => {
     expect(chainSeen).toEqual([`${A}:1`]);
   });
 
-  it('types 过滤只投递匹配类型', () => {
+    it('types filtering only delivers matching types', () => {
     const b = bus();
     const seen: string[] = [];
     b.subscribe({ types: ['tx.finalized'] }, (e) => seen.push(e.type));
@@ -67,7 +67,7 @@ describe('EventBus 发布与订阅（M2-C01）', () => {
     expect(seen).toEqual(['tx.finalized']);
   });
 
-  it('addresses 只匹配 contract.event，且按载荷地址过滤', () => {
+    it('addresses only matches contract.event, filtered by payload address', () => {
     const b = bus();
     const seen: string[] = [];
     b.subscribe({ addresses: ['0xaaa'] }, (e) => seen.push(e.type));
@@ -77,7 +77,7 @@ describe('EventBus 发布与订阅（M2-C01）', () => {
     expect(seen).toEqual(['contract.event']);
   });
 
-  it('close() 幂等，且之后不再收到事件', () => {
+    it('close() is idempotent, and no more events arrive afterwards', () => {
     const b = bus();
     const seen: string[] = [];
     const sub = b.subscribe({}, (e) => seen.push(e.type));
@@ -89,7 +89,7 @@ describe('EventBus 发布与订阅（M2-C01）', () => {
     expect(b.subscriptionCount).toBe(0);
   });
 
-  it('单个订阅者抛错不影响其他订阅者与发布路径（观测失败不改变业务结果）', () => {
+    it('one subscriber throwing does not affect other subscribers or the publish path (observation failures do not change business outcomes)', () => {
     const b = bus();
     const seen: string[] = [];
     b.subscribe({}, () => {
@@ -101,8 +101,8 @@ describe('EventBus 发布与订阅（M2-C01）', () => {
   });
 });
 
-describe('EventBus 进程内重放（有界，ADR-006）', () => {
-  it('afterCursor 只返回其后的全局事件', () => {
+  describe('EventBus in-process replay (bounded, ADR-006)', () => {
+    it('afterCursor only returns later global events', () => {
     const b = bus();
     b.publish({ type: 'tx.included' as EventType, chain: A, payload: {} });
     b.publish({ type: 'tx.finalized' as EventType, chain: A, payload: {} });
@@ -113,7 +113,7 @@ describe('EventBus 进程内重放（有界，ADR-006）', () => {
     expect(result.replayTruncated).toBe(false);
   });
 
-  it('单链重放使用该链的 cursor 空间', () => {
+    it('single-chain replay uses that chain's cursor space', () => {
     const b = bus();
     b.publish({ type: 'tx.included' as EventType, chain: A, payload: {} });
     b.publish({ type: 'block.new' as EventType, chain: B, payload: {} });
@@ -124,28 +124,28 @@ describe('EventBus 进程内重放（有界，ADR-006）', () => {
     expect(result.events[0]!.cursor).toBe('2');
   });
 
-  it('超出缓冲区窗口时显式报告 replayTruncated（不静默丢历史）', () => {
+    it('going beyond the buffer window explicitly reports replayTruncated (no silent history loss)', () => {
     const b = bus({ replayCapacity: 2 });
     for (let i = 0; i < 5; i += 1) {
       b.publish({ type: 'tx.included' as EventType, chain: A, payload: { i } });
     }
     const result = b.replay({ afterCursor: '0' as never });
-    // 窗口只剩 cursor 4,5。
+    // Only cursors 4,5 remain in the window.
     expect(result.events.map((e) => e.cursor)).toEqual(['4', '5']);
-    expect(result.replayTruncated, '中间有不可重放的段，必须显式告知').toBe(true);
+    expect(result.replayTruncated, 'there is an unreplayable segment in the middle; it must be reported explicitly').toBe(true);
     expect(result.oldestAvailableCursor).toBe('4');
   });
 
-  it('从窗口内请求不报截断', () => {
+    it('requesting from inside the window reports no truncation', () => {
     const b = bus({ replayCapacity: 3 });
     for (let i = 0; i < 5; i += 1) b.publish({ type: 'tx.included' as EventType, chain: A, payload: {} });
-    // 窗口含 3,4,5；从 4 之后请求 → 5，完整。
+    // Window contains 3,4,5; requesting after 4 -> 5, complete.
     const result = b.replay({ afterCursor: '4' as never });
     expect(result.events.map((e) => e.cursor)).toEqual(['5']);
     expect(result.replayTruncated).toBe(false);
   });
 
-  it('replayCapacity 非法时 fail-fast', () => {
+    it('illegal replayCapacity fails fast', () => {
     expect(() => new EventBus({ replayCapacity: 0 })).toThrow(RangeError);
     expect(() => new EventBus({ replayCapacity: 1.5 })).toThrow(RangeError);
   });

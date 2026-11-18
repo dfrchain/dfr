@@ -1,18 +1,18 @@
 /**
- * EVM Adapter 广播（DFR-M1-C02）。
+ * EVM Adapter broadcast (DFR-M1-C02).
  *
- * 权威来源：m1-api-contract.md 第 3/5 节、transaction-lifecycle.md §4.4、
- * error-spec §5.1、ADR-016。
+ * Authoritative sources: m1-api-contract.md Sections 3/5, transaction-lifecycle.md §4.4,
+ * error-spec §5.1, ADR-016.
  *
- * 本文件的重点是**资金安全**，不是功能覆盖：
- *   1. `eth_sendRawTransaction` 必须标记 `non-idempotent-write`，Provider 层因此绝不自动重试；
- *   2. 一次 broadcast 调用对传输层**恰好一次**，失败也不切换 Provider 重发；
- *   3. `already known` / `already exists` 是幂等成功，不是错误；
- *   4. 其它失败原样上抛（由 C03 决定状态回退），绝不假装 accepted；
- *   5. 本地校验（未签名 / 链不符 / expectedHash 不符 / 端点返回异常哈希）失败时
- *      **不得发出广播**。
+ * This file focuses on **fund safety**, not feature coverage:
+ *   1. `eth_sendRawTransaction` must be tagged `non-idempotent-write`, so the Provider layer never retries it automatically;
+ *   2. One broadcast call means **exactly one** transport call; failures never switch Provider and resend;
+ *   3. `already known` / `already exists` are idempotent successes, not errors;
+ *   4. Other failures are rethrown as-is (C03 decides the state rollback), never faked as accepted;
+ *   5. When local validation fails (unsigned / chain mismatch / expectedHash mismatch / abnormal hash returned by the endpoint),
+ *      **no broadcast must be sent**.
  *
- * 真实签名用 viem 纯函数 + 运行时派生的测试私钥（仓库内无私钥字面量）。
+ * Real signatures use viem pure functions + test private keys derived at runtime (no private-key literals in the repo).
  */
 import { describe, expect, it } from 'vitest';
 import { keccak256, serializeTransaction, toBytes, toRlp } from 'viem';
@@ -49,7 +49,7 @@ const chain: Chain = {
   capabilities: ['account.balance', 'block.read', 'transaction.read', 'transaction.broadcast'],
 };
 
-/** 运行时派生：仓库内不出现私钥字面量。 */
+/** Derived at runtime: no private-key literals appear in the repo. */
 const TEST_KEY = keccak256(toBytes('dfr-m1-c02-signer'));
 
 interface Recorded {
@@ -59,16 +59,16 @@ interface Recorded {
 }
 
 interface StubRouterOptions {
-  /** 对 eth_sendRawTransaction 的应答；缺省成功返回真实哈希。 */
+  /** Response to eth_sendRawTransaction; the default success returns the real hash. */
   send?: (recorded: Recorded) => unknown;
   onSend?: (recorded: Recorded) => void;
-  /** 对 eth_getTransactionByHash 的应答（观测路径）。 */
+  /** Response to eth_getTransactionByHash (observation path). */
   observe?: () => unknown;
-  /** 对 eth_getTransactionCount 的应答（观测路径用于区分 replaced / absent）。 */
+  /** Response to eth_getTransactionCount (the observation path uses it to tell replaced from absent). */
   latestNonce?: () => unknown;
 }
 
-/** 记录全部调用，并允许对广播注入自定义应答（成功 / JSON-RPC 错误 / 网络错误）。 */
+/** Record all calls, and allow custom responses to be injected for broadcast (success / JSON-RPC error / network error). */
 function createStubRouter(
   options: StubRouterOptions = {},
 ): { router: ProviderRouter; calls: Recorded[] } {
@@ -88,7 +88,7 @@ function createStubRouter(
         if (options.observe !== undefined) return options.observe() as T;
         throw createDfrError('DFR_PROVIDER_UNAVAILABLE', {
           requestId: 'req_01J8Z6W3Q2K9M4ABCDEFGHJKMN' as never,
-          message: 'stub 未配置观测应答',
+          message: 'stub has no observation response configured',
           chain: SEPOLIA,
         });
       }
@@ -96,19 +96,19 @@ function createStubRouter(
         if (options.latestNonce !== undefined) return options.latestNonce() as T;
         throw createDfrError('DFR_PROVIDER_UNAVAILABLE', {
           requestId: 'req_01J8Z6W3Q2K9M4ABCDEFGHJKMN' as never,
-          message: 'stub 未配置 nonce 应答',
+          message: 'stub has no nonce response configured',
           chain: SEPOLIA,
         });
       }
       if (call.method === 'eth_sendRawTransaction') {
         options.onSend?.(recorded);
         if (options.send !== undefined) return options.send(recorded) as T;
-        // 真实端点返回的是交易哈希 = keccak256(已签名载荷)。
+        // A real endpoint returns the transaction hash = keccak256(signed payload).
         return keccak256(call.params[0] as `0x${string}`) as T;
       }
       throw createDfrError('DFR_PROVIDER_UNAVAILABLE', {
         requestId: 'req_01J8Z6W3Q2K9M4ABCDEFGHJKMN' as never,
-        message: `stub 未实现方法 ${call.method}`,
+        message: `stub does not implement method ${call.method}`,
         chain: SEPOLIA,
       });
     },
@@ -143,7 +143,7 @@ function unsignedStub(payload: string, chainId = SEPOLIA): UnsignedTransaction {
   };
 }
 
-/** 构造一笔真实签名交易，并返回 Adapter 需要的 SignedTransaction。 */
+/** Build a really signed transaction and return the SignedTransaction the Adapter needs. */
 async function makeSigned(
   overrides: Partial<{ value: bigint; nonce: number; data: `0x${string}` }> = {},
   chainId = CHAIN_ID,
@@ -172,10 +172,10 @@ async function makeSigned(
   };
 }
 
-describe('EVM Adapter broadcast（DFR-M1-C02）', () => {
+describe('EVM Adapter broadcast (DFR-M1-C02)', () => {
   const adapter = new EvmAdapter({ chain });
 
-  it('恰好一次 eth_sendRawTransaction，且标记 non-idempotent-write', async () => {
+  it('exactly one eth_sendRawTransaction, tagged non-idempotent-write', async () => {
     const { router, calls } = createStubRouter();
     const signed = await makeSigned();
 
@@ -192,13 +192,13 @@ describe('EVM Adapter broadcast（DFR-M1-C02）', () => {
     expect(result.observedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/u);
   });
 
-  it('不发送任何 chainId 之外的探测调用（避免多余往返）', async () => {
+  it('sends no probe calls other than chainId (avoids extra round trips)', async () => {
     const { router, calls } = createStubRouter();
     await adapter.broadcast(context(router), await makeSigned());
     expect(calls.map((c) => c.method)).toEqual(['eth_sendRawTransaction']);
   });
 
-  it('已签名载荷里的 chainId 与绑定链不一致 → DFR_CHAIN_MISMATCH，且不发出广播', async () => {
+  it('chainId in the signed payload differs from the bound chain → DFR_CHAIN_MISMATCH, no broadcast sent', async () => {
     const { router, calls } = createStubRouter();
     const signed = await makeSigned({}, 84532); // Base Sepolia
 
@@ -211,7 +211,7 @@ describe('EVM Adapter broadcast（DFR-M1-C02）', () => {
     expect(calls).toEqual([]);
   });
 
-  it('SignedTransaction.chain 与 Adapter 绑定链不一致 → DFR_CHAIN_MISMATCH，且不发出广播', async () => {
+  it('SignedTransaction.chain differs from the Adapter bound chain → DFR_CHAIN_MISMATCH, no broadcast sent', async () => {
     const { router, calls } = createStubRouter();
     const signed = { ...(await makeSigned()), chain: OTHER_CHAIN };
 
@@ -224,7 +224,7 @@ describe('EVM Adapter broadcast（DFR-M1-C02）', () => {
     expect(calls).toEqual([]);
   });
 
-  it('expectedHash 与载荷重算不一致 → DFR_TRANSACTION_REJECTED，且不发出广播', async () => {
+  it('expectedHash differs from the recomputed payload hash → DFR_TRANSACTION_REJECTED, no broadcast sent', async () => {
     const { router, calls } = createStubRouter();
     const signed = { ...(await makeSigned()), expectedHash: `0x${'ab'.repeat(32)}` };
 
@@ -238,10 +238,10 @@ describe('EVM Adapter broadcast（DFR-M1-C02）', () => {
     expect(calls).toEqual([]);
   });
 
-  it('结构合法但未签名的载荷 → DFR_TRANSACTION_REJECTED(not_signed)，且不发出广播', async () => {
+  it('structurally valid but unsigned payload → DFR_TRANSACTION_REJECTED(not_signed), no broadcast sent', async () => {
     const { router, calls } = createStubRouter();
-    // 真实未签名载荷（不是畸形 RLP）：只有这样，拒绝才必然来自 not_signed 分支，
-    // 而不会被 decode 失败或 expectedHash 分支顺带拦住。
+    // A genuinely unsigned payload (not malformed RLP): only then must the rejection come from the not_signed branch,
+    // rather than being incidentally blocked by a decode failure or the expectedHash branch.
     const unsignedPayload = serializeTransaction({
       chainId: CHAIN_ID,
       nonce: 1,
@@ -258,7 +258,7 @@ describe('EVM Adapter broadcast（DFR-M1-C02）', () => {
       chain: SEPOLIA,
       unsigned: unsignedStub(unsignedPayload),
       signedPayload: unsignedPayload,
-      // 哈希正确：确保唯一可能的拒绝原因就是"未签名"。
+      // The hash is correct, so the only possible rejection reason is "unsigned".
       expectedHash: keccak256(unsignedPayload),
     };
 
@@ -272,7 +272,7 @@ describe('EVM Adapter broadcast（DFR-M1-C02）', () => {
     expect(calls).toEqual([]);
   });
 
-  it('无记录真值路径也必须拒绝无法恢复发送方的签名', async () => {
+  it('the no-record-truth path must also reject signatures whose sender cannot be recovered', async () => {
     const { router, calls } = createStubRouter();
     const payload = `0x02${toRlp([
       '0xaa36a7', '0x01', '0x01', '0x02', '0x5208', TO, '0x', '0x', [],
@@ -293,7 +293,7 @@ describe('EVM Adapter broadcast（DFR-M1-C02）', () => {
     expect(calls).toEqual([]);
   });
 
-  it('畸形载荷 → DFR_TRANSACTION_REJECTED(invalid_payload)，且不发出广播', async () => {
+  it('malformed payload → DFR_TRANSACTION_REJECTED(invalid_payload), no broadcast sent', async () => {
     const { router, calls } = createStubRouter();
     const signed: SignedTransaction = {
       schemaVersion: '1',
@@ -313,12 +313,12 @@ describe('EVM Adapter broadcast（DFR-M1-C02）', () => {
     expect(calls).toEqual([]);
   });
 
-  it('"already known" 是幂等成功（accepted=true），不是错误', async () => {
+  it('"already known" is an idempotent success (accepted=true), not an error', async () => {
     const { router, calls } = createStubRouter({
       send: () => {
         throw createDfrError('DFR_PROVIDER_UNAVAILABLE', {
           requestId: 'req_01J8Z6W3Q2K9M4ABCDEFGHJKMN' as never,
-          message: 'Provider 返回 JSON-RPC 错误',
+          message: 'Provider returned a JSON-RPC error',
           chain: SEPOLIA,
           chainError: { code: '-32000', message: 'already known' },
         });
@@ -330,16 +330,16 @@ describe('EVM Adapter broadcast（DFR-M1-C02）', () => {
 
     expect(result.accepted).toBe(true);
     expect(result.ref).toEqual({ kind: 'hash', hash: signed.expectedHash });
-    // 幂等成功仍然只是一次调用：不因"已存在"再去查询或重发。
+    // An idempotent success is still a single call: no extra query or resend just because it "already exists".
     expect(calls.filter((c) => c.method === 'eth_sendRawTransaction')).toHaveLength(1);
   });
 
-  it('"already exists" 同样按幂等成功处理', async () => {
+  it('"already exists" is likewise treated as an idempotent success', async () => {
     const { router } = createStubRouter({
       send: () => {
         throw createDfrError('DFR_PROVIDER_UNAVAILABLE', {
           requestId: 'req_01J8Z6W3Q2K9M4ABCDEFGHJKMN' as never,
-          message: 'Provider 返回 JSON-RPC 错误',
+          message: 'Provider returned a JSON-RPC error',
           chain: SEPOLIA,
           chainError: { code: '-32000', message: 'Transaction already exists' },
         });
@@ -349,12 +349,12 @@ describe('EVM Adapter broadcast（DFR-M1-C02）', () => {
     expect(result.accepted).toBe(true);
   });
 
-  it('其它 JSON-RPC 失败原样上抛，且不重发（underpriced）', async () => {
+  it('other JSON-RPC failures are rethrown as-is, without resending (underpriced)', async () => {
     const { router, calls } = createStubRouter({
       send: () => {
         throw createDfrError('DFR_PROVIDER_UNAVAILABLE', {
           requestId: 'req_01J8Z6W3Q2K9M4ABCDEFGHJKMN' as never,
-          message: 'Provider 返回 JSON-RPC 错误',
+          message: 'Provider returned a JSON-RPC error',
           chain: SEPOLIA,
           chainError: { code: '-32000', message: 'replacement transaction underpriced' },
         });
@@ -370,12 +370,12 @@ describe('EVM Adapter broadcast（DFR-M1-C02）', () => {
     expect(calls.filter((c) => c.method === 'eth_sendRawTransaction')).toHaveLength(1);
   });
 
-  it('nonce too low 保持 DFR_NONCE_CONFLICT（不吞成成功、不重发）', async () => {
+  it('nonce too low stays DFR_NONCE_CONFLICT (not swallowed as success, not resent)', async () => {
     const { router, calls } = createStubRouter({
       send: () => {
         throw createDfrError('DFR_NONCE_CONFLICT', {
           requestId: 'req_01J8Z6W3Q2K9M4ABCDEFGHJKMN' as never,
-          message: 'nonce 冲突（eth_sendRawTransaction）',
+          message: 'nonce conflict (eth_sendRawTransaction)',
           chain: SEPOLIA,
           chainError: { code: '-32000', message: 'nonce too low' },
         });
@@ -391,12 +391,12 @@ describe('EVM Adapter broadcast（DFR-M1-C02）', () => {
     expect(calls.filter((c) => c.method === 'eth_sendRawTransaction')).toHaveLength(1);
   });
 
-  it('可重试类错误也不重发（non-idempotent-write 的分类才是不重发的根据）', async () => {
+  it('retryable-class errors are not resent either (the non-idempotent-write classification is the reason not to resend)', async () => {
     const { router, calls } = createStubRouter({
       send: () => {
         throw createDfrError('DFR_PROVIDER_UNAVAILABLE', {
           requestId: 'req_01J8Z6W3Q2K9M4ABCDEFGHJKMN' as never,
-          message: 'Provider 返回 HTTP 503',
+          message: 'Provider returned HTTP 503',
           chain: SEPOLIA,
           details: { status: 503, method: 'eth_sendRawTransaction' },
         });
@@ -408,15 +408,15 @@ describe('EVM Adapter broadcast（DFR-M1-C02）', () => {
       (err: unknown) => err,
     );
 
-    // DFR_PROVIDER_UNAVAILABLE 对只读是"可重试"的；但广播绝不能因此重发。
+    // DFR_PROVIDER_UNAVAILABLE is "retryable" for reads; but broadcast must never resend because of it.
     expect(isDfrError(error) && error.retryable).toBe(true);
     expect(calls.filter((c) => c.method === 'eth_sendRawTransaction')).toHaveLength(1);
-    // 与 packages/provider/test/provider.test.ts 的
-    // "广播类（non-idempotent-write）绝不自动重试" 相互印证：
-    // Adapter 声明类别 → Manager 依类别拒绝重试与失败切换。
+    // This cross-checks packages/provider/test/provider.test.ts:
+    // "broadcast-class (non-idempotent-write) never retries automatically":
+    // the Adapter declares the class → the Manager refuses retries and failover by class.
   });
 
-  it('记录真值一致（C03a）：expectedFrom 与签名者相符、unsigned 载荷逐字段一致 → 放行', async () => {
+  it('recorded ground truth matches (C03a): expectedFrom matches the signer, unsigned payload matches field by field → allowed', async () => {
     const { router, calls } = createStubRouter();
     const signed = await makeSigned();
     const unsigned = serializeTransaction({
@@ -440,7 +440,7 @@ describe('EVM Adapter broadcast（DFR-M1-C02）', () => {
     expect(calls.filter((c) => c.method === 'eth_sendRawTransaction')).toHaveLength(1);
   });
 
-  it('签名者与记录里的 from 不符 → sender_mismatch，且不发出广播', async () => {
+  it('signer differs from the recorded from → sender_mismatch, no broadcast sent', async () => {
     const { router, calls } = createStubRouter();
     const signed = await makeSigned();
     const unsigned = serializeTransaction({
@@ -457,7 +457,7 @@ describe('EVM Adapter broadcast（DFR-M1-C02）', () => {
 
     const error = await adapter
       .broadcast(context(router), signed, {
-        // 另一个账户：即使字段完全一致也必须拒绝（nonce 是给前一个账户预留的）。
+        // A different account: must be rejected even if every field matches (the nonce was reserved for the previous account).
         expectedFrom: { chain: SEPOLIA, address: `0x${'9'.repeat(40)}` },
         expectedUnsignedPayload: unsigned,
       })
@@ -468,14 +468,14 @@ describe('EVM Adapter broadcast（DFR-M1-C02）', () => {
     expect(calls).toEqual([]);
   });
 
-  it('记录里的 unsigned 载荷与签名载荷字段不符 → unsigned_payload_mismatch，且不发出广播', async () => {
+  it('recorded unsigned payload fields differ from the signed payload → unsigned_payload_mismatch, no broadcast sent', async () => {
     const { router, calls } = createStubRouter();
     const signed = await makeSigned();
     const tampered = serializeTransaction({
       chainId: CHAIN_ID,
       nonce: 1,
       to: TO,
-      value: VALUE + 1n, // 金额被改
+      value: VALUE + 1n, // amount was changed
       data: '0x',
       gas: 21000n,
       maxFeePerGas: 3000000000n,
@@ -494,14 +494,14 @@ describe('EVM Adapter broadcast（DFR-M1-C02）', () => {
     expect(calls).toEqual([]);
   });
 
-  it('只给半个记录真值 → invalid_expectation，且不发出广播', async () => {
+  it('only half the recorded ground truth given → invalid_expectation, no broadcast sent', async () => {
     const { router, calls } = createStubRouter();
     const signed = await makeSigned();
 
     const error = await adapter
       .broadcast(context(router), signed, {
         expectedFrom: { chain: SEPOLIA, address: privateKeyToAddress(TEST_KEY) },
-        // 故意不给 expectedUnsignedPayload：半个真值不得被当成"已校验"。
+        // expectedUnsignedPayload deliberately omitted: half a ground truth must not count as "verified".
       })
       .then(() => undefined, (err: unknown) => err);
 
@@ -509,7 +509,7 @@ describe('EVM Adapter broadcast（DFR-M1-C02）', () => {
     expect(calls).toEqual([]);
   });
 
-  it('端点返回的 txHash 与载荷重算不一致 → DFR_PROVIDER_INVALID_RESPONSE（fail-closed）', async () => {
+  it('endpoint txHash differs from the recomputed payload hash → DFR_PROVIDER_INVALID_RESPONSE (fail-closed)', async () => {
     const { router } = createStubRouter({ send: () => `0x${'cd'.repeat(32)}` });
 
     const error = await adapter.broadcast(context(router), await makeSigned()).then(
@@ -520,7 +520,7 @@ describe('EVM Adapter broadcast（DFR-M1-C02）', () => {
     expect(isDfrError(error) && error.code).toBe('DFR_PROVIDER_INVALID_RESPONSE');
   });
 
-  it('观测：按 expectedHash 查到未上链交易 → pending', async () => {
+  it('observation: expectedHash finds an unconfirmed transaction → pending', async () => {
     const { router } = createStubRouter({
       observe: () => ({
         hash: `0x${'ab'.repeat(32)}`,
@@ -544,7 +544,7 @@ describe('EVM Adapter broadcast（DFR-M1-C02）', () => {
     expect(observation).toEqual({ kind: 'pending', txHash: `0x${'ab'.repeat(32)}` });
   });
 
-  it('观测：查到已上链交易 → included 且带区块引用', async () => {
+  it('observation: confirmed transaction found → included with a block reference', async () => {
     const { router } = createStubRouter({
       observe: () => ({
         hash: `0x${'ab'.repeat(32)}`,
@@ -572,10 +572,10 @@ describe('EVM Adapter broadcast（DFR-M1-C02）', () => {
     });
   });
 
-  it('观测：查不到且链上 nonce 已越过 → replaced（不是 dropped）', async () => {
+  it('observation: not found and on-chain nonce already passed → replaced (not dropped)', async () => {
     const { router } = createStubRouter({
       observe: () => null,
-      latestNonce: () => '0x2b', // 43 > 42：该 nonce 已被别人消耗
+      latestNonce: () => '0x2b', // 43 > 42: that nonce was already consumed by someone else
     });
 
     const observation = await adapter.observeBroadcast(context(router), {
@@ -588,7 +588,7 @@ describe('EVM Adapter broadcast（DFR-M1-C02）', () => {
     expect(observation).toEqual({ kind: 'replaced', nonce: '42' });
   });
 
-  it('观测：查不到且 nonce 未被占用 → absent（保持 unknown，不判 dropped）', async () => {
+  it('observation: not found and nonce not consumed → absent (stays unknown, not judged dropped)', async () => {
     const { router } = createStubRouter({ observe: () => null, latestNonce: () => '0x2a' });
 
     const observation = await adapter.observeBroadcast(context(router), {
@@ -601,7 +601,7 @@ describe('EVM Adapter broadcast（DFR-M1-C02）', () => {
     expect(observation).toEqual({ kind: 'absent' });
   });
 
-  it('观测是只读的：不发出 eth_sendRawTransaction', async () => {
+  it('observation is read-only: no eth_sendRawTransaction is sent', async () => {
     const { router, calls } = createStubRouter({ observe: () => null, latestNonce: () => '0x2a' });
 
     await adapter.observeBroadcast(context(router), {
@@ -615,7 +615,7 @@ describe('EVM Adapter broadcast（DFR-M1-C02）', () => {
     expect(calls.every((c) => c.idempotency === 'safe-read')).toBe(true);
   });
 
-  it('rebroadcast 选项透传到结果（dropped → broadcast 的回边标记）', async () => {
+  it('rebroadcast option passes through to the result (back-edge marker from dropped → broadcast)', async () => {
     const { router, calls } = createStubRouter();
     const signed = await makeSigned();
     const result = await adapter.broadcast(context(router), signed, {
@@ -623,12 +623,12 @@ describe('EVM Adapter broadcast（DFR-M1-C02）', () => {
       idempotencyKey: 'idem-key-12345678',
     });
     expect(result.rebroadcast).toBe(true);
-    // 幂等键是上层语义：Adapter 不得把它塞进 JSON-RPC 参数（那会泄漏到链上请求）。
+    // The idempotency key is upper-layer semantics: the Adapter must not stuff it into JSON-RPC params (it would leak into the on-chain request).
     const send = calls.find((c) => c.method === 'eth_sendRawTransaction');
     expect(send?.params).toEqual([signed.signedPayload]);
   });
 
-  it('广播前后不改变 from 语义：载荷确实由该账户签出（C01 绑定同一真值）', async () => {
+  it('broadcast does not change from semantics: the payload was really signed by that account (C01 binds the same ground truth)', async () => {
     const { parseSignedTransaction } = await import('@dfr/adapter-evm');
     const { privateKeyToAddress } = await import('viem/accounts');
     const signed = await makeSigned();

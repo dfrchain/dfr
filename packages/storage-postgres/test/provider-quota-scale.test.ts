@@ -1,10 +1,10 @@
 /**
- * ProviderQuotaStore 规模与边界测试（E5）。
+ * ProviderQuotaStore scale and boundary tests (E5).
  *
- * 目标不是重复并发正确性，而是证明长期运行下：
- *   - 旧日期数据不会影响当天计数；
- *   - usage 查询走主键，不需要全表扫描；
- *   - 单条 UPSERT 在 50 路并发下仍不超过上限。
+ * The goal is not to repeat concurrency correctness, but to prove that over long runs:
+ *   - old-date data does not affect the current day's counts;
+ *   - usage queries use the primary key and need no full-table scan;
+ *   - a single UPSERT still never exceeds the cap under 50-way concurrency.
  */
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -33,7 +33,7 @@ beforeAll(async () => {
   admin = new Client({ connectionString: ADMIN_DSN });
   await admin.connect();
   const { rows } = await admin.query<{ db: string }>('SELECT current_database() AS db');
-  if (!/_test$/u.test(rows[0]!.db)) throw new Error('拒绝在非测试库执行');
+  if (!/_test$/u.test(rows[0]!.db)) throw new Error('refusing to run against a non-test database');
 
   await admin.query(`DROP DATABASE IF EXISTS ${PRIVATE_DB} WITH (FORCE)`);
   await admin.query(`CREATE DATABASE ${PRIVATE_DB}`);
@@ -53,15 +53,15 @@ afterAll(async () => {
   if (inspector) await inspector.end();
   if (pool) await pool.end();
   if (admin) {
-    // Pool 已结束后不用 FORCE：强杀仍在关闭中的客户端会向 Vitest 抛 57P01，
-    // 使断言虽通过但数据库门禁失败。若连接没有正常释放，让 DROP 失败即可暴露泄漏。
+    // After the pool ends, do not use FORCE: force-killing clients that are still closing throws 57P01 at Vitest,
+    // making assertions pass but the database gate fail. If connections are not released cleanly, let the DROP fail to expose the leak.
     await admin.query(`DROP DATABASE IF EXISTS ${PRIVATE_DB}`);
     await admin.end();
   }
 }, 60_000);
 
-describe.skipIf(!ENABLED)('ProviderQuotaStore 规模与边界（E5）', () => {
-  it('50 路并发抢 10 个额度：恰好 10 个 allowed，used=10', async () => {
+describe.skipIf(!ENABLED)('ProviderQuotaStore scale and boundaries (E5)', () => {
+  it('50 concurrent contenders for 10 units of quota: exactly 10 allowed, used=10', async () => {
     await inspector.query('TRUNCATE transaction_data.provider_quota_daily');
     const input = {
       providerId: 'scale-provider',
@@ -74,7 +74,7 @@ describe.skipIf(!ENABLED)('ProviderQuotaStore 规模与边界（E5）', () => {
     expect(await store.usage(input)).toBe(10);
   });
 
-  it('历史日期行存在时，当天计数不受影响', async () => {
+  it('historical-date rows do not affect the current day's counts', async () => {
     await inspector.query('TRUNCATE transaction_data.provider_quota_daily');
     const base = { providerId: 'day-provider', chain: 'base-sepolia' as never, limit: 2 };
     await store.consume({ ...base, day: '2026-10-01' });
@@ -84,9 +84,9 @@ describe.skipIf(!ENABLED)('ProviderQuotaStore 规模与边界（E5）', () => {
     expect(await store.usage({ ...base, day: '2026-10-01' })).toBe(2);
   });
 
-  it('usage 查询使用主键索引（EXPLAIN 不出现 Seq Scan）', async () => {
+  it('usage queries use the primary-key index (EXPLAIN shows no Seq Scan)', async () => {
     await inspector.query('TRUNCATE transaction_data.provider_quota_daily');
-    // 插入足够多的无关行，让规划器有理由选择索引。
+    // Insert enough unrelated rows to give the planner a reason to choose the index.
     for (let i = 0; i < 200; i += 1) {
       await inspector.query(
         `INSERT INTO transaction_data.provider_quota_daily (provider_id, chain_id, day, used)

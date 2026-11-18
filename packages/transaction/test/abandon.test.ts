@@ -1,16 +1,16 @@
 /**
- * TransactionEngine.abandon 契约测试（ADR-037 方案 A）。
+ * TransactionEngine.abandon contract test (ADR-037, option A).
  *
- * 权威来源：`docs/adr/ADR-037-abandoned-built-transaction-reclaim.md`。
+ * Authoritative source: `docs/adr/ADR-037-abandoned-built-transaction-reclaim.md`.
  *
- * 最重要的负对照：**`signed` 及以上永不可作废**——否则会把已签名/已广播交易的 nonce
- * 回收掉，破坏 ADR-018/019 的资金安全约束。
+ * The most important negative control: **`signed` and above can never be voided** — otherwise the nonce of a signed/broadcast transaction would be
+ * reclaimed, breaking the funds-safety constraints of ADR-018/019.
  */
 import { describe, expect, it } from 'vitest';
 import type { TransitionTransactionInput } from '../src/index.js';
 import { harness, REQUEST, REQUEST_ID } from './support/engine-fakes.js';
 
-describe('TransactionEngine.abandon（ADR-037 方案 A）', () => {
+describe('TransactionEngine.abandon (ADR-037, option A)', () => {
   it('B37: a concurrent signer winning after read must not lose its nonce', async () => {
     const h = harness();
     const built = await h.engine.build({ request: REQUEST });
@@ -53,7 +53,7 @@ describe('TransactionEngine.abandon（ADR-037 方案 A）', () => {
     expect(operations).toEqual(['CAS', 'release']);
   });
 
-  it('作废 built：先转终态 abandoned，再安全释放租约', async () => {
+  it('voiding built: first transition to terminal abandoned, then safely release the lease', async () => {
     const h = harness();
     const built = await h.engine.build({ request: REQUEST, requestId: REQUEST_ID });
     expect(built.status).toBe('built');
@@ -66,16 +66,16 @@ describe('TransactionEngine.abandon（ADR-037 方案 A）', () => {
     expect(result.status).toBe('abandoned');
     expect(result.leaseReleased).toBe(true);
     expect(result.nonce).toBe('42');
-    // 释放必须携带 transactionId（ADR-030 的所有权证明）。
+    // The release must carry the transactionId (ADR-030's proof of ownership).
     expect(h.nonce.releaseCalls).toEqual([
       expect.objectContaining({ nonce: '42', transactionId: built.transactionId }),
     ]);
-    // 记录确实是终态。
+    // The record is genuinely terminal.
     const record = await h.transactions.get(built.transactionId);
     expect(record?.status).toBe('abandoned');
   });
 
-  it('作废 simulated：同样可作废（两者都是"未签名"）', async () => {
+  it('voiding simulated: equally voidable (both are "unsigned")', async () => {
     const h = harness();
     h.chain.allowSimulate = true;
     const built = await h.engine.build({ request: REQUEST });
@@ -90,7 +90,7 @@ describe('TransactionEngine.abandon（ADR-037 方案 A）', () => {
     expect(result.leaseReleased).toBe(true);
   });
 
-  it('幂等：已 abandoned 再调返回 200，且不重复释放', async () => {
+  it('idempotent: calling again after abandoned returns 200, without releasing twice', async () => {
     const h = harness();
     const built = await h.engine.build({ request: REQUEST });
     await h.engine.abandon({ transactionId: built.transactionId });
@@ -103,10 +103,10 @@ describe('TransactionEngine.abandon（ADR-037 方案 A）', () => {
     expect(h.nonce.releaseCalls).toHaveLength(releasesAfterFirst);
   });
 
-  it('★ 负对照：已 signed 的交易**不可作废**（绝不回收已签名 nonce）', async () => {
+  it('★ negative control: a signed transaction **cannot be voided** (never reclaim a signed nonce)', async () => {
     const h = harness();
     const built = await h.engine.build({ request: REQUEST });
-    // 手工把记录推到 signed（走状态机允许的边），模拟"调用方已经签了名"。
+    // Manually push the record to signed (via an allowed state-machine edge), simulating "the caller already signed".
     const record = (await h.transactions.get(built.transactionId))!;
     await h.transactions.transition({
       transactionId: record.transactionId,
@@ -120,13 +120,13 @@ describe('TransactionEngine.abandon（ADR-037 方案 A）', () => {
       h.engine.abandon({ transactionId: built.transactionId }),
     ).rejects.toMatchObject({ code: 'DFR_TRANSACTION_REJECTED' });
 
-    // 关键：**一次释放都没有发生**。
+    // Key point: **not a single release happened**.
     expect(h.nonce.releaseCalls).toEqual([]);
-    // 状态仍是 signed，没有被改成 abandoned。
+    // The state is still signed; it was not changed to abandoned.
     expect((await h.transactions.get(built.transactionId))?.status).toBe('signed');
   });
 
-  it('AUTH-03：受限链 API Key 不能按交易 ID 作废另一条链的记录', async () => {
+  it('AUTH-03: a restricted-chain API key cannot void another chain's record by transaction ID', async () => {
     const h = harness();
     const built = await h.engine.build({ request: REQUEST, projectId: 'project-A' });
     await expect(h.engine.abandon({
@@ -138,7 +138,7 @@ describe('TransactionEngine.abandon（ADR-037 方案 A）', () => {
     expect((await h.transactions.get(built.transactionId))?.status).toBe('built');
   });
 
-  it('AUTH-03：不属于请求项目的交易，即使链已授权也不得作废', async () => {
+  it('AUTH-03: a transaction outside the requesting project cannot be voided even when the chain is authorized', async () => {
     const h = harness();
     const built = await h.engine.build({ request: REQUEST, projectId: 'project-A' });
     await expect(h.engine.abandon({
@@ -150,7 +150,7 @@ describe('TransactionEngine.abandon（ADR-037 方案 A）', () => {
     expect((await h.transactions.get(built.transactionId))?.status).toBe('built');
   });
 
-  it('AUTH-03：在已授权链与项目内，仍允许安全作废，并保持幂等', async () => {
+  it('AUTH-03: voiding is still allowed safely within an authorized chain and project, staying idempotent', async () => {
     const h = harness();
     const built = await h.engine.build({ request: REQUEST, projectId: 'project-A' });
     const allowed = {
@@ -164,7 +164,7 @@ describe('TransactionEngine.abandon（ADR-037 方案 A）', () => {
     expect(h.nonce.releaseCalls).toHaveLength(releases);
   });
 
-  it('AUTH-03：已作废交易也不向未授权 Key 暴露幂等响应', async () => {
+  it('AUTH-03: a voided transaction does not expose its idempotent response to an unauthorized key', async () => {
     const h = harness();
     const built = await h.engine.build({ request: REQUEST, projectId: 'project-A' });
     await h.engine.abandon({ transactionId: built.transactionId });
@@ -175,14 +175,14 @@ describe('TransactionEngine.abandon（ADR-037 方案 A）', () => {
     })).rejects.toMatchObject({ code: 'DFR_PROJECT_SCOPE_DENIED' });
   });
 
-  it('未知交易 → DFR_TRANSACTION_NOT_FOUND', async () => {
+  it('unknown transaction → DFR_TRANSACTION_NOT_FOUND', async () => {
     const h = harness();
     await expect(
       h.engine.abandon({ transactionId: 'txn_nope' as never }),
     ).rejects.toMatchObject({ code: 'DFR_TRANSACTION_NOT_FOUND' });
   });
 
-  it('释放被拒（理论上不可达）时仍推进终态：不留"永远 built"', async () => {
+  it('when the release is refused (theoretically unreachable), still advance to the terminal state: no "forever built"', async () => {
     const h = harness();
     const built = await h.engine.build({ request: REQUEST });
     h.nonce.releaseForbidden = true;
@@ -190,7 +190,7 @@ describe('TransactionEngine.abandon（ADR-037 方案 A）', () => {
     const result = await h.engine.abandon({ transactionId: built.transactionId });
 
     expect(result.leaseReleased).toBe(false);
-    // 记录仍然进入终态——否则会留下一个永远无法被巡检处理的 built 记录。
+    // The record still enters the terminal state — otherwise a built record would remain that no sweep can ever handle.
     expect((await h.transactions.get(built.transactionId))?.status).toBe('abandoned');
   });
 });

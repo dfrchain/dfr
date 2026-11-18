@@ -1,7 +1,7 @@
 /**
- * `POST /v1/logs` 端点测试（ADR-034）。
+ * `POST /v1/logs` endpoint test (ADR-034).
  *
- * 用真实 createGatewayServer + 真实 Core + EVM Adapter + stub provider 驱动完整 HTTP 路径。
+ * Drives the full HTTP path with the real createGatewayServer + real Core + EVM Adapter + stub provider.
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import type { AddressInfo } from 'node:net';
@@ -71,8 +71,8 @@ async function url(server: Server): Promise<string> {
   return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 }
 
-describe('POST /v1/logs（ADR-034）', () => {
-  it('返回日志列表（映射为 ChainLog）', async () => {
+describe('POST /v1/logs (ADR-034)', () => {
+  it('returns the log list (mapped to ChainLog)', async () => {
     const server = makeServer([
       { address: '0x1111111111111111111111111111111111111111', topics: ['0xaa'], data: '0x', blockNumber: '0x64', logIndex: '0x1', transactionHash: '0x' + 'ab'.repeat(32) },
     ]);
@@ -88,7 +88,7 @@ describe('POST /v1/logs（ADR-034）', () => {
     expect(body.requestId).toMatch(/^req_/);
   });
 
-  it('超区间 → 400 DFR_VALIDATION_FAILED（不静默截断）', async () => {
+  it('over-range → 400 DFR_VALIDATION_FAILED (no silent truncation)', async () => {
     const server = makeServer([]);
     const base = await url(server);
     const res = await fetch(`${base}/v1/logs?chain=${CHAIN}`, {
@@ -96,13 +96,13 @@ describe('POST /v1/logs（ADR-034）', () => {
       headers: { 'x-dfr-key': KEY, 'content-type': 'application/json' },
       body: JSON.stringify({ fromBlock: '1', toBlock: '5000' }),
     });
-    // error-spec：DFR_VALIDATION_FAILED = 400（客户端请求不合法）。
+    // error-spec: DFR_VALIDATION_FAILED = 400 (illegal client request).
     expect(res.status).toBe(400);
     const body = (await res.json()) as { dfr_code: string };
     expect(body.dfr_code).toBe('DFR_VALIDATION_FAILED');
   });
 
-  it('缺 fromBlock/toBlock → 400 校验失败', async () => {
+  it('missing fromBlock/toBlock → 400 validation failure', async () => {
     const server = makeServer([]);
     const base = await url(server);
     for (const payload of [{}, { fromBlock: '1' }, { fromBlock: 'abc', toBlock: '2' }]) {
@@ -115,10 +115,10 @@ describe('POST /v1/logs（ADR-034）', () => {
     }
   });
 
-  it('未声明该能力的链 → 422 不支持', async () => {
+  it('a chain that does not declare the capability → 422 unsupported', async () => {
     const server = makeServer([]);
     const base = await url(server);
-    // ethereum-sepolia 声明了写能力但未声明 contract.logs → 能力闸门拒绝。
+    // ethereum-sepolia declares write capability but not contract.logs → the capability gate rejects it.
     const res = await fetch(`${base}/v1/logs?chain=ethereum-sepolia`, {
       method: 'POST',
       headers: { 'x-dfr-key': KEY, 'content-type': 'application/json' },
@@ -130,7 +130,7 @@ describe('POST /v1/logs（ADR-034）', () => {
     });
   });
 
-  it('未鉴权 → 401', async () => {
+  it('unauthenticated → 401', async () => {
     const server = makeServer([]);
     const base = await url(server);
     const res = await fetch(`${base}/v1/logs?chain=${CHAIN}`, {

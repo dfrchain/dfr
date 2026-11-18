@@ -1,8 +1,8 @@
 /**
- * 引擎的 Solana build 路径（DFR-M3-B03，ADR-033）。
+ * The engine's Solana build path (DFR-M3-B03, ADR-033).
  *
- * 证明"同一套引擎状态机服务两链"：这里**不**改 EVM 的任何断言，只用一组
- * Solana 形态的 chain port + 一个最小 SequencingStore，跑同一套 `engine.build`。
+ * Proving "the same engine state machine serves both chains": here we change **nothing** about the EVM assertions, only running the same `engine.build` with a
+ * Solana-shaped chain port + one minimal SequencingStore.
  */
 import { describe, expect, it } from 'vitest';
 import type { AccountRef, ChainId, DecimalUint, SequencingToken } from '@dfr/types';
@@ -25,7 +25,7 @@ const to: AccountRef = { chain, address: 'So111111111111111111111111111111111111
 const BLOCKHASH = '1'.repeat(48) + '2345'; // secret-scan:allow public-blockhash-placeholder
 const LAST_VALID = 495_317_734;
 
-/** 最小内存 SequencingStore（与 stores.test.ts 的实现同构，供引擎路径使用）。 */
+/** A minimal in-memory SequencingStore (isomorphic to the implementation in stores.test.ts, for the engine path). */
 function inMemorySequencing(): SequencingStore {
   const rows = new Map<string, SequencingLease>();
   return {
@@ -81,7 +81,7 @@ function inMemorySequencing(): SequencingStore {
 
 function solanaPort(overrides: Partial<TransactionChainPort> = {}): TransactionChainPort {
   return {
-    // 关键：Solana 端口**没有** getPendingNonce，只有 getSequencingToken + 注入方法。
+    // Key point: the Solana port has **no** getPendingNonce, only getSequencingToken + the injection method.
     getSequencingToken: async (): Promise<SequencingToken> => ({
       kind: 'blockhash',
       value: BLOCKHASH,
@@ -92,14 +92,14 @@ function solanaPort(overrides: Partial<TransactionChainPort> = {}): TransactionC
       return { ...req, recentBlockhash: token.value };
     },
     build: async ({ request }) => {
-      // 断言引擎把 blockhash 注入了 build 请求（否则租约与载荷会不一致）。
+      // Assert that the engine injected the blockhash into the build request (otherwise the lease and the payload would disagree).
       if (request.recentBlockhash !== BLOCKHASH) {
-        throw new Error(`build 未收到注入的 blockhash：${String(request.recentBlockhash)}`);
+        throw new Error(`build did not receive the injected blockhash: ${String(request.recentBlockhash)}`);
       }
       return {
         schemaVersion: '1',
         chain: request.chain,
-        payload: 'AQID', // 占位 base64
+        payload: 'AQID', // placeholder base64
         meta: { encoding: 'base64', recentBlockhash: request.recentBlockhash },
       };
     },
@@ -128,8 +128,8 @@ const REQUEST = {
   value: { asset: { kind: 'native' as const, chain }, amount: '1' },
 };
 
-describe('引擎 Solana build 路径（M3-B03 / ADR-033）', () => {
-  it('无 getPendingNonce → 走 sequencing 路径，blockhash 落租约并注入 build', async () => {
+describe('the engine Solana build path (M3-B03 / ADR-033)', () => {
+  it('without getPendingNonce → take the sequencing path; the blockhash is leased and injected into build', async () => {
     const { engine: eng, stores } = engine(solanaPort(), inMemorySequencing());
     const result = await eng.build({ request: REQUEST as never, idempotencyKey: 'sol-1' });
 
@@ -140,7 +140,7 @@ describe('引擎 Solana build 路径（M3-B03 / ADR-033）', () => {
       value: BLOCKHASH,
       lastValidBlockHeight: String(LAST_VALID),
     });
-    // 记录里带 sequencingRef，且没有 nonce。
+    // The record carries sequencingRef and no nonce.
     const record = await stores.transaction.get('txn_sol_build' as never);
     expect(record?.sequencingRef).toEqual({
       kind: 'blockhash',
@@ -151,14 +151,14 @@ describe('引擎 Solana build 路径（M3-B03 / ADR-033）', () => {
     expect(record?.unsignedPayload).toBe('AQID');
   });
 
-  it('装配了 sequencing 才允许 blockhash 路径；缺失 → fail-closed（不静默走 nonce）', async () => {
-    const { engine: eng } = engine(solanaPort()); // 未传 sequencing store
+  it('the blockhash path is only allowed with sequencing wired up; missing → fail-closed (never silently take the nonce path)', async () => {
+    const { engine: eng } = engine(solanaPort()); // no sequencing store passed
     await expect(eng.build({ request: REQUEST as never })).rejects.toMatchObject({
       code: 'DFR_CONFIGURATION_ERROR',
     });
   });
 
-  it('build 失败时释放 blockhash 租约（不留下永久占用的排序前提）', async () => {
+  it('on a build failure, release the blockhash lease (leave no permanently occupied ordering precondition)', async () => {
     const store = inMemorySequencing();
     const released: string[] = [];
     const original = store.releaseIfSafe.bind(store);
@@ -274,10 +274,10 @@ describe('引擎 Solana build 路径（M3-B03 / ADR-033）', () => {
     expect((await stores.transaction.get(built.transactionId))?.status).toBe('signed');
   });
 
-  it('EVM 路径不受影响：有 getPendingNonce 时仍走 NonceStore', async () => {
+  it('the EVM path is unaffected: with getPendingNonce present, still take the NonceStore path', async () => {
     const { engine: eng, stores } = engine({
       getPendingNonce: async () => '7' as never,
-      // 同时提供 sequencing 端口方法，证明分派依据是 **token.kind** 而不是方法存在性。
+      // Providing the sequencing port methods as well, proving the dispatch is by **token.kind**, not by method presence.
       getSequencingToken: async () => ({ kind: 'nonce', value: '7' as never }),
       withSequencingToken: (req, token) => ({ ...req, nonce: token.value as never }),
       build: async ({ request }) => ({

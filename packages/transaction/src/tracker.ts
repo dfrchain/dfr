@@ -99,13 +99,13 @@ export class ConfirmationTracker {
   }
 
   /**
-   * 轮询到达目标或超时；退避从 1s 起、最多 15s。
+    * Poll until the target is reached or the timeout; backoff starts at 1s, max 15s.
    *
-   * 观测抛 `DFR_TRANSACTION_NOT_FOUND` 视为「链上尚不可见」而非失败
-   * （F-2）：刚广播的交易在滞后 RPC 节点上短暂查无此笔是常态，按一次
-   * 未达目标的轮询继续至截止，与后台 `runBackground` 的容错语义一致；
-   * 截止时仍不可见则返回 reached=false（observed='unknown'），由调用方
-   * 走超时合成与后台续跟。其余任何错误立即上抛。
+    * An observation throwing `DFR_TRANSACTION_NOT_FOUND` is treated as "not yet visible on-chain", not a failure
+    * (F-2): a just-broadcast transaction briefly invisible on a lagging RPC node is normal; continue polling as one
+    * not-yet-reached round until the deadline, consistent with the background `runBackground` fault-tolerance semantics;
+    * if it is still invisible at the deadline, return reached=false (observed='unknown'), leaving the caller
+    * to synthesize the timeout and continue following in the background. Any other error is rethrown immediately.
    */
   async trackUntil(input: {
     chain: ChainId;
@@ -127,7 +127,7 @@ export class ConfirmationTracker {
         lastResult = await this.track(input);
       } catch (err) {
         if (!isDfrError(err) || err.code !== 'DFR_TRANSACTION_NOT_FOUND') throw err;
-        // 尚不可见：保留上一次真实观测（若有），按未达目标继续轮询。
+         // Not yet visible: keep the last real observation (if any) and keep polling as not-yet-reached.
       }
       if (lastResult.reached || lastResult.owner === false || input.signal?.aborted === true || now() >= deadline) return lastResult;
       await sleep(Math.min(delay, Math.max(0, deadline - now())));
@@ -135,7 +135,7 @@ export class ConfirmationTracker {
     }
   }
 
-  /** 请求等待超时后维持单进程后台扫描；每次观测仍经跨进程 lease 串行化。 */
+   /** After a request wait times out, keep a single-process background scan; each observation is still serialized across processes via the lease. */
   continueInBackground(input: { chain: ChainId; txHash: string; required?: FinalityLevel }): void {
     const key = `${input.chain}:${input.txHash}`;
     if (this.background.has(key)) return;
@@ -163,7 +163,7 @@ export class ConfirmationTracker {
         const result = await this.track({ ...input, signal });
         if (result.reached) return;
       } catch {
-        // 后台失败只会延后下一次只读观测；永不广播，也不吞掉任何交易状态转换。
+         // A background failure only delays the next read-only observation; it never broadcasts and never swallows any transaction state transition.
       }
       if (signal.aborted) return;
       await sleep(delay);
@@ -172,8 +172,8 @@ export class ConfirmationTracker {
   }
 
   /**
-   * 将链上确认事实映射到已经定义的生命周期事件；每一步仍使用 Store CAS。
-   * 不存在可达路径时保持记录原状，不发明状态边。
+    * Map on-chain confirmation facts onto the already-defined lifecycle events; each step still uses Store CAS.
+    * When no reachable path exists, keep the record as-is; do not invent a state edge.
    */
   private async persistObservedLifecycle(
     chain: ChainId,
@@ -247,8 +247,8 @@ export interface ReorgReconcilerDeps {
 }
 
 /**
- * 检查 included 记录锚定区块是否仍为 canonical。
- * 仅使用既有 `included → pending` 状态边；链 RPC、Provider 选择与事件传输均由注入端口负责。
+ * Check whether the anchor block of an included record is still canonical.
+ * Uses only the existing `included → pending` state edge; chain RPC, Provider selection, and event transport are all the injected port's job.
  */
 export class ReorgReconciler {
   private cursor = 0n;
@@ -279,7 +279,7 @@ export class ReorgReconciler {
     const blockRef = record.blockRef;
     const blockHash = record.canonicalBlockHash;
     const txHash = record.txHash ?? record.expectedHash;
-    // 历史快照没有成对的高度/hash 时无法安全比较，留给后续观测刷新。
+     // A historical snapshot without a paired height/hash cannot be compared safely; leave it for a later observation to refresh.
     if (blockRef === undefined || blockHash === undefined || txHash === undefined) return false;
 
     const ownerToken = this.deps.ownerToken();

@@ -1,4 +1,4 @@
-/** Gateway 进程的唯一外层 composition root（ADR-017）。 */
+/** The Gateway process's single outer composition root (ADR-017). */
 import { createHash, randomUUID } from 'node:crypto';
 import { isIP } from 'node:net';
 import { pathToFileURL } from 'node:url';
@@ -34,9 +34,9 @@ import { createSpanEmitters } from './span-emitter.js';
 
 export interface GatewayPersistence {
   readonly stores: TransactionStores;
-  /** E5：Provider 日配额的持久预占端口；不可用时由 Provider 路径 fail-closed。 */
+  /** E5: durable pre-claim port for the Provider daily quota; when unavailable, the Provider path fails closed. */
   readonly providerQuotaStore?: ProviderQuotaStore;
-  /** 依赖就绪探针（DFR-M1-E02）：供 `/readyz` 判断事务存储是否仍可达。 */
+  /** Dependency readiness probe (DFR-M1-E02): lets `/readyz` judge whether the transaction store is still reachable. */
   healthCheck(): Promise<void>;
   close(): Promise<void>;
 }
@@ -50,14 +50,14 @@ export interface GatewayRuntime {
 export type GatewayPersistenceFactory = (databaseUrl: string) => Promise<GatewayPersistence>;
 
 /**
- * 交易状态 → `tx.*` 事件类型（transaction-lifecycle 第 6 章的映射表）。
+ * Transaction state → `tx.*` event type (the mapping table in transaction-lifecycle chapter 6).
  *
- * 为什么放在 composition root：`@dfr/transaction` 不依赖 `@dfr/events`
- * （模块边界只允许叶子工具包），事件类型属于**对外的**事件契约，
- * 因此由外层把"状态事实"翻译成"事件类型"。
+ * Why it lives in the composition root: `@dfr/transaction` does not depend on `@dfr/events`
+ * (module boundaries only allow leaf utility packages), and event types belong to the **outward-facing** event contract,
+ * so the outer layer translates "state facts" into "event types".
  *
- * `unknown` 没有对应事件（规范的事件表里没有 `tx.unknown`）：它只表示
- * "广播结果不确定"，不是可对外承诺的状态变化。
+ * `unknown` has no corresponding event (the spec's event table has no `tx.unknown`): it only means
+ * "the broadcast outcome is uncertain", not a state change that can be promised externally.
  */
 export function statusToEventType(status: string): EventType | undefined {
   switch (status) {
@@ -127,7 +127,7 @@ export function gatewayApiKeyScopeFromEnv(
   };
 }
 
-/** 可信代理地址列表（ADR-029）：逗号分隔；为空表示不信任任何转发头。 */
+/** Trusted-proxy address list (ADR-029): comma-separated; empty means no forwarded headers are trusted. */
 export function trustedProxiesFromEnv(env: NodeJS.ProcessEnv): readonly string[] {
   const raw = env['DFR_TRUSTED_PROXIES'];
   if (raw === undefined || raw.trim() === '') return [];
@@ -142,7 +142,7 @@ const defaultPersistenceFactory: GatewayPersistenceFactory = async (databaseUrl)
   const runtime = await createPostgresTransactionRuntime({
     databaseUrl,
     onPoolError: () => {
-      // 固定文案：pg 的原始错误可能包含连接串；这里只报告"空闲连接丢失"。
+      // Fixed message: pg's raw error may contain a connection string; only report "idle connection lost" here.
       process.stderr.write(
         `${JSON.stringify({ level: 'error', msg: 'transaction database connection lost' })}\n`,
       );
@@ -156,7 +156,7 @@ const defaultPersistenceFactory: GatewayPersistenceFactory = async (databaseUrl)
   };
 };
 
-/** 开放写 scope 前完成 DB readiness，错误不传播驱动异常或 DSN。 */
+/** Complete DB readiness before opening the write scope; errors do not propagate driver exceptions or the DSN. */
 export async function resolveGatewayRuntime(
   env: NodeJS.ProcessEnv,
   createPersistence: GatewayPersistenceFactory = defaultPersistenceFactory,
@@ -165,12 +165,12 @@ export async function resolveGatewayRuntime(
   if (writeFlag !== undefined && writeFlag !== 'true' && writeFlag !== 'false') {
     throw new GatewayStartupError('DFR_M1_ALLOW_WRITE must be exactly true or false');
   }
-  // ADR-038：运行时里程碑由显式部署开关决定，缺省时保持历史行为（写开关决定 M0/M1）。
-  // 它只影响 Core 加载哪些链，不改变写权限；写权限仍只由 DFR_M1_ALLOW_WRITE + Key scope 决定。
+  // ADR-038: the runtime milestone is decided by an explicit deployment switch; when unset, historical behavior is kept (the write switch decides M0/M1).
+  // It only affects which chains Core loads, not write permissions; write permissions are still decided only by DFR_M1_ALLOW_WRITE + Key scope.
   const requestedMilestone = parseDeployMilestone(env);
   const writeEnabled = writeFlag === 'true';
   if (!writeEnabled) {
-    // fail-closed：未开放写路径时不允许声明需要交易引擎的里程碑。
+    // fail-closed: a milestone requiring the transaction engine may not be declared when the write path is not open.
     if (requestedMilestone !== undefined && milestoneRank(requestedMilestone) > milestoneRank('M0')) {
       throw new GatewayStartupError(
         'DFR_DEPLOY_MILESTONE above M0 requires DFR_M1_ALLOW_WRITE=true',
@@ -201,7 +201,7 @@ function milestoneRank(milestone: Milestone): number {
   return MILESTONE_ORDER.indexOf(milestone);
 }
 
-/** 解析 `DFR_DEPLOY_MILESTONE`（ADR-038）：非法值 fail-closed，不静默降级。 */
+/** Parse `DFR_DEPLOY_MILESTONE` (ADR-038): illegal values fail closed, never silently degrade. */
 function parseDeployMilestone(env: NodeJS.ProcessEnv): Milestone | undefined {
   const raw = optionalEnv(env, 'DFR_DEPLOY_MILESTONE');
   if (raw === undefined) return undefined;
@@ -231,14 +231,14 @@ function requireEnv(env: NodeJS.ProcessEnv, name: string): string {
   return value;
 }
 
-/** keyId 必须是恰好 8 位 [A-Za-z0-9]（与 `auth.ts` 的 Key 解析正则一致）。 */
+/** keyId must be exactly 8 [A-Za-z0-9] characters (matching the Key-parsing regex in `auth.ts`). */
 function assertApiKeyId(value: string, name: string): void {
   if (!/^[A-Za-z0-9]{8}$/u.test(value)) {
     throw new GatewayStartupError(`${name} must be exactly 8 alphanumeric characters`);
   }
 }
 
-/** hash 必须是无前缀的 64 位 hex，与 `hashSecret` 的输出形状一致。 */
+/** hash must be 64 hex characters with no prefix, matching the output shape of `hashSecret`. */
 function assertApiKeyHash(value: string, name: string): void {
   if (!/^[0-9a-fA-F]{64}$/u.test(value)) {
     throw new GatewayStartupError(`${name} must be 64 hexadecimal characters without 0x prefix`);
@@ -246,10 +246,10 @@ function assertApiKeyHash(value: string, name: string): void {
 }
 
 /**
- * 读取布尔型环境变量（只接受精确的 `true` / `false`，fail-closed）。
+ * Read a boolean environment variable (accepts only exact `true` / `false`; fail-closed).
  *
- * 与 `DFR_M1_ALLOW_WRITE` 同一约定：拼错的值不得被当作"未设置"而静默降级——
- * 那会让运维以为某个开关生效了而它其实没有。
+ * Same convention as `DFR_M1_ALLOW_WRITE`: a misspelled value must not be treated as "unset" and silently degraded —
+ * that would make operators think a switch is in effect when it is not.
  */
 function optionalBoolEnv(env: NodeJS.ProcessEnv, name: string, fallback: boolean): boolean {
   const raw = optionalEnv(env, name);
@@ -266,10 +266,10 @@ function optionalEnv(env: NodeJS.ProcessEnv, name: string): string | undefined {
 }
 
 /**
- * 读取整数型环境变量（DFR-M1-E02/D04 调度）。
+ * Read an integer environment variable (DFR-M1-E02/D04 scheduling).
  *
- * fail-closed：非整数或越界直接抛 `GatewayStartupError`，不静默取默认值——
- * 一个写错的巡检间隔如果被静默吞掉，运维会以为巡检在跑而它其实用的是别的值。
+ * fail-closed: a non-integer or out-of-range value throws `GatewayStartupError` directly instead of silently taking a default —
+ * if a mistyped sweep interval were silently swallowed, operators would think the sweep is running while it actually uses a different value.
  */
 function optionalIntEnv(
   env: NodeJS.ProcessEnv,
@@ -293,7 +293,7 @@ export async function startGateway(
   createPersistence: GatewayPersistenceFactory = defaultPersistenceFactory,
 ): Promise<{
   close(): Promise<void>;
-  /** 实际绑定端口；`DFR_GATEWAY_PORT=0` 时为内核分配的临时端口，供健康检查与测试使用。 */
+  /** Actually bound port; when `DFR_GATEWAY_PORT=0` it is the kernel-assigned ephemeral port, for health checks and tests. */
   port: number;
 }> {
   const runtime = await resolveGatewayRuntime(env, createPersistence);
@@ -303,41 +303,41 @@ export async function startGateway(
     const registry = ChainRegistry.load(
       registryFile !== undefined ? { file: registryFile, env } : { env },
     );
-    // E6（M5 生产加固）：把四层观测记录导出为**真实 span**（独立 spanId + 父引用）。
-    // opt-in：默认关闭即行为不变（既有部署没有 Trace 后端时不该让 stdout 翻倍）。
+    // E6 (M5 production hardening): export the four layers of observability records as **real spans** (independent spanIds + parent references).
+    // opt-in: off by default means behavior is unchanged (existing deployments without a Trace backend should not see stdout double).
     const spanEmitters = optionalBoolEnv(env, 'DFR_OTLP_SPANS', false) ? createSpanEmitters() : undefined;
     core = new DfrCore({
       registry,
       adapters: [
         { id: 'evm', version: '0.1.0', create: (chain) => new EvmAdapter({ chain }) },
-        // M2-A03：Solana Adapter（只读：account.balance / block.read）。
-        // 注册表未声明的能力由启动校验（registry ⊆ adapter）与 Core 能力闸门共同保证 fail-closed。
+        // M2-A03: Solana Adapter (read-only: account.balance / block.read).
+        // Capabilities the registry does not declare are guaranteed fail-closed jointly by startup validation (registry ⊆ adapter) and Core's capability gate.
         { id: 'solana', version: '0.1.0', create: (chain) => new SolanaAdapter({ chain }) },
       ],
       milestone: runtime.milestone,
-      // Provider 调用结构化日志（observability-spec 第 3/7 节）。
-      // 字段经 provider-call-log.ts 的白名单过滤——记录里本就不含端点/凭证，
-      // 白名单是为了防止未来新增字段静默入日志。
+      // Provider call structured logging (observability-spec sections 3/7).
+      // Fields pass through provider-call-log.ts's allowlist filter — the records never contained endpoints/credentials anyway,
+      // and the allowlist prevents future fields from silently entering logs.
       onProviderCall: (record) => {
-        // 一次记录喂两个消费者：脱敏日志 + §5.4 计数器。
+        // One record feeds two consumers: the redacted log + the §5.4 counters.
         createProviderCallLogger((line) => process.stdout.write(line))(record);
         providerMetrics.recordCall(record);
         spanEmitters?.providerRequest?.(record);
       },
-      // Adapter 调用日志（observability-spec 第 4 章 span 层级 adapter.call）。
+      // Adapter call logging (observability-spec chapter 4 span layer adapter.call).
       onAdapterCall: (record) => {
         createAdapterCallLogger((line) => process.stdout.write(line))(record);
         adapterMetrics.recordCall(record);
         spanEmitters?.adapterCall?.(record);
       },
       onCoreOperation: (record) => {
-        // 喂两个消费者：§4 的 core.operation 日志 + §5.2 的 Core 指标。
+        // Feeds two consumers: the §4 core.operation log + the §5.2 Core metrics.
         createCoreOperationLogger((line) => process.stdout.write(line))(record);
         coreMetrics.recordOperation(record);
         spanEmitters?.coreOperation?.(record);
       },
       onCapabilityUnsupported: (input) => {
-        // 两种来源映射到两个不同计数器（见 Core 的 onCapabilityUnsupported 文档）。
+        // The two sources map to two different counters (see Core's onCapabilityUnsupported docs).
         if (input.kind === 'method_missing') adapterMetrics.recordRegistryMismatch(input.chain);
         else coreMetrics.recordCapabilityUnsupported({ chain: input.chain, capability: input.capability });
       },
@@ -351,16 +351,16 @@ export async function startGateway(
 
     const previousHash = optionalEnv(env, 'DFR_M0_API_KEY_HASH_PREVIOUS');
     const previousKeyId = optionalEnv(env, 'DFR_M0_API_KEY_ID_PREVIOUS');
-    // 配置参考承诺“成对变量只配置一半 → 配置错误”。此前缺这条校验：
-    // 运维以为轮换窗口已生效，实际只有 current Key 可用，旧客户端会直接 401。
-    // 错误只包含变量名，不包含任何 Key 值。
+    // The configuration reference promises "configuring only half of a paired variable → configuration error". This check was missing before:
+    // operators thought the rotation window was in effect, while only the current Key actually worked and old clients got a straight 401.
+    // The error contains only variable names, no Key values.
     if ((previousHash === undefined) !== (previousKeyId === undefined)) {
       throw new GatewayStartupError(
         'DFR_M0_API_KEY_ID_PREVIOUS and DFR_M0_API_KEY_HASH_PREVIOUS must be configured together',
       );
     }
-    // 配置参考承诺：keyId / hash 格式非法 → 配置错误。此前缺失该校验，
-    // 运营方误填长度、非 hex 或 0x 前缀也能启动，直到请求 401 才发现。
+    // The configuration reference promises: an illegal keyId / hash format → configuration error. This check was missing before,
+    // so an operator could mistype a length, a non-hex value, or a 0x prefix and still start, only discovering it when requests got 401.
     const currentKeyId = requireEnv(env, 'DFR_M0_API_KEY_ID');
     const currentHash = requireEnv(env, 'DFR_M0_API_KEY_HASH');
     assertApiKeyId(currentKeyId, 'DFR_M0_API_KEY_ID');
@@ -378,32 +378,32 @@ export async function startGateway(
       projectId: env['DFR_M0_PROJECT_ID'] ?? 'default',
       scope: gatewayApiKeyScopeFromEnv(env, registry, runtime.allowWrite),
     };
-    // M1 写路径：只有部署开关打开且持久化就绪时才装配交易引擎（fail-closed）。
-    // 引擎的链访问经 `TransactionChainPort` 注入（AGENTS.md 第 3 节依赖方向）。
+    // M1 write path: the transaction engine is only assembled when the deployment switch is on and persistence is ready (fail-closed).
+    // The engine's chain access is injected via `TransactionChainPort` (AGENTS.md section 3 dependency direction).
     const persistence = runtime.persistence;
-    // 进程内低基数交易指标：既是 `/metrics` 的数据源，也是引擎阶段/租约/reorg 的汇点。
-    // 进程重启即重置——M1 不接受把指标当作持久事实（持久事实是交易记录与事件）。
+    // In-process low-cardinality transaction metrics: both the `/metrics` data source and the sink for engine stages / leases / reorgs.
+    // They reset on process restart — M1 does not accept metrics as durable facts (durable facts are transaction records and events).
     const metrics = new TransactionMetrics();
-    // Store 调用观测（observability-spec 第 4 章 store.read / store.write）。
-    // 同一出口喂日志与 span（与 Core/Adapter/Provider 三层同构）。
+    // Store call observability (observability-spec chapter 4 store.read / store.write).
+    // The same outlet feeds logs and spans (isomorphic to the Core/Adapter/Provider layers).
     const storeCallLogger = createStoreCallLogger((line) => process.stdout.write(line));
     const onStoreCall: (record: Parameters<typeof storeCallLogger>[0]) => void = (record) => {
       storeCallLogger(record);
       spanEmitters?.storeCall?.(record);
     };
-    // Gateway HTTP 指标（§5.1）：请求量/延迟/鉴权失败/限流/幂等/在途。
+    // Gateway HTTP metrics (§5.1): request volume / latency / auth failures / rate limiting / idempotency / in-flight.
     const gatewayMetrics = new GatewayMetrics();
-    // §5.2 / §5.3 / §5.4：Core / Adapter / Provider 指标。
+    // §5.2 / §5.3 / §5.4: Core / Adapter / Provider metrics.
     const coreMetrics = new CoreMetrics();
     const adapterMetrics = new AdapterMetrics();
     const providerMetrics = new ProviderMetrics();
-    // 网关级幂等（TODO-013）：只在有持久化 Store 时装配。
-    // 无 Store 时不装配 → 广播没有重放保证（显式行为，非静默降级）。
+    // Gateway-level idempotency (TODO-013): only assembled when a durable Store exists.
+    // Not assembled without a Store → broadcast has no replay guarantee (explicit behavior, not silent degradation).
     const idempotencyCoordinator =
       persistence !== undefined
         ? new GatewayIdempotencyCoordinator(persistence.stores.idempotency)
         : undefined;
-    // D04 巡检节奏（可选环境变量，默认 5 分钟 / 单轮 100 条）。
+    // D04 sweep cadence (optional environment variables; defaults 5 minutes / 100 rows per round).
     const reorgIntervalMs = optionalIntEnv(env, 'DFR_REORG_SWEEP_INTERVAL_MS', {
       min: 1_000,
       max: 24 * 60 * 60_000,
@@ -414,9 +414,9 @@ export async function startGateway(
       max: 500,
       fallback: 100,
     });
-    // D03 恢复巡检节奏（可选环境变量，默认 10 分钟）。
-    // `DFR_RECOVERY_BATCH_SIZE` 此前只在 configuration-reference 里被登记为"预留、
-    // 代码未读取"，这里把它真正接上（启动恢复与周期恢复共用同一上限）。
+    // D03 recovery sweep cadence (optional environment variables; default 10 minutes).
+    // `DFR_RECOVERY_BATCH_SIZE` was previously only registered in configuration-reference as "reserved,
+    // not read by code"; here it is actually wired up (startup recovery and periodic recovery share the same cap).
     const recoveryIntervalMs = optionalIntEnv(env, 'DFR_RECOVERY_SWEEP_INTERVAL_MS', {
       min: 1_000,
       max: 24 * 60 * 60_000,
@@ -428,8 +428,8 @@ export async function startGateway(
       fallback: 100,
     });
 
-    // ADR-037 方案 C：built/simulated 多久没推进就自动作废（毫秒）。
-    // 默认 30 分钟；显式设为 0 表示**关闭**该巡检（不是"立即作废"）。
+    // ADR-037 option C: built/simulated records that have not advanced for this long are auto-voided (milliseconds).
+    // Default 30 minutes; explicitly setting 0 **disables** the sweep (not "void immediately").
     const abandonBuiltAfterRaw = optionalIntEnv(env, 'DFR_ABANDON_BUILT_AFTER_MS', {
       min: 0,
       max: 7 * 24 * 60 * 60_000,
@@ -441,7 +441,7 @@ export async function startGateway(
       throw new GatewayStartupError('DFR_ABANDON_BUILT_AFTER_MS must be 0 or 60000..604800000');
     }
     const abandonBuiltAfterMs = abandonBuiltAfterRaw === 0 ? undefined : abandonBuiltAfterRaw;
-    // ADR-023：unknown 静默超时判 dropped，以及 dropped 的有界观测宽限窗。
+    // ADR-023: unknown silently times out as dropped, plus a bounded observation grace window for dropped.
     const dropTimeoutMs = optionalIntEnv(env, 'DFR_DROP_TIMEOUT_MS', {
       min: 60_000,
       max: 86_400_000,
@@ -452,7 +452,7 @@ export async function startGateway(
       max: 604_800_000,
       fallback: 6 * 60 * 60_000,
     });
-    // 就绪主动探测（opt-in，默认关闭）：开启后 /readyz 会当场探一次 Provider。
+    // Readiness active probing (opt-in, off by default): once enabled, /readyz probes a Provider on the spot.
     const readyActiveProbe = optionalBoolEnv(env, 'DFR_READY_ACTIVE_PROBE', false);
     const readyProbeTimeoutMs = optionalIntEnv(env, 'DFR_READY_PROBE_TIMEOUT_MS', {
       min: 1,
@@ -464,8 +464,8 @@ export async function startGateway(
       max: 300_000,
       fallback: 5_000,
     });
-    // 后台巡检（重组/恢复）直接使用 Store 端口，不经引擎的包装；这里单独包一层，
-    // 让它们的 store 调用同样产生观测记录（后台路径没有 request 上下文，记录里不带 request_id）。
+    // Background sweeps (reorg/recovery) use the Store ports directly, not through the engine's wrapper; they are wrapped separately here
+    // so their store calls also produce observability records (background paths have no request context, so records carry no request_id).
     const observedStores =
       persistence !== undefined
         ? {
@@ -490,9 +490,9 @@ export async function startGateway(
           }
         : undefined;
 
-    // 进程内事件总线（M2-C01/C03）。**单一实例**：既是 SSE 订阅的数据源，
-    // 也是交易状态事件（tx.*）与后台巡检（chain.reorg）的发布目标。
-    // cursor 仅本进程有效（ADR-006）。必须在引擎之前构造——引擎的 onTransition 要用它。
+    // In-process event bus (M2-C01/C03). **A single instance**: both the data source for SSE subscriptions
+    // and the publish target for transaction state events (tx.*) and background sweeps (chain.reorg).
+    // Cursors are only valid in this process (ADR-006). It must be constructed before the engine — the engine's onTransition uses it.
     const eventBus = new EventBus();
 
     const transactions =
@@ -502,8 +502,8 @@ export async function startGateway(
               transaction: persistence.stores.transaction,
               idempotency: persistence.stores.idempotency,
               nonce: persistence.stores.nonce,
-              // M3-B03（ADR-033）：Solana 的 blockhash 排序租约。EVM 记录不写这张表；
-              // 引擎按 token.kind 分派，因此这里一并装配即可，不影响 EVM 行为。
+              // M3-B03 (ADR-033): Solana blockhash sequencing leases. EVM records never write this table;
+              // the engine dispatches by token.kind, so assembling it here as well does not affect EVM behavior.
               ...(persistence.stores.sequencing !== undefined
                 ? { sequencing: persistence.stores.sequencing }
                 : {}),
@@ -512,10 +512,10 @@ export async function startGateway(
             chain: createCoreTransactionChainPort(core),
             metrics,
             onStoreCall,
-            // unknown 静默超过该时长且观测为 absent 才判 dropped（ADR-023）。
+            // unknown is only judged dropped after silently exceeding this duration with an absent observation (ADR-023).
             dropTimeoutMs,
-            // 状态事件出口：把已提交的迁移映射为 `tx.*` 并发布到总线。
-            // 映射由 statusToEventType 决定；未知状态静默跳过（宁可少发，不发错类型）。
+            // State-event outlet: map committed transitions to `tx.*` and publish them to the bus.
+            // The mapping is decided by statusToEventType; unknown states are silently skipped (better to send fewer than to send the wrong type).
             onTransition: (record) => {
               const type = statusToEventType(record.toStatus);
               if (type === undefined) return;
@@ -527,25 +527,25 @@ export async function startGateway(
                   payload: { status: record.toStatus },
                 });
               } catch {
-                // 事件投递失败不得影响状态迁移（引擎侧也有一层保护）。
+                // Event delivery failures must not affect state transitions (the engine side has a layer of protection too).
               }
             },
           })
         : undefined;
 
-    // D04 常驻重组巡检（关闭发布阻塞项：此前 ReorgReconciler 只有组件、无调度）。
-    // 只在 M1（有持久化 Store）时装配；M0 只读部署没有 included 记录，无需巡检。
+    // D04 standing reorg sweep (closes a release blocker: ReorgReconciler previously had only components, no scheduling).
+    // Only assembled in M1 (with a durable Store); M0 read-only deployments have no included records and need no sweep.
     //
-    // 游标所有权在**进程级**：reconciler 必须跨巡检轮次复用同一个实例。
-    // `ReorgReconciler.cursor` 是实例字段，若每轮 new 一个，游标每轮都从 1 重新开始，
-    // 违反 ADR-006 对 `ChainEvent.cursor` 的单调递增承诺（下游按游标重放会重复）。
+    // Cursor ownership is at the **process level**: the reconciler must reuse the same instance across sweep rounds.
+    // `ReorgReconciler.cursor` is an instance field; if a new one were created each round, the cursor would restart from 1 every round,
+    // violating ADR-006's monotonic-increase promise for `ChainEvent.cursor` (downstream replay by cursor would duplicate).
     const reorgReconciler =
       runtime.allowWrite && persistence !== undefined
         ? new ReorgReconciler({
             transactions: observedStores!.transaction,
             leases: observedStores!.tracker,
             metrics,
-            // 只读观测：按记录里的高度型 blockRef 读当前 canonical 区块哈希。
+            // Read-only observation: read the current canonical block hash by the height-style blockRef in the record.
             canonicalBlockHash: async ({ chain, blockRef }) => {
               const block = await core!.getBlock(chain as never, blockRef, {
                 requestId: randomUUID() as never,
@@ -553,10 +553,10 @@ export async function startGateway(
               });
               return block?.hash ?? null;
             },
-            // 事件 sink：**双写**——结构化日志（运维可见）+ 进程内总线（SSE 订阅者可收到）。
+            // Event sink: **dual write** — structured log (visible to operations) + in-process bus (reachable by SSE subscribers).
             //
-            // 顺序：先日志后总线。日志是本地同步写出；总线投递可能触发订阅者回调。
-            // 两者都不应让巡检失败，因此总线发布包在 try 里（发布异常不得中断巡检）。
+            // Order: log first, then bus. Logs are written locally and synchronously; bus delivery may trigger subscriber callbacks.
+            // Neither should fail the sweep, so bus publishing is wrapped in try (publish exceptions must not interrupt the sweep).
             publish: (event) => {
               process.stdout.write(
                 `${JSON.stringify({
@@ -571,8 +571,8 @@ export async function startGateway(
                 })}\n`,
               );
               try {
-                // ReorgReconciler 自己分配了 cursor（进程内单调）。总线会**重新**分配
-                // 自己的作用域 cursor——两者用途不同：前者是巡检视角，后者是订阅视角。
+                // ReorgReconciler allocates its own cursor (monotonic in-process). The bus **re-allocates**
+                // its own scoped cursor — the two serve different purposes: the former is the sweep's view, the latter the subscription's view.
                 eventBus.publish({
                   type: 'chain.reorg',
                   chain: event.chain,
@@ -580,7 +580,7 @@ export async function startGateway(
                   ...(event.blockRef !== undefined ? { blockRef: event.blockRef } : {}),
                 });
               } catch {
-                // 事件投递失败不得影响重组回退这一业务结果。
+                // Event delivery failures must not affect the reorg rollback business outcome.
               }
             },
             ownerToken: randomUUID,
@@ -594,15 +594,15 @@ export async function startGateway(
             intervalMs: reorgIntervalMs,
             batchLimit: reorgBatchLimit,
             onError: () => {
-              // 固定文案：巡检失败可能来自 RPC/数据库，异常原文可能含内部地址。
+              // Fixed message: sweep failures may come from RPC / the database, and raw exception text may contain internal addresses.
               process.stderr.write(`${JSON.stringify({ level: 'error', msg: 'reorg sweep failed' })}\n`);
             },
           })
         : undefined;
 
-    // D03 恢复：启动时先跑一轮，并装配周期巡检。
-    // 此前恢复只在启动时执行，长期不重启的实例永远不会回收过期幂等记录与孤儿 nonce 租约
-    // （TODO-009 记录的残余缺口）。两处共用同一个有界 `run({ limit })`。
+    // D03 recovery: run one round at startup, and assemble the periodic sweep.
+    // Recovery previously ran only at startup, so long-lived instances never reclaimed expired idempotency records or orphaned nonce leases
+    // (the residual gap recorded in TODO-009). Both share the same bounded `run({ limit })`.
     const recoveryScheduler =
       transactions !== undefined && persistence !== undefined
         ? new RecoveryScheduler({
@@ -619,14 +619,14 @@ export async function startGateway(
                   await transactions.resolveIndeterminate({ transactionId });
                 },
                 ownerToken: randomUUID,
-                // dropped 只在该宽限窗内继续被观测（ADR-023）。
+                // dropped keeps being observed only within that grace window (ADR-023).
                 droppedGraceMs,
-                // ADR-037 方案 C：**兜底**自动作废长期没推进的 built/simulated 记录。
-                // 方案 A 的显式 abandon 只在调用方记得时有效；崩溃/中断/忘记时靠这里自愈。
+                // ADR-037 option C: **fallback** auto-voiding of built/simulated records that have not advanced for a long time.
+                // Option A's explicit abandon only works when the caller remembers; crashes / interruptions / forgetfulness self-heal here.
                 ...(abandonBuiltAfterMs !== undefined ? { abandonBuiltAfterMs } : {}),
               });
-              // 先解析 unknown（含超时判 dropped），再对窗口内的 dropped 做收敛纠正，
-              // 最后作废长期未推进的 built/simulated（ADR-037 方案 C）。
+              // First resolve unknown (including timeout-judged dropped), then apply convergence correction to dropped rows inside the window,
+              // and finally void built/simulated records that have not advanced for a long time (ADR-037 option C).
               const recovered = await coordinator.run({ limit });
               // TX-02: process crashes after persisting 'signed' must not strand
               // a transaction indefinitely. No raw signed payload is persisted:
@@ -643,20 +643,20 @@ export async function startGateway(
             intervalMs: recoveryIntervalMs,
             batchLimit: recoveryBatchLimit,
             onError: () => {
-              // 固定文案：恢复失败可能来自数据库，异常原文可能含 DSN。
+              // Fixed message: recovery failures may come from the database, and raw exception text may contain a DSN.
               process.stderr.write(`${JSON.stringify({ level: 'error', msg: 'recovery sweep failed' })}\n`);
             },
           })
         : undefined;
 
     if (recoveryScheduler !== undefined) {
-      // 启动轮：先完成一次恢复再监听端口，保证"能接流量"意味着"恢复扫描已跑过"。
+      // Startup round: complete one recovery pass before listening, so "can accept traffic" means "the recovery scan has run".
       await recoveryScheduler.tick();
     }
 
-    // 与其他整数型配置一致：非法值在监听前 fail-closed，并点名变量名。
-    // 此前直接 `Number(...)`，错误会以 Node 内部信息 `NaN` 暴露，运维无法定位。
-    // 允许 0（内核分配临时端口，容器/测试常用）；其余必须是 1..65535 的十进制整数。
+    // Consistent with other integer configs: illegal values fail closed before listening, naming the variable.
+    // Previously a direct `Number(...)` exposed the error as Node's internal `NaN`, which operators could not locate.
+    // 0 is allowed (kernel-assigned ephemeral port, common in containers/tests); anything else must be a decimal integer in 1..65535.
     const port = optionalIntEnv(env, 'DFR_GATEWAY_PORT', {
       min: 0,
       max: 65535,
@@ -665,23 +665,23 @@ export async function startGateway(
     const server = createGatewayServer({
       core,
       auth,
-      // 写路径是否对外可用由 composition root 决定（M0 默认 false，fail-closed）。
+      // Whether the write path is exposed is decided by the composition root (M0 defaults to false, fail-closed).
       allowWrite: runtime.allowWrite,
       ...(transactions !== undefined ? { transactions } : {}),
       transactionMetrics: metrics,
       gatewayMetrics,
       ...(idempotencyCoordinator !== undefined ? { idempotency: idempotencyCoordinator } : {}),
-      // SSE 一次性票据（M2-C02）：进程内存储，不落库不落盘；TTL 到期即回收。
+      // SSE single-use tickets (M2-C02): stored in-process, never persisted or written to disk; reclaimed when the TTL expires.
       sseTickets: new SseTicketStore(),
-      // 复用上面的单一实例：SSE 订阅者因此能收到后台巡检发布的事件。
+      // Reuses the single instance above: SSE subscribers can therefore receive events published by background sweeps.
       eventBus,
-      // ADR-029 第 5 点：可信代理列表为空 → 不信任 X-Forwarded-For。
+      // ADR-029 point 5: an empty trusted-proxy list → X-Forwarded-For is not trusted.
       trustedProxies: trustedProxiesFromEnv(env),
       coreMetrics,
       adapterMetrics,
       providerMetrics,
-      // M1 有事务存储时，/readyz 必须反映数据库是否仍可达；
-      // 探针失败只影响就绪，不影响存活（/healthz 仍 200）。
+      // In M1 with a transaction store, /readyz must reflect whether the database is still reachable;
+      // probe failures only affect readiness, not liveness (/healthz stays 200).
       ...(persistence !== undefined ? { readyCheck: () => persistence.healthCheck() } : {}),
       ...(readyActiveProbe
         ? {
@@ -709,36 +709,36 @@ export async function startGateway(
     reorgScheduler?.start();
     recoveryScheduler?.start();
 
-    // §5.4 的 gauge 是"当前状态"，由低频巡检刷新即可（不是每请求写）。
-    // 复用恢复巡检的节奏会让 gauge 在 10 分钟粒度上滞后；用独立定时器（默认 15s）
-    // 使 gauge 足够新鲜，同时开销可忽略（只读内存快照，不联网）。
+    // §5.4 gauges are "current state" and only need low-frequency sweep refreshes (not per-request writes).
+    // Reusing the recovery sweep's cadence would lag gauges at 10-minute granularity; an independent timer (default 15s)
+    // keeps gauges fresh enough at negligible cost (a read-only memory snapshot, no network).
     const refreshProviderGauges = (): void => {
-      // `core` 在 try 块内被赋值；此处已在监听成功之后，必然存在。
+      // `core` is assigned inside the try block; this point is after a successful listen, so it necessarily exists.
       const liveCore = core;
       if (liveCore === undefined) return;
       try {
-        // E5：走异步快照，让 quota_used_ratio 读持久 Store（跨实例 / 重启准确）；
-        // 其它 gauge 仍由同一快照刷新，避免出现两套口径。
+        // E5: use an async snapshot so quota_used_ratio reads the durable Store (accurate across instances / restarts);
+        // other gauges are still refreshed by the same snapshot, avoiding two different yardsticks.
         void liveCore.providerObservabilityAsync().then((snapshots) => {
           providerMetrics.refreshGauges(snapshots);
         }).catch(() => {
-          // 观测是尽力而为：Store 临时不可用不得影响服务。
+          // Observability is best-effort: a temporarily unavailable Store must not affect service.
         });
       } catch {
-        // 观测是尽力而为：刷新失败不得影响服务。
+        // Observability is best-effort: a failed refresh must not affect service.
       }
     };
     const providerGaugeTimer = setInterval(refreshProviderGauges, 15_000);
     providerGaugeTimer.unref?.();
-    // 立即刷一次，避免启动后 15s 内 gauge 为空。
+    // Refresh once immediately, so gauges are not empty during the first 15s after startup.
     refreshProviderGauges();
 
     process.stdout.write(
       `${JSON.stringify({
         level: 'info',
         msg: 'dfr gateway listening',
-        // 必须是**实际绑定**端口：`DFR_GATEWAY_PORT=0`（容器/测试常见）时，
-        // 请求端口恒为 0，日志若回显它会让运维/探针无法找到真实端口。
+        // It must be the **actually bound** port: when `DFR_GATEWAY_PORT=0` (common in containers/tests),
+        // the requested port is always 0, and echoing it in logs would leave operators/probes unable to find the real port.
         port: boundPort,
         milestone: runtime.milestone,
         chains: core.listChains().map((chain) => chain.id),
@@ -754,7 +754,7 @@ export async function startGateway(
       close: async () => {
         if (closed) return;
         closed = true;
-        // 先停后台巡检，避免在关闭连接池的过程中又发起一轮数据库查询。
+        // Stop background sweeps first, to avoid starting another database query while the connection pool is closing.
         clearInterval(providerGaugeTimer);
         recoveryScheduler?.stop();
         reorgScheduler?.stop();
@@ -764,8 +764,8 @@ export async function startGateway(
             server.close((error) => (error === undefined ? resolve() : reject(error))),
           );
         } finally {
-          // 先停止接收并排空 HTTP 请求，避免一个正在完成的 confirm
-          // 在 tracker.close() 之后又启动后台 worker。
+          // Stop accepting and drain HTTP requests first, so a confirm that is finishing
+          // does not start a background worker after tracker.close().
           transactions?.close();
           await runtime.persistence?.close();
         }
@@ -776,7 +776,7 @@ export async function startGateway(
     try {
       await runtime.persistence?.close();
     } catch {
-      // 启动原因优先；关闭失败不得覆盖已脱敏的原始错误。
+      // The startup cause takes priority; a close failure must not mask the already-redacted original error.
     }
     throw error;
   }
@@ -788,25 +788,25 @@ function isMainModule(): boolean {
 }
 
 export interface ShutdownOptions {
-  /** 注入点：默认全局 `process`；测试用替身避免给测试进程挂信号处理器。 */
+  /** Injection point: the global `process` by default; tests use a stand-in to avoid attaching signal handlers to the test process. */
   readonly process?: Pick<NodeJS.Process, 'on'>;
-  /** 注入点：默认写 `process.exitCode`，非 0 时立即 `process.exit(code)`。 */
+  /** Injection point: writes `process.exitCode` by default, and calls `process.exit(code)` immediately when non-zero. */
   readonly exit?: (code: number) => void;
-  /** 结构化日志出口；只记录固定文案，绝不带异常原文（可能含 DSN/口令）。 */
+  /** Structured log outlet; records only fixed messages, never raw exception text (which may contain a DSN/password). */
   readonly log?: (fields: Record<string, unknown>) => void;
 }
 
 /**
- * 把 SIGTERM / SIGINT 接到 `app.close()`（DFR-M1-E02）。
+ * Wire SIGTERM / SIGINT to `app.close()` (DFR-M1-E02).
  *
- * 为什么必须显式接线：没有处理器时 Node 的默认行为是立刻终止进程，正在排空的
- * HTTP 请求、后台确认循环与数据库连接都会被硬切断。容器编排发送 SIGTERM 后期望
- * 的是"优雅退出"，不是"立刻 kill"。
+ * Why explicit wiring is required: with no handler, Node's default behavior terminates the process immediately, hard-cutting
+ * the HTTP requests being drained, the background confirmation loop, and the database connections. After container orchestration sends SIGTERM, it expects
+ * a "graceful shutdown", not an "immediate kill".
  *
- * 三条不变式（由 apps/gateway/test/shutdown.test.ts 锁定）：
- * 1. SIGTERM 与 SIGINT 等价，都触发**一次**关闭；
- * 2. 关闭进行中再收到信号 → 不并发重复关闭，直接以非零码强制退出（卡住时兜底）；
- * 3. 关闭失败 → 非零退出码，且日志不回显异常原文。
+ * Three invariants (locked by apps/gateway/test/shutdown.test.ts):
+ * 1. SIGTERM and SIGINT are equivalent, both triggering **one** shutdown;
+ * 2. Another signal during shutdown → no concurrent repeat shutdown; force-exit with a non-zero code instead (fallback when stuck);
+ * 3. Failed shutdown → non-zero exit code, and logs do not echo raw exception text.
  */
 export function installShutdownHandlers(
   app: { close(): Promise<void> },
@@ -817,7 +817,7 @@ export function installShutdownHandlers(
     options.exit ??
     ((code: number) => {
       process.exitCode = code;
-      // 非零码表示"必须尽快退出"：此时事件循环里可能仍有卡住的句柄。
+      // A non-zero code means "must exit as soon as possible": the event loop may still hold stuck handles.
       if (code !== 0) process.exit(code);
     });
   const log =
@@ -841,7 +841,7 @@ export function installShutdownHandlers(
         exit(0);
       },
       () => {
-        // 只记固定文案：关闭失败往往来自驱动层，异常里可能带 DSN。
+        // Only record fixed messages: shutdown failures usually come from the driver layer, and exceptions may carry a DSN.
         log({ level: 'error', msg: 'shutdown failed' });
         exit(1);
       },

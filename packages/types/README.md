@@ -1,11 +1,18 @@
 # @dfr/types
 
-DFR 的纯领域契约包，不执行 I/O，不依赖其他 workspace 包。
+DFR's pure domain-contract package: it performs no I/O and depends on no
+other workspace package.
 
-- 权威规范：`docs/architecture/domain-model.md`。
-- 公开入口：`src/index.ts`。
-- 主要域：primitives、chain、account/asset、block/finality、transaction、event、provider、adapter、API、errors。
-- 规则：整数用十进制字符串；网络由 chain 推导；状态只有一个事实来源；类型中不得出现私钥/凭证。
-- 变更门：Capability、错误码、状态、schemaVersion 变化必须同步 OpenAPI/Schema/规范与契约测试；破坏性变化先 ADR。
+- Authoritative spec: `docs/architecture/domain-model.md`.
+- Public entry: `src/index.ts`.
+- Main domains: primitives, chain, account/asset, block/finality,
+  transaction, event, provider, adapter, API, errors.
+- Rules: integers use decimal strings; the network is derived from the
+  chain; state has a single source of truth; types must not contain private
+  keys or credentials.
+- Change gate: changes to Capability, error codes, state, or schemaVersion
+  must sync OpenAPI/Schema, the spec, and contract tests; breaking changes
+  need an ADR first.
 
-验证：`pnpm --filter @dfr/types typecheck` 与 `tests/contract/spec-consistency.test.ts`。
+Verify with: `pnpm --filter @dfr/types typecheck` and
+`tests/contract/spec-consistency.test.ts`.

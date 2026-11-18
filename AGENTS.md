@@ -1,85 +1,107 @@
-# DFR 模型开发协议
+# DFR Model Development Protocol
 
-本文件适用于所有在本仓库工作的 AI 模型与人工开发者。它是执行规则，不替代架构规范。
+This file applies to every AI model and human developer working in this
+repository. It is an execution rulebook, not a replacement for the
+architecture spec.
 
-## 1. 当前事实
+## 1. Current facts
 
-- 当前分支基线：M0 只读链路已完成。
-- 当前实现：TypeScript SDK → Gateway → Core → EVM Adapter → Provider Manager。
-- 当前下一目标：M1 EVM 安全写路径，不是多租户平台。
-- 权威任务书：[docs/development/m1-taskbook.md](./docs/development/m1-taskbook.md)。
-- 权威架构索引：[docs/architecture/README.md](./docs/architecture/README.md)。
+- Current branch baseline: M0 read-only chain path is complete.
+- Current implementation: TypeScript SDK → Gateway → Core → EVM Adapter → Provider Manager.
+- Current next goal: M1 EVM safe write path, not a multi-tenant platform.
+- Authoritative task book: [docs/development/m1-taskbook.md](./docs/development/m1-taskbook.md).
+- Authoritative architecture index: [docs/architecture/README.md](./docs/architecture/README.md).
 
-不得使用历史测试数量代替本次验证。接手任务前必须运行相应基线命令。
+Never use historical test counts as a substitute for verification in this
+session. Run the applicable baseline commands before taking over a task.
 
-## 2. 必读顺序
+## 2. Required reading order
 
-执行任何代码任务前，按顺序读取：
+Before any coding task, read in this order:
 
-1. 本文件；
-2. [design.md](./design.md)；
-3. [plan.md](./plan.md)；
-4. [docs/development/handoff-protocol.md](./docs/development/handoff-protocol.md)；
-5. 当前任务卡列出的架构规范、ADR 与源文件；
-6. 当前任务的直接依赖任务交付记录。
+1. This file;
+2. [design.md](./design.md);
+3. [plan.md](./plan.md);
+4. [docs/development/handoff-protocol.md](./docs/development/handoff-protocol.md);
+5. The architecture specs, ADRs, and source files listed on the current task card;
+6. The delivery records of the current task's direct dependency tasks.
 
-不要为了“了解更多”一次加载全部文档；任务卡已经列出最小上下文。
+Do not load every document at once just to "learn more"; the task card
+already lists the minimum context.
 
-## 3. 不可破坏的架构边界
+## 3. Unbreakable architecture boundaries
 
 ```text
-Gateway       横切关注点；不实现链语义、不直接访问交易表
-Core          编排与能力路由；不出现 chain === 'ethereum' 之类分支
-Transaction   状态机、幂等、nonce、确认协调；拥有 Store 接口
-Adapter       链语义与编解码；不选择 Provider、不访问数据库
-Provider      传输、健康、评分、熔断、失败切换；不理解链业务语义
-Storage       实现 Store 接口；不反向调用 Core 或 Adapter
+Gateway       Cross-cutting concerns; implements no chain semantics, does not access the transaction tables directly
+Core          Orchestration and capability routing; no branches like chain === 'ethereum'
+Transaction   State machine, idempotency, nonce, confirmation coordination; owns the Store interface
+Adapter       Chain semantics and encoding/decoding; does not select Providers, does not access the database
+Provider      Transport, health, scoring, circuit breaking, failover; does not understand chain business semantics
+Storage       Implements the Store interface; never calls back into Core or Adapter
 ```
 
-依赖方向与运行时拓扑见
-[docs/architecture/development-plan.md](./docs/architecture/development-plan.md)。
+Dependency direction and runtime topology are in
+[docs/architecture/development-plan.md](./docs/architecture/development-plan.md).
 
-## 4. 安全红线
+## 4. Safety red lines
 
-- 不得把私钥、助记词、API Key、Token、Cookie、完整 `signedPayload` 写入代码、配置、日志、错误、测试快照或提交记录。
-- 广播属于 `non-idempotent-write`，Provider 层自动调用次数必须严格为 1。
-- M1 启用广播时必须配置持久化 Store；不得静默回退到内存 Store。
-- 模拟失败不得广播；签名结果必须绑定原 unsigned transaction。
-- 链、Capability、Provider 或凭证配置异常必须 fail-closed。
-- 金额、nonce、区块高度、gas 一律使用十进制字符串，不使用 JS `number` 或浮点。
+- Never write private keys, mnemonics, API keys, tokens, cookies, or a
+  complete `signedPayload` into code, config, logs, errors, test snapshots,
+  or commit history.
+- Broadcast is a `non-idempotent-write`; the Provider layer's automatic call
+  count must be strictly 1.
+- When M1 enables broadcast, a persistent Store must be configured; never
+  silently fall back to the in-memory Store.
+- A failed simulation must not broadcast; a signing result must be bound to
+  the original unsigned transaction.
+- Chain, Capability, Provider, or credential configuration errors must
+  fail-closed.
+- Amounts, nonces, block heights, and gas always use decimal strings — never
+  JS `number` or floating point.
 
-发现疑似 Secret 时只报告文件、行号、类型和轮换建议，不输出 Secret 内容。
+When a suspected secret is found, report only the file, line number, type,
+and rotation advice — never output the secret itself.
 
-## 5. 任务执行协议
+## 5. Task execution protocol
 
-1. 只领取状态为 `READY` 且所有依赖为 `DONE` 的一个任务。
-2. 执行 `git status --short --branch`，不得覆盖不属于本任务的现有改动。
-3. 在任务卡指定的测试文件中先写失败测试并实际看到失败（RED）。
-4. 写最小实现使测试通过（GREEN）。
-5. 重构但不扩大任务范围（REFACTOR）。
-6. 运行任务卡的局部门禁，再运行 `pnpm verify`。
-7. 按 [Definition of Done](./docs/development/definition-of-done.md) 自审。
-8. 输出交付记录：改动、证据、未做项、风险、下一可领取任务。
+1. Take only one task whose status is `READY` and whose dependencies are all
+   `DONE`.
+2. Run `git status --short --branch`; never overwrite existing changes that
+   do not belong to this task.
+3. In the test file named on the task card, first write a failing test and
+   actually see it fail (RED).
+4. Write the minimal implementation that makes the test pass (GREEN).
+5. Refactor without expanding the task scope (REFACTOR).
+6. Run the task card's local gate, then run `pnpm verify`.
+7. Self-review against [Definition of Done](./docs/development/definition-of-done.md).
+8. Output a delivery record: changes, evidence, items not done, risks, next
+   claimable task.
 
-一个任务只允许一个行为目标。发现旁支问题时记录到交付报告，不顺手扩展实现。
+One task allows only one behavioral goal. When a side issue is found, record
+it in the delivery report — do not expand the implementation on the spot.
 
-## 6. 停止条件
+## 6. Stop conditions
 
-遇到以下任一情况必须停止实现并报告，不得自行发明：
+If any of the following applies, stop implementing and report — never invent
+a workaround yourself:
 
-- 需要改变 Adapter / Provider / Core / Transaction 的依赖方向；
-- 需要新增、删除或改变交易状态语义；
-- 需要改变签名信任边界或持久化 `signedPayload`；
-- 需要给广播增加自动重试；
-- 需要修改既有 Adapter Contract Test 才能让新链通过；
-- 需要把 BEX 业务对象放入 DFR；
-- OpenAPI、TypeScript 类型与规范无法同时满足；
-- 任务依赖未完成、基线测试失败或工作区存在重叠改动；
-- 需要引入 Redis、消息队列、微服务、Kubernetes、KMS/HSM 或多租户控制面。
+- Need to change the dependency direction of Adapter / Provider / Core /
+  Transaction;
+- Need to add, remove, or change transaction state semantics;
+- Need to change the signing trust boundary or persist `signedPayload`;
+- Need to add automatic retries to broadcast;
+- Need to modify an existing Adapter Contract Test to make a new chain pass;
+- Need to put BEX business objects into DFR;
+- OpenAPI, TypeScript types, and the spec cannot all be satisfied at once;
+- A task dependency is unfinished, baseline tests fail, or the working tree
+  has overlapping changes;
+- Need to introduce Redis, a message queue, microservices, Kubernetes,
+  KMS/HSM, or a multi-tenant control plane.
 
-这类变更必须新增或复审 ADR，经明确裁决后再继续。
+Such changes require a new or re-reviewed ADR, and work resumes only after
+an explicit decision.
 
-## 7. 验证命令
+## 7. Verification commands
 
 ```bash
 pnpm install --frozen-lockfile
@@ -91,28 +113,36 @@ pnpm check:secrets
 pnpm verify
 ```
 
-真实网络测试必须显式开启，不能进入默认离线门禁。不得把 testnet 偶发成功当作并发、重试或重组正确性的证据。
+Real-network tests must be explicitly enabled; they must not enter the
+default offline gate. Never treat an occasional testnet success as evidence
+that concurrency, retry, or reorg handling is correct.
 
-## 8. Git 与协作
+## 8. Git and collaboration
 
-- 正常使用 GitHub，但控制 API 与轮询频率；禁止高频请求或无意义轮询。
-- 不使用 `git add -A`；只暂存任务明确涉及的路径。
-- 不使用 `git reset --hard`、`git checkout --` 等破坏性命令覆盖他人改动。
-- 并行模型必须使用独立 branch/worktree；一个任务同一时间只允许一个 owner。
-- 提交信息建议：`[DFR-M1-XXX] type(scope): summary`。
-- 不得为了让 CI 变绿而删除、跳过或放宽安全负对照测试。
+- Use GitHub normally, but control API and polling frequency; no high-frequency
+  requests or meaningless polling.
+- Do not use `git add -A`; stage only the paths the task explicitly covers.
+- Do not use destructive commands such as `git reset --hard` or
+  `git checkout --` to overwrite other people's changes.
+- Parallel models must use separate branches/worktrees; only one owner per
+  task at a time.
+- Suggested commit message: `[DFR-M1-XXX] type(scope): summary`.
+- Never delete, skip, or relax safety negative-control tests just to make CI
+  green.
 
-## 9. 文档同步
+## 9. Documentation sync
 
-以下变更必须在同一任务中同步文档与契约测试：
+The following changes must sync documentation and contract tests within the
+same task:
 
-| 变更 | 必须同步 |
+| Change | Must sync |
 |---|---|
-| API 路由/字段 | OpenAPI、SDK、Gateway、契约测试 |
-| Capability | types、Adapter map、Registry schema/config、OpenAPI、契约测试 |
-| 错误码 | types、metadata、error spec、OpenAPI、契约测试 |
-| 状态转移 | transaction lifecycle、状态机测试、事件映射 |
-| 数据表/Store | storage model、migration、Store contract tests、runbook |
-| 环境变量 | configuration reference、runbook、启动校验测试 |
+| API routes/fields | OpenAPI, SDK, Gateway, contract tests |
+| Capability | types, Adapter map, Registry schema/config, OpenAPI, contract tests |
+| Error codes | types, metadata, error spec, OpenAPI, contract tests |
+| State transitions | transaction lifecycle, state machine tests, event mapping |
+| Tables/Store | storage model, migration, Store contract tests, runbook |
+| Environment variables | configuration reference, runbook, startup validation tests |
 
-过时图比没有图更危险；修改带 ASCII 图的流程时必须同步更新图。
+An outdated diagram is more dangerous than no diagram; when changing a flow
+that carries an ASCII diagram, update the diagram in sync.

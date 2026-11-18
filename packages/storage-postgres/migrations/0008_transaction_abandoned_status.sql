@@ -1,16 +1,16 @@
--- DFR ADR-037：交易新增终态 `abandoned`（被显式作废的未广播交易）
+-- DFR ADR-037: transactions gain a terminal state `abandoned` (an explicitly voided unbroadcast transaction)
 --
--- 背景：`build` 会立即占用一个链上 nonce；调用方决定不提交时必须能显式作废，
--- 否则 nonce 永久占位、链上形成永久空洞（ADR-037）。
+-- Background: `build` immediately occupies an on-chain nonce; when the caller decides not to submit, it must be able to explicitly void the transaction,
+-- or the nonce stays occupied forever and a permanent gap forms on-chain (ADR-037).
 --
--- 为什么需要这条迁移：`0001` 把 `transactions.status` 的可取集合**硬编码**在
--- `transactions_status_check` CHECK 约束里。应用层新增状态而不更新该约束时，
--- 写入会以 `violates check constraint "transactions_status_check"` 失败——
--- 2026-10-07 的真实联调正是这样抓到了它（Abandoned 迁移漏改）。
+-- Why this migration is needed: `0001` **hardcoded** the allowed set of `transactions.status` values in
+-- the `transactions_status_check` CHECK constraint. When the application layer adds a state without updating the constraint,
+-- writes fail with `violates check constraint "transactions_status_check"` —
+-- which is exactly how the real integration run on 2026-10-07 caught it (the Abandoned migration had missed this change).
 --
--- 前向迁移：只重建这一条 CHECK，不动数据、不动其它列与索引。
--- 与 `packages/types` 的 `TransactionStatus` 保持一致的唯一事实来源是
--- `docs/architecture/transaction-lifecycle.md` 第 3 章。
+-- Forward migration: only rebuilds this one CHECK; no data changes, no other columns or indexes touched.
+-- The single source of truth for staying consistent with `packages/types`' `TransactionStatus` is
+-- chapter 3 of `docs/architecture/transaction-lifecycle.md`.
 
 ALTER TABLE transaction_data.transactions
   DROP CONSTRAINT IF EXISTS transactions_status_check;
@@ -19,5 +19,5 @@ ALTER TABLE transaction_data.transactions
   ADD CONSTRAINT transactions_status_check
   CHECK (status IN ('built','simulated','signed','broadcast','pending','included',
                     'confirmed','finalized','failed','reverted','dropped','replaced','unknown',
-                    -- ADR-037：只从 built/simulated 可达；signed 及以上永不进入。
+                    -- ADR-037: reachable only from built/simulated; signed and above never enter.
                     'abandoned'));

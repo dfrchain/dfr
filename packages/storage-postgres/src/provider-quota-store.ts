@@ -1,12 +1,12 @@
 /**
- * PostgresProviderQuotaStore（E5）。
+ * PostgresProviderQuotaStore (E5).
  *
- * 语义：用**单条 UPSERT**原子地判断并消耗 Provider 日配额。
- * 并发连接不能看到彼此未提交的 used，但 PostgreSQL 会在冲突行的
- * UPDATE 上加锁；后到事务重新读取最新值后再判断 WHERE used < limit，
- * 因此达到 limit 后不会再有 allowed 结果。
+ * Semantics: judge and consume the Provider daily quota atomically with a **single UPSERT**.
+ * Concurrent connections cannot see each other's uncommitted used values, but PostgreSQL locks the conflicting row on
+ * UPDATE; the later transaction re-reads the latest value before evaluating WHERE used < limit,
+ * so once the limit is reached no further allowed result appears.
  *
- * 所有日期由调用方按 UTC 计算；SQL 只存 date，不做本地时区推断。
+ * All dates are computed by the caller in UTC; SQL only stores the date and infers no local timezone.
  */
 import type {
   ProviderQuotaConsumeInput,
@@ -41,8 +41,8 @@ export class PostgresProviderQuotaStore implements ProviderQuotaStore {
       return { allowed: true, used: upsert.rows[0].used };
     }
 
-    // WHERE 未命中表示已有行的 used 已达到 limit。此时必须返回真实用量；
-    // 不在这里重试插入，避免把“已耗尽”误判成暂时冲突。
+    // A WHERE miss means the existing row's used has reached the limit. The real usage must be returned here;
+    // do not retry the insert here, or "exhausted" would be misjudged as a transient conflict.
     return { allowed: false, used: await this.usage(input) };
   }
 

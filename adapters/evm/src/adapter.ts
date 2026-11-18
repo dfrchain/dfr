@@ -1,11 +1,11 @@
 /**
- * EVM Adapter（DFR-008，M0 只读）。
+ * EVM Adapter (DFR-008, M0 read-only).
  *
- * 范围（见 ADR-010）：getInfo / getBalance / getBlock / getTransaction / getReceipt。
- * 不签名、不广播、不托管私钥；build / simulate / broadcast 属 M1，
- * 本 Adapter 不声明这些能力，因此相关请求返回 DFR_UNSUPPORTED_CAPABILITY。
+ * Scope (see ADR-010): getInfo / getBalance / getBlock / getTransaction / getReceipt.
+ * No signing, no broadcast, no private-key custody; build / simulate / broadcast belong to M1,
+ * so this Adapter does not declare those capabilities, and related requests return DFR_UNSUPPORTED_CAPABILITY.
  *
- * Adapter 不持有端点或凭证：所有链访问都经 `ctx.providers.acquire()`。
+ * The Adapter holds no endpoints or credentials: all chain access goes through `ctx.providers.acquire()`.
  */
 import { createDfrError, isDfrError, newRequestId } from '@dfr/errors';
 import type {
@@ -83,23 +83,23 @@ import {
   type EvmUnsignedPayload,
 } from './transaction-codec.js';
 
-/** 原生资产的精度固定为 18（ETH / 各 EVM L2 原生币）。 */
+/** Native-asset precision is fixed at 18 (ETH / each EVM L2 native coin). */
 const NATIVE_DECIMALS = 18;
 
 /**
- * 广播超时（M1-C02）。
+ * Broadcast timeout (M1-C02).
  *
- * 比只读的 10s 略长：广播在端点排队/入 mempool 的耗时高于普通查询。
- * 超时**不等于失败**（m1-api-contract 第 5 节）：由 C03 按 expectedHash 查询后
- * 分类为 included / unknown，绝不自动重发。
+ * Slightly longer than the 10s read timeout: broadcast queuing / mempool entry at the endpoint takes longer than an ordinary query.
+ * A timeout is **not a failure** (m1-api-contract Section 5): C03 queries by expectedHash and then
+ * classifies it as included / unknown, never resending automatically.
  */
 const BROADCAST_TIMEOUT_MS = 15_000;
 
 /**
- * 端点把"这笔交易我已经有了"表达为 JSON-RPC 错误时的消息特征。
+ * Message patterns for when an endpoint expresses "I already have this transaction" as a JSON-RPC error.
  *
- * 放在 Adapter 而不是 Provider：Provider 只做传输，不理解链语义（AGENTS.md 第 3 节）。
- * 上游 message 已由 Provider 放进 `chainError.message`（脱敏后），这里只做分类。
+ * This lives in the Adapter, not the Provider: the Provider only transports and does not understand chain semantics (AGENTS.md Section 3).
+ * The upstream message is already placed in `chainError.message` by the Provider (after redaction); only classification happens here.
  */
 const ALREADY_KNOWN_PATTERNS = [
   'already known',
@@ -108,7 +108,7 @@ const ALREADY_KNOWN_PATTERNS = [
   'known transaction',
 ] as const;
 
-/** M0 只读能力集合（与 chains.yaml 的 M0 条目一致，registry ⊆ adapter）。 */
+/** M0 read-only capability set (matches the M0 entries in chains.yaml; registry ⊆ adapter). */
 export const EVM_M0_CAPABILITIES: readonly CapabilityId[] = [
   'account.balance',
   'block.read',
@@ -116,75 +116,75 @@ export const EVM_M0_CAPABILITIES: readonly CapabilityId[] = [
 ];
 
 /**
- * Adapter 当前**已实现**的能力集合（能力真相，adapter-spec 第 3 章规则 7）。
+ * The capability set the Adapter **currently implements** (capability ground truth, adapter-spec Chapter 3 rule 7).
  *
- * Capability 只能增加：B02 增加 `transaction.build`；后续任务落地 simulate /
- * broadcast 时在此追加。注册表（chains.yaml）是"允许清单"，它必须是本集合的子集，
- * 反向不成立——所以本集合可以先于 chains.yaml 的 M1 条目存在。
+ * Capabilities may only be added: B02 adds `transaction.build`; later work landing simulate /
+ * broadcast appends here. The registry (chains.yaml) is an "allowlist" that must be a subset of this set;
+ * the reverse does not hold — so this set may exist before the M1 entries in chains.yaml.
  */
 export const EVM_IMPLEMENTED_CAPABILITIES: readonly CapabilityId[] = [
   ...EVM_M0_CAPABILITIES,
   'transaction.build',
   'transaction.simulate',
-  // M1-C02：广播单次调用。M1-C05（Gateway 端点）与 C03（引擎状态流）才是
-  // 对外暴露写路径的地方；能力真相在这里，Registry 是否启用另算（registry ⊆ adapter）。
+  // M1-C02: single broadcast call. M1-C05 (Gateway endpoint) and C03 (engine state stream) are the places that
+  // expose the write path publicly; the capability ground truth is here, while whether the Registry enables it is separate (registry ⊆ adapter).
   'transaction.broadcast',
-  // ADR-034：事件日志查询（BEX 链上核对）。与 contract.read（eth_call）并列。
+  // ADR-034: event log queries (BEX on-chain reconciliation). Alongside contract.read (eth_call).
   'contract.logs',
-  // ADR-035：只读合约调用（eth_call）。
+  // ADR-035: read-only contract calls (eth_call).
   'contract.read',
-  // ADR-036：账户存在性 / 合约判定（eth_getCode）。
+  // ADR-036: account existence / contract determination (eth_getCode).
   'account.code',
 ];
 
-/** `eth_getLogs` 的保守默认跨度（ADR-034）；按链可用 `maxBlockRange` 覆盖。 */
+/** Conservative default span for `eth_getLogs` (ADR-034); overridable per chain with `maxBlockRange`. */
 const DEFAULT_MAX_BLOCK_RANGE = '2000' as DecimalUint;
 
-/** M1 build 支持允许的交易类型（ADR-016 §5）。 */
+/** Transaction types allowed by M1 build (ADR-016 §5). */
 const SUPPORTED_TRANSACTION_TYPES: readonly EvmTransactionType[] = [
   'legacy',
   'eip2930',
   'eip1559',
 ];
 
-/** 规范十进制：无前导零（`0` 除外）、无符号、无小数。 */
+/** Canonical decimal: no leading zeros (except `0`), no sign, no fraction. */
 const DECIMAL_UINT_RE = /^(?:0|[1-9][0-9]*)$/;
 
-/** 区分 simulate 的两种输入（载荷路径没有发送方，必须显式提示）。 */
+/** Distinguish the two simulate inputs (the payload path has no sender, so it must be called out explicitly). */
 function isUnsignedTransaction(
   value: TransactionRequest | UnsignedTransaction,
 ): value is UnsignedTransaction {
   return 'payload' in value;
 }
 
-/** simulate 归一化后的调用意图。 */
+/** Call intent after simulate normalization. */
 interface SimulationCall {
-  /** 发送方；未构造载荷时未知（不伪造）。 */
+  /** Sender; unknown when no payload has been built (never fabricated). */
   readonly from?: string;
   readonly to: string;
   readonly value: bigint;
   readonly data: string;
-  /** 已构造载荷固定的 gas 上限；请求路径未知时用 estimateGas 推导。 */
+  /** Gas limit fixed by the constructed payload; derived via estimateGas when unknown on the request path. */
   readonly gas?: bigint;
-  /** 每 gas 价格上限，用于估算费用。 */
+  /** Per-gas price cap, used to estimate fees. */
   readonly feePerGas?: bigint;
 }
 
 export interface EvmAdapterOptions {
-  /** 该 Adapter 实例绑定的链；`externalChainId` 用于 eth_chainId 一致性校验。 */
+  /** The chain this Adapter instance is bound to; `externalChainId` is used for the eth_chainId consistency check. */
   chain: Chain;
-  /** Adapter 实现版本（semver）。 */
+  /** Adapter implementation version (semver). */
   version?: string;
   /**
-   * build 产出的交易类型，默认 `eip1559`。
+   * Transaction type produced by build; defaults to `eip1559`.
    *
-   * 只影响 build 的编码与费用获取方式；解析路径（codec）对三类都支持。
+   * Only affects build's encoding and fee-fetching method; the parse path (codec) supports all three types.
    */
   transactionType?: EvmTransactionType;
   /**
-   * 单次 `eth_getLogs` 允许的最大区块跨度（ADER-034），十进制字符串。
+   * Maximum block span allowed for a single `eth_getLogs` (ADER-034), as a decimal string.
    *
-   * 省略时默认一个**保守**值（见 `DEFAULT_MAX_BLOCK_RANGE`）；显式传入用于按链标定。
+   * When omitted, a **conservative** default applies (see `DEFAULT_MAX_BLOCK_RANGE`); pass explicitly to calibrate per chain.
    */
   maxBlockRange?: DecimalUint;
 }
@@ -220,7 +220,7 @@ export class EvmAdapter
     if (!SUPPORTED_TRANSACTION_TYPES.includes(type)) {
       throw createDfrError('DFR_CONFIGURATION_ERROR', {
         requestId: newRequestId(),
-        message: `不支持的交易类型 "${String(type)}"；M1 只支持 legacy / eip2930 / eip1559`,
+        message: `Unsupported transaction type "${String(type)}"; M1 only supports legacy / eip2930 / eip1559`,
       });
     }
     this.transactionType = type;
@@ -241,7 +241,7 @@ export class EvmAdapter
     this.assertChain(ctx.chain, ctx);
     const expected = this.expectedChainId(ctx);
 
-    // 复用同一个 Provider 句柄：chainId 校验必须与高度/区块来自同一端点才有意义。
+    // Reuse the same Provider handle: the chainId check is only meaningful when the height/block comes from the same endpoint.
     const handle = await ctx.providers.acquire({ capability: 'block.read' });
     const [chainIdHex, heightHex, block, nodeVersion] = await Promise.all([
       rpcOn<string>(handle, ctx, 'eth_chainId', []),
@@ -250,11 +250,11 @@ export class EvmAdapter
       rpcOn<string>(handle, ctx, 'web3_clientVersion', []).catch(() => undefined),
     ]);
 
-    // fail-closed：链 ID 不一致说明端点指错了网络（adapter-spec 8.1）。
+    // fail-closed: a chain ID mismatch means the endpoint points at the wrong network (adapter-spec 8.1).
     if (BigInt(chainIdHex) !== BigInt(expected)) {
       throw createDfrError('DFR_CHAIN_MISMATCH', {
         requestId: ctx.requestId,
-        message: `Provider 返回的 chainId 与注册表不一致（期望 ${expected}）`,
+        message: `Provider returned a chainId inconsistent with the registry (expected ${expected})`,
         chain: this.chain.id,
         details: { expectedChainId: expected },
       });
@@ -281,10 +281,10 @@ export class EvmAdapter
 
     const asset = req.asset ?? { kind: 'native', chain: this.chain.id };
     if (asset.kind !== 'native') {
-      // ERC-20 余额需要 eth_call；M0 未声明 contract.read（见 chains.yaml M0 条目）。
+      // ERC-20 balances need eth_call; M0 does not declare contract.read (see the chains.yaml M0 entries).
       throw createDfrError('DFR_UNSUPPORTED_CAPABILITY', {
         requestId: ctx.requestId,
-        message: 'M0 只支持原生资产余额；代币余额需要 contract.read 能力',
+        message: 'M0 only supports native-asset balances; token balances need the contract.read capability',
         chain: this.chain.id,
         details: { capability: 'contract.read' },
       });
@@ -292,7 +292,7 @@ export class EvmAdapter
     if (asset.chain !== this.chain.id) {
       throw createDfrError('DFR_INVALID_ASSET', {
         requestId: ctx.requestId,
-        message: 'asset.chain 与请求链不一致',
+        message: 'asset.chain does not match the requested chain',
         chain: this.chain.id,
       });
     }
@@ -343,7 +343,7 @@ export class EvmAdapter
     if (ref.kind !== 'hash') {
       throw createDfrError('DFR_UNSUPPORTED_CAPABILITY', {
         requestId: ctx.requestId,
-        message: 'EVM 只支持按交易哈希查询',
+        message: 'EVM only supports querying by transaction hash',
         chain: this.chain.id,
       });
     }
@@ -361,7 +361,7 @@ export class EvmAdapter
       schemaVersion: '1',
       ref: { kind: 'hash', hash: rpc.hash },
       chain: this.chain.id,
-      // 状态是生命周期的唯一事实来源（审计修正 A-09）。
+      // State is the only source of truth for the lifecycle (audit fix A-09).
       status: rpc.blockNumber == null ? 'pending' : 'included',
       from: { chain: this.chain.id, address: rpc.from },
     };
@@ -380,7 +380,7 @@ export class EvmAdapter
     return transaction;
   }
 
-  /** 单次确认观测；轮询/超时由 TransactionTracker 控制。 */
+  /** A single confirmation observation; polling/timeout is controlled by TransactionTracker. */
   async observeConfirmation(
     ctx: AdapterContext,
     req: { readonly txHash: string },
@@ -392,7 +392,7 @@ export class EvmAdapter
     if (this.quantity(observedChainId, 'eth_chainId', ctx) !== BigInt(this.expectedChainId(ctx))) {
       throw createDfrError('DFR_CHAIN_MISMATCH', {
         requestId: ctx.requestId,
-        message: 'Provider 返回的 chainId 与注册表不一致，拒绝确认交易',
+        message: 'Provider returned a chainId inconsistent with the registry; refusing to confirm the transaction',
         chain: this.chain.id,
         details: { expectedChainId: this.expectedChainId(ctx) },
       });
@@ -466,7 +466,7 @@ export class EvmAdapter
     const receipt: Receipt = {
       ref: { kind: 'hash', hash: rpc.transactionHash },
       chain: this.chain.id,
-      // EVM receipt.status: "0x1" 成功，"0x0" 失败。
+      // EVM receipt.status: "0x1" success, "0x0" failure.
       success: rpc.status == null ? true : BigInt(rpc.status) === 1n,
     };
     if (rpc.blockNumber != null) {
@@ -485,30 +485,30 @@ export class EvmAdapter
   /* ---------------------------- pending nonce --------------------------- */
 
   /**
-   * 读链上 pending nonce（DFR-M1-B07 的 nonce 协调入口）。
+   * Read the on-chain pending nonce (the nonce-coordination entry point for DFR-M1-B07).
    *
-   * 不是对外 Capability：`transaction.build` 需要一个"链上没有未确认交易时下一个
-   * nonce"作为 NonceStore 租约起点，但 Gateway 不得直接路由本方法，因此它不进
-   * `capabilities()`（adapter-spec 第 3 章规则 7）。
+   * Not a public Capability: `transaction.build` needs a "next nonce when there are no unconfirmed transactions on-chain"
+   * nonce as the NonceStore lease starting point, but the Gateway must not route this method directly, so it does not enter
+   * `capabilities()` (adapter-spec Chapter 3 rule 7).
    *
-   * 与 `build()` 一样：单次 `acquire()` + chainId 校验，确保 nonce 与签署链一致
-   * （adapter-spec 8.1：chainId 校验与 nonce 必须来自同一句柄）。返回十进制字符串。
+   * Like `build()`: a single `acquire()` + chainId check, ensuring the nonce matches the signing chain
+   * (adapter-spec 8.1: the chainId check and the nonce must come from the same handle). Returns a decimal string.
    */
   /**
-   * EVM 的排序前提就是 pending nonce（ADR-032/033）。与 `getPendingNonce` 同源，
-   * 只是包成链无关的 `SequencingToken`，让 Core/引擎用同一套路由处理两链。
+   * The EVM sequencing prerequisite is the pending nonce (ADR-032/033). It shares its origin with `getPendingNonce`,
+   * just wrapped as a chain-agnostic `SequencingToken` so Core/the engine routes both chains the same way.
    */
   async getSequencingToken(ctx: AdapterContext, account: AccountRef): Promise<SequencingToken> {
     const value = await this.getPendingNonce(ctx, account);
     return { kind: 'nonce', value };
   }
 
-  /** 把引擎分配的 nonce 注入请求（ADR-033）；EVM 用 `req.nonce`。 */
+  /** Inject the engine-assigned nonce into the request (ADR-033); EVM uses `req.nonce`. */
   withSequencingToken(req: TransactionRequest, token: SequencingToken): TransactionRequest {
     if (token.kind !== 'nonce') {
       throw createDfrError('DFR_INVALID_REQUEST', {
         requestId: 'req_sequencing_token_shape' as never,
-        message: 'EVM 的排序前提必须是 nonce token',
+        message: 'EVM sequencing prerequisite must be a nonce token',
         chain: this.chain.id,
         details: { capability: 'transaction.build', field: 'sequencingRef' },
       });
@@ -525,7 +525,7 @@ export class EvmAdapter
     if (this.quantity(observedChainId, 'eth_chainId', ctx) !== BigInt(this.expectedChainId(ctx))) {
       throw createDfrError('DFR_CHAIN_MISMATCH', {
         requestId: ctx.requestId,
-        message: 'Provider 返回的 chainId 与注册表不一致，拒绝在其上读取 nonce',
+        message: 'Provider returned a chainId inconsistent with the registry; refusing to read a nonce from it',
         chain: this.chain.id,
         details: { expectedChainId: this.expectedChainId(ctx) },
       });
@@ -540,19 +540,19 @@ export class EvmAdapter
   /* ------------------------------- build ------------------------------- */
 
   /**
-   * M1 build（DFR-M1-B02）：构造可交给外部钱包签名的未签名交易。
+   * M1 build (DFR-M1-B02): construct an unsigned transaction for an external wallet to sign.
    *
-   * 边界（见 ADR-012 / m1-api-contract.md 第 2 节 / adapter-spec 第 3 章）：
-   * - **只构造**：不签名、不广播，全程只发 `safe-read` RPC，无链上副作用；
-   * - nonce / gas / 费用与 chainId 校验**共用同一个 Provider 句柄**。若拆成多次
-   *   `acquire()`，chainId 校验与 nonce 可能来自不同端点，校验就失去意义
-   *   （adapter-spec 8.1）；同一句柄由本函数内的单次 `acquire()` 保证；
-   * - `req.nonce` 显式时**不再**查询 `eth_getTransactionCount`，让上层能把 nonce
-   *   租约的结果锁定进载荷（development-plan 4.3）；
-   * - chainId 取自 Chain Registry，不信任请求体；与端点 `eth_chainId` 不一致时
-   *   fail-closed（`DFR_CHAIN_MISMATCH`），绝不产出可能被重放的载荷；
-   * - 合约创建（无 `to`）与 EIP-4844 / 7702 不在 M1 范围，显式失败；
-   * - 所有链上数值以十进制字符串进出，绝不经过 JS `number`（AGENTS 红线）。
+   * Boundaries (see ADR-012 / m1-api-contract.md Section 2 / adapter-spec Chapter 3):
+   * - **Construct only**: no signing, no broadcast; only `safe-read` RPCs throughout, no on-chain side effects;
+   * - nonce / gas / fees and the chainId check **share one Provider handle**. Splitting them into multiple
+   *   `acquire()` calls could put the chainId check and the nonce on different endpoints, making the check meaningless
+   *   (adapter-spec 8.1); a single handle is guaranteed by the one `acquire()` inside this function;
+   * - When `req.nonce` is explicit, `eth_getTransactionCount` is **no longer** queried, letting the upper layer lock the nonce
+   *   lease result into the payload (development-plan 4.3);
+   * - chainId comes from the Chain Registry, never trusting the request body; a mismatch with the endpoint's `eth_chainId`
+   *   fails closed (`DFR_CHAIN_MISMATCH`), never producing a payload that could be replayed;
+   * - Contract creation (no `to`) and EIP-4844 / 7702 are out of M1 scope; fail explicitly;
+   * - All on-chain values enter and leave as decimal strings, never via JS `number` (AGENTS red line).
    */
   async build(ctx: AdapterContext, req: TransactionRequest): Promise<UnsignedTransaction> {
     this.assertChain(req.chain, ctx);
@@ -561,7 +561,7 @@ export class EvmAdapter
     if (req.to === undefined) {
       throw createDfrError('DFR_UNSUPPORTED_CAPABILITY', {
         requestId: ctx.requestId,
-        message: 'M1 build 只支持向已有地址发送交易；合约创建（缺少 to）不在范围',
+        message: 'M1 build only supports sending transactions to existing addresses; contract creation (missing to) is out of scope',
         chain: this.chain.id,
         details: { capability: 'transaction.build', reason: 'contract-creation' },
       });
@@ -575,12 +575,12 @@ export class EvmAdapter
 
     const handle = await ctx.providers.acquire({ capability: 'transaction.build' });
 
-    // 先校验端点 chainId：后续所有读数都建立在这条链上。
+    // Check the endpoint chainId first: all subsequent reads build on this chain.
     const observedChainId = await rpcOn<string>(handle, ctx, 'eth_chainId', []);
     if (this.quantity(observedChainId, 'eth_chainId', ctx) !== BigInt(chainId)) {
       throw createDfrError('DFR_CHAIN_MISMATCH', {
         requestId: ctx.requestId,
-        message: `Provider 返回的 chainId 与注册表不一致（期望 ${chainId}）`,
+        message: `Provider returned a chainId inconsistent with the registry (expected ${chainId})`,
         chain: this.chain.id,
         details: { expectedChainId: chainId },
       });
@@ -593,7 +593,7 @@ export class EvmAdapter
     ]);
     const gas = this.quantity(gasHex, 'eth_estimateGas', ctx);
     if (gas <= 0n) {
-      throw this.validationFailed('gas', 'eth_estimateGas 返回非正数 gas', ctx);
+      throw this.validationFailed('gas', 'eth_estimateGas returned non-positive gas', ctx);
     }
 
     const intent: EvmUnsignedIntent = {
@@ -615,7 +615,7 @@ export class EvmAdapter
       encoding: 'hex',
       requiresNonce: encoded.nonce,
       chainIdForSigning: encoded.chainId,
-      // 费用上限：gas × 每 gas 价格上限，计价资产为原生币（Amount 携带计价资产）。
+      // Fee cap: gas × per-gas price cap, priced in the native coin (Amount carries the pricing asset).
       feeEstimate: {
         asset: { kind: 'native', chain: this.chain.id },
         amount: (gas * gasPrice).toString(10) as DecimalUint,
@@ -629,34 +629,34 @@ export class EvmAdapter
     };
   }
 
-  /* ---------------- 未声明的能力（M1+）：显式失败，不静默降级 ---------------- */
+  /* ---------------- Undeclared capabilities (M1+): fail explicitly, no silent downgrade ---------------- */
 
   /**
-   * 尚未落地的方法（ADR-010 M0 边界 + M1 分批评审）。
+   * Methods not yet landed (ADR-010 M0 boundary + M1 staged review).
    *
-   * 这些方法**不在** `capabilities()` 中；Core 的路由本应在到达这里之前就拒绝。
-   * 这里仍然显式实现，是为了让直接调用 Adapter 的路径（测试、第三方集成）
-   * 也得到 `DFR_UNSUPPORTED_CAPABILITY`，而不是一个 `TypeError`
-   * （adapter-spec 第 6 章、第 9 章 L1）。
+   * These methods are **not** in `capabilities()`; Core's routing should have rejected them before reaching here.
+   * They are still implemented explicitly so that paths calling the Adapter directly (tests, third-party integrations)
+   * also get `DFR_UNSUPPORTED_CAPABILITY` instead of a `TypeError`
+   * (adapter-spec Chapters 6 and 9 L1).
    */
 
   /* ------------------------------ simulate ----------------------------- */
 
   /**
-   * M1 simulate（DFR-M1-B03）：用 `eth_call` + `eth_estimateGas` 归一化执行风险。
+   * M1 simulate (DFR-M1-B03): normalize execution risk with `eth_call` + `eth_estimateGas`.
    *
-   * 语义（m1-api-contract.md 第 2 节、error-spec 第 5 章）：
-   * - **无副作用**：只发 `safe-read`，绝不广播、不签名；
-   * - 执行回滚（transport 已映射为 `DFR_TRANSACTION_REVERTED`）**不是**异常，
-   *   而是 `{ success: false, revertReason }`；状态由 Transaction Engine 落为
-   *   `reverted` 并封锁广播（B05）。若把它抛成 5xx，调用方会误以为服务故障；
-   * - 其它错误（Provider 不可用、超时、余额不足、nonce 冲突）继续抛出：
-   *   error-spec 第 5.2 章要求"分类不确定时降级，不猜测"；
-   * - 接受 `TransactionRequest`（按提供方模拟）与 `UnsignedTransaction`
-   *   （按已固定载荷模拟）。载荷**不含发送方**，此时省略 `eth_call.from` 并写入
-   *   `warnings`，不伪造发送方、不宣称覆盖发送方相关检查；
-   * - `success` 只代表 `eth_call` 通过；`stateChanges` 需要 trace/diff RPC，
-   *   M1 不实现，因此不返回（不编造）。
+   * Semantics (m1-api-contract.md Section 2, error-spec Chapter 5):
+   * - **No side effects**: only `safe-read` is sent; never broadcast, never sign;
+   * - An execution revert (already mapped by transport to `DFR_TRANSACTION_REVERTED`) is **not** an exception,
+   *   but `{ success: false, revertReason }`; the Transaction Engine records the state as
+   *   `reverted` and blocks broadcast (B05). Throwing it as 5xx would make callers think the service is down;
+   * - Other errors (Provider unavailable, timeout, insufficient balance, nonce conflict) keep throwing:
+   *   error-spec Section 5.2 requires "downgrade when the classification is uncertain; do not guess";
+   * - Accepts `TransactionRequest` (simulate as provided) and `UnsignedTransaction`
+   *   (simulating against a fixed payload). The payload **has no sender**, so `eth_call.from` is omitted and a
+   *   `warnings` entry is written instead — never fabricate a sender, never claim sender-related checks are covered;
+   * - `success` only means `eth_call` passed; `stateChanges` needs trace/diff RPC,
+   *   which M1 does not implement, so it is not returned (nothing is fabricated).
    */
   async simulate(
     ctx: AdapterContext,
@@ -665,7 +665,7 @@ export class EvmAdapter
   ): Promise<SimulationResult> {
     const warnings: string[] = [];
     const payloadInput = isUnsignedTransaction(req) ? req : undefined;
-    // 先做所有本地校验（不花 RPC）；两条路径的输入形状不同，分别收窄。
+    // Do all local validation first (no RPC spent); the two paths have different input shapes, narrowed separately.
     let requestInput: TransactionRequest | undefined;
     if (isUnsignedTransaction(req)) {
       this.assertChain(req.chain, ctx);
@@ -677,7 +677,7 @@ export class EvmAdapter
       if (req.to === undefined) {
         throw createDfrError('DFR_UNSUPPORTED_CAPABILITY', {
           requestId: ctx.requestId,
-          message: 'M1 simulate 只支持向已有地址发送交易；合约创建（缺少 to）不在范围',
+          message: 'M1 simulate only supports sending transactions to existing addresses; contract creation (missing to) is out of scope',
           chain: this.chain.id,
           details: { capability: 'transaction.simulate', reason: 'contract-creation' },
         });
@@ -692,7 +692,7 @@ export class EvmAdapter
     if (this.quantity(observedChainId, 'eth_chainId', ctx) !== BigInt(chainId)) {
       throw createDfrError('DFR_CHAIN_MISMATCH', {
         requestId: ctx.requestId,
-        message: `Provider 返回的 chainId 与注册表不一致（期望 ${chainId}）`,
+        message: `Provider returned a chainId inconsistent with the registry (expected ${chainId})`,
         chain: this.chain.id,
         details: { expectedChainId: chainId },
       });
@@ -711,15 +711,15 @@ export class EvmAdapter
       if (!estimate.ok) return this.revertedResult(estimate.reason, warnings);
       gas = this.quantity(estimate.value, 'eth_estimateGas', ctx);
     }
-    if (gas <= 0n) throw this.validationFailed('gas', 'simulate 得到的 gas 必须为正数', ctx);
+    if (gas <= 0n) throw this.validationFailed('gas', 'simulate returned gas that must be positive', ctx);
 
     const executed = await this.readOrRevert(() =>
       rpcOn<string>(handle, ctx, 'eth_call', [this.simulationParams(call, gas), 'latest']),
     );
     if (!executed.ok) return this.revertedResult(executed.reason, warnings);
 
-    // 仅成功路径才需要费用估算（失败路径没有可通过的交易）。
-    // 已构造载荷自带费用字段；请求路径才需要询问端点。
+    // Only the success path needs a fee estimate (the failure path has no passable transaction).
+    // A constructed payload carries its own fee fields; only the request path needs to ask the endpoint.
     let feePerGas = call.feePerGas;
     if (feePerGas === undefined && requestInput !== undefined) {
       const fee = await this.resolveFees(handle, ctx, requestInput);
@@ -739,27 +739,27 @@ export class EvmAdapter
   }
 
   /**
-   * M1 broadcast（DFR-M1-C02）：把外部签名载荷提交给链，**恰好一次**。
+   * M1 broadcast (DFR-M1-C02): submit an externally signed payload to the chain, **exactly once**.
    *
-   * 权威来源：m1-api-contract 第 3/5 节、transaction-lifecycle §4.4、error-spec §5.1。
+   * Authoritative sources: m1-api-contract Sections 3/5, transaction-lifecycle §4.4, error-spec §5.1.
    *
-   * 资金安全优先于功能便利，因此这里有四个刻意的选择：
+   * Fund safety outranks convenience, so there are four deliberate choices here:
    *
-   * 1. **不查 `eth_chainId`**：chainId 已经密码学绑定在签名载荷里，与 Registry 的
-   *    externalChainId 比较即可。多一次探测既多一次往返，也让"单次调用"变得难以证明。
-   * 2. **本地校验失败一律不发出广播**：未签名载荷、链不符、`expectedHash` 与载荷重算
-   *    不一致都在 acquire 之前拒绝（`DFR_TRANSACTION_REJECTED` / `DFR_CHAIN_MISMATCH`）。
-   * 3. **`already known` / `already exists` 是幂等成功**，不是错误（error-spec §5.1）；
-   *    这类判断必须在 Adapter 做，Provider 不能理解链语义。
-   * 4. **幂等类别是 `non-idempotent-write`**：Provider Manager 因此绝不自动重试
-   *    （provider-spec 第 6 章），失败也不切换 Provider 重发。
+   * 1. **Do not query `eth_chainId`**: the chainId is already cryptographically bound in the signed payload; comparing it with the Registry's
+   *    externalChainId is enough. One more probe is one more round trip and makes "a single call" harder to prove.
+   * 2. **Failed local validation never sends a broadcast**: unsigned payloads, chain mismatches, and `expectedHash` vs. recomputed-payload
+   *    mismatches are all rejected before acquire (`DFR_TRANSACTION_REJECTED` / `DFR_CHAIN_MISMATCH`).
+   * 3. **`already known` / `already exists` are idempotent successes**, not errors (error-spec §5.1);
+   *    this classification must happen in the Adapter; the Provider cannot understand chain semantics.
+   * 4. **The idempotency class is `non-idempotent-write`**: the Provider Manager therefore never retries automatically
+   *    (provider-spec Chapter 6), and failures never switch Provider and resend.
    *
-   * 与记录的逐字段绑定（from / nonce / value / data 对比保存的 unsigned 载荷）由
-   * TransactionEngine 在调用本方法之前完成（C03，`bindSignedTransaction`）：
-   * Adapter 拿不到那条记录，也不应访问数据库。
+   * Field-by-field binding against the record (from / nonce / value / data vs. the saved unsigned payload) is done by
+   * TransactionEngine before calling this method (C03, `bindSignedTransaction`):
+   * the Adapter cannot reach that record, nor should it access the database.
    *
-   * 端点返回的哈希必须与载荷重算一致：不一致说明端点行为异常，fail-closed 而不是
-   * 报告一个可能错误的 txHash（m1-api-contract 第 3 节"txHash 由载荷重算"）。
+   * The hash returned by the endpoint must match the recomputed payload hash: a mismatch means abnormal endpoint behavior, so fail closed instead of
+   * reporting a possibly wrong txHash (m1-api-contract Section 3, "txHash is recomputed from the payload").
    */
   async broadcast(
     ctx: AdapterContext,
@@ -769,10 +769,10 @@ export class EvmAdapter
     this.assertChain(signed.chain, ctx);
     const chainId = this.expectedChainId(ctx);
 
-    // --- 本地校验（不花 RPC、不 acquire） ---
+    // --- Local validation (no RPC, no acquire) ---
     const txHash = await this.verifyBindingWithOptions(ctx, signed, chainId, options);
 
-    // --- 单次调用 ---
+    // --- Single call ---
     const handle = await ctx.providers.acquire({ capability: 'transaction.broadcast' });
     let returned: string;
     try {
@@ -780,7 +780,7 @@ export class EvmAdapter
         {
           method: 'eth_sendRawTransaction',
           params: [signed.signedPayload],
-          // 防资金事故的核心：Provider Manager 对 non-idempotent-write 绝不重试。
+          // The core fund-safety guard: the Provider Manager never retries non-idempotent-write.
           idempotency: 'non-idempotent-write',
           timeoutMs: BROADCAST_TIMEOUT_MS,
         },
@@ -793,8 +793,8 @@ export class EvmAdapter
       );
     } catch (err) {
       if (this.isAlreadyKnown(err)) return this.broadcastAccepted(ctx, handle, txHash, options);
-      // 其它失败原样上抛：状态是否回退由 TransactionEngine 决定（C03），
-      // Adapter 不假装成功，也不在这里重发。
+      // Other failures are rethrown as-is: TransactionEngine decides whether state rolls back (C03);
+      // the Adapter neither pretends success nor resends here.
       throw err;
     }
 
@@ -805,7 +805,7 @@ export class EvmAdapter
     ) {
       throw createDfrError('DFR_PROVIDER_INVALID_RESPONSE', {
         requestId: ctx.requestId,
-        message: '广播端点返回的交易哈希与签名载荷不一致',
+        message: 'broadcast endpoint returned a transaction hash inconsistent with the signed payload',
         provider: handle.id,
         chain: this.chain.id,
         details: { method: 'eth_sendRawTransaction' },
@@ -815,7 +815,7 @@ export class EvmAdapter
     return this.broadcastAccepted(ctx, handle, txHash, options);
   }
 
-  /** 广播成功（含 already-known 幂等成功）的唯一构造点。 */
+  /** The single construction point for broadcast success (including already-known idempotent success). */
   private broadcastAccepted(
     _ctx: AdapterContext,
     handle: ProviderHandle,
@@ -834,17 +834,17 @@ export class EvmAdapter
   }
 
   /**
-   * 广播前的本地绑定校验，返回由载荷重算的交易哈希。
+   * Pre-broadcast local binding verification, returning the transaction hash recomputed from the payload.
    *
-   * 两条路径：
-   * - **有记录真值**（`options.expectedFrom` + `options.expectedUnsignedPayload`，C03a）：
-   *   走 `bindSignedTransaction` 做完整绑定——chainId、恢复出的 from、nonce/to/value/data/
-   *   accessList 与**记录里的** unsigned 载荷逐项比对、expectedHash 比对。
-   *   这是唯一能发现"换账户签同一笔"的检查，客户端回传的 unsigned 不作数。
-   * - **无记录真值**：仍恢复发送方并校验签名，再校验 chainId / expectedHash，
-   *   保持 C02 的行为。真实写路径必须走第一条（引擎会带上期望值）。
+   * Two paths:
+   * - **With recorded ground truth** (`options.expectedFrom` + `options.expectedUnsignedPayload`, C03a):
+   *   go through `bindSignedTransaction` for the full binding — chainId, the recovered from, nonce/to/value/data/
+   *   accessList compared item by item against the **recorded** unsigned payload, plus an expectedHash comparison.
+   *   This is the only check that catches "a different account signing the same transaction"; a client-returned unsigned payload does not count.
+   * - **No recorded ground truth**: still recover the sender and verify the signature, then verify chainId / expectedHash,
+   *   keeping C02's behavior. The real write path must take the first route (the engine passes the expected values).
    *
-   * 任何失败都在 `acquire()` 之前抛出，因此**不会发出广播**。
+   * Any failure is thrown before `acquire()`, so **no broadcast is sent**.
    */
   private async verifyBindingWithOptions(
     ctx: AdapterContext,
@@ -855,7 +855,7 @@ export class EvmAdapter
     const hasFrom = expectation?.expectedFrom !== undefined;
     const hasUnsigned = expectation?.expectedUnsignedPayload !== undefined;
     if (hasFrom !== hasUnsigned) {
-      // 半个真值比没有真值更危险：它会让调用方以为做了绑定校验。
+      // Half a ground truth is more dangerous than none: it makes callers think binding verification happened.
       throw this.broadcastRejected(ctx, 'invalid_expectation');
     }
 
@@ -874,7 +874,7 @@ export class EvmAdapter
           if (err.reason === 'chain_id_mismatch') {
             throw createDfrError('DFR_CHAIN_MISMATCH', {
               requestId: ctx.requestId,
-              message: `签名载荷的 chainId 与注册表不一致（期望 ${chainId}）`,
+              message: `signed payload chainId is inconsistent with the registry (expected ${chainId})`,
               chain: this.chain.id,
               details: { expectedChainId: chainId },
             });
@@ -885,7 +885,7 @@ export class EvmAdapter
       }
     }
 
-    // 无记录真值：也必须完成签名恢复；没有记录时无法校验发送方归属。
+    // No recorded ground truth: signature recovery must still complete; with no record, sender ownership cannot be verified.
     let parsed;
     try {
       parsed = await parseSignedTransaction(this.chain.id, signed.signedPayload);
@@ -899,7 +899,7 @@ export class EvmAdapter
     if (parsed.chainId !== chainId) {
       throw createDfrError('DFR_CHAIN_MISMATCH', {
         requestId: ctx.requestId,
-        message: `签名载荷的 chainId 与注册表不一致（期望 ${chainId}）`,
+        message: `signed payload chainId is inconsistent with the registry (expected ${chainId})`,
         chain: this.chain.id,
         details: { expectedChainId: chainId },
       });
@@ -910,7 +910,7 @@ export class EvmAdapter
     return parsed.txHash;
   }
 
-  /** 广播前的本地拒绝：统一 422 `DFR_TRANSACTION_REJECTED`，不泄漏签名原文。 */
+  /** Pre-broadcast local rejection: uniform 422 `DFR_TRANSACTION_REJECTED`, without leaking the raw signature. */
   private broadcastRejected(
     ctx: AdapterContext,
     reason: string,
@@ -918,14 +918,14 @@ export class EvmAdapter
   ): Error {
     return createDfrError('DFR_TRANSACTION_REJECTED', {
       requestId: ctx.requestId,
-      message: `签名载荷未通过广播前校验（${reason}）`,
+      message: `signed payload failed pre-broadcast validation (${reason})`,
       chain: this.chain.id,
       details: { reason },
       ...(cause !== undefined ? { cause } : {}),
     });
   }
 
-  /** 端点是否在说"这笔交易我已经有了"（幂等成功，error-spec §5.1）。 */
+  /** Whether the endpoint is saying "I already have this transaction" (idempotent success, error-spec §5.1). */
   private isAlreadyKnown(err: unknown): boolean {
     if (!isDfrError(err)) return false;
     const message = `${err.chainError?.message ?? ''}`.toLowerCase();
@@ -933,16 +933,16 @@ export class EvmAdapter
   }
 
   /**
-   * 广播后的链上观测（DFR-M1-C03b，非 Capability 的内部协调入口）。
+   * Post-broadcast on-chain observation (DFR-M1-C03b, a non-Capability internal coordination entry point).
    *
-   * 只在广播结果不确定时由 Transaction Engine 调用一次。三类结果：
+   * Called once by the Transaction Engine, only when the broadcast result is uncertain. Three outcomes:
    *
-   * - 按 `expectedHash` 查到交易：有 `blockNumber` → `included`，否则 → `pending`；
-   * - 查不到：比较该账户的链上 nonce 与记录的 nonce ——
-   *   链上 nonce **已越过**说明该 nonce 已被别的交易消耗 → `replaced`；
-   *   否则 → `absent`（**不是** dropped：mempool 传播异步，判 dropped 留给 D03）。
+   * - Transaction found by `expectedHash`: with `blockNumber` → `included`, otherwise → `pending`;
+   * - Not found: compare the account's on-chain nonce with the recorded nonce —
+   *   an on-chain nonce that has **already passed** means that nonce was consumed by another transaction → `replaced`;
+   *   otherwise → `absent` (**not** dropped: mempool propagation is asynchronous; judging dropped is left to D03).
    *
-   * 全部只读（`safe-read`），不会重发广播。
+   * All read-only (`safe-read`); no broadcast is resent.
    */
   async observeBroadcast(
     ctx: AdapterContext,
@@ -974,7 +974,7 @@ export class EvmAdapter
       return { kind: 'pending', txHash: req.txHash };
     }
 
-    // 查不到本人交易：只有"该 nonce 已被别人消耗"才能判 replaced。
+    // Own transaction not found: only "that nonce was consumed by someone else" justifies replaced.
     const latestNonceHex = await rpcOn<string>(handle, ctx, 'eth_getTransactionCount', [
       req.from.address,
       'latest',
@@ -989,14 +989,14 @@ export class EvmAdapter
   /* ------------------------------ logs ------------------------------- */
 
   /**
-   * 按区块区间查询事件日志（ADR-034，`eth_getLogs`）。
+   * Query event logs by block range (ADR-034, `eth_getLogs`).
    *
-   * 与 `contract.read`（`eth_call`）不同：这里返回某地址在 `[fromBlock, toBlock]`
-   * 内的**事件日志**。三条硬约束：
-   *   1. `fromBlock`/`toBlock` 必填；跨度超过 Adapter 的 `constraints.maxBlockRange`
-   *      一律 fail-closed（不静默截断）；
-   *   2. 只读（`safe-read`），单次 `acquire`、句柄复用；
-   *   3. 结果是公开链上数据，但**不**写入日志/错误详情。
+   * Unlike `contract.read` (`eth_call`), this returns the **event logs** of an address within `[fromBlock, toBlock]`
+   * Three hard constraints:
+   *   1. `fromBlock`/`toBlock` are required; a span exceeding the Adapter's `constraints.maxBlockRange`
+   *      always fails closed (no silent truncation);
+   *   2. Read-only (`safe-read`), single `acquire`, handle reuse;
+   *   3. Results are public on-chain data, but are **not** written into logs/error details.
    */
   async logs(ctx: AdapterContext, req: ContractLogsRequest): Promise<readonly ChainLog[]> {
     this.assertChain(ctx.chain, ctx);
@@ -1009,7 +1009,7 @@ export class EvmAdapter
     if (to < from) {
       throw createDfrError('DFR_VALIDATION_FAILED', {
         requestId: ctx.requestId,
-        message: 'toBlock 不能早于 fromBlock',
+        message: 'toBlock must not be earlier than fromBlock',
         chain: this.chain.id,
         details: { fields: ['toBlock'] },
       });
@@ -1018,13 +1018,13 @@ export class EvmAdapter
     if (to - from + 1n > BigInt(maxRange)) {
       throw createDfrError('DFR_VALIDATION_FAILED', {
         requestId: ctx.requestId,
-        message: `区块跨度超过上限（maxBlockRange=${maxRange}）；请缩小区间后重试`,
+        message: `Block range exceeds the limit (maxBlockRange=${maxRange}); narrow the range and retry`,
         chain: this.chain.id,
         details: { maxBlockRange: maxRange, requested: (to - from + 1n).toString(10) },
       });
     }
 
-    // `numberOf` 已保证两者都是明确的区块号（number 分支），因此可直接取字段。
+    // `numberOf` already guarantees both are explicit block numbers (the number branch), so the fields can be read directly.
     const params: Record<string, unknown> = {
       fromBlock: decimalUintToHex((req.fromBlock as { number: DecimalUint }).number),
       toBlock: decimalUintToHex((req.toBlock as { number: DecimalUint }).number),
@@ -1038,7 +1038,7 @@ export class EvmAdapter
     return req.limit !== undefined ? logs.slice(0, req.limit) : logs;
   }
 
-  /** `eth_getLogs` 的 RPC 日志 → 领域 `ChainLog`（只保留稳定字段）。 */
+  /** `eth_getLogs` RPC logs → domain `ChainLog` (only stable fields kept). */
   private toChainLog(log: RpcLog): ChainLog {
     const mapped: ChainLog = {};
     if (log.address != null) mapped.address = log.address;
@@ -1054,12 +1054,12 @@ export class EvmAdapter
     return mapped;
   }
 
-  /** BlockRef → 十进制区块号；`hash`/`tag` 不能直接用于 getLogs 的区间（需明确的数字界）。 */
+  /** BlockRef → decimal block number; `hash`/`tag` cannot be used directly for a getLogs range (explicit numeric bounds are needed). */
   private numberOf(ref: BlockRef, ctx: AdapterContext, field: string): bigint {
     if (ref.kind === 'number') return BigInt(ref.number);
     throw createDfrError('DFR_VALIDATION_FAILED', {
       requestId: ctx.requestId,
-      message: `${field} 必须是明确的区块号（number）；tag/hash 不能用于日志区间`,
+      message: `${field} must be an explicit block number (number); tag/hash cannot be used for a log range`,
       chain: this.chain.id,
       details: { fields: [field] },
     });
@@ -1068,12 +1068,12 @@ export class EvmAdapter
   /* ------------------------- contract.read ------------------------- */
 
   /**
-   * 只读合约调用（ADR-035，`eth_call`）。
+   * Read-only contract calls (ADR-035, `eth_call`).
    *
-   * 两种输入二选一（同时给出即 fail-closed）：
-   *   - `data`：预编码 calldata；
-   *   - `abi` + `method`（+ `args`）：用 viem 编码，并按 outputs 解码返回。
-   * 只读：单次 `acquire`、句柄复用、`safe-read`。
+   * Two inputs, choose one (giving both fails closed):
+   *   - `data`: pre-encoded calldata;
+   *   - `abi` + `method` (+ `args`): encode with viem and decode the outputs for the return value.
+   * Read-only: single `acquire`, handle reuse, `safe-read`.
    */
   async readContract(ctx: AdapterContext, req: ContractReadRequest): Promise<ContractReadResult> {
     this.assertChain(ctx.chain, ctx);
@@ -1083,7 +1083,7 @@ export class EvmAdapter
     if (hasData === hasAbi) {
       throw createDfrError('DFR_VALIDATION_FAILED', {
         requestId: ctx.requestId,
-        message: '必须且只能提供「data」或「abi+method」之一',
+        message: 'must provide exactly one of "data" or "abi+method"',
         chain: this.chain.id,
         details: { fields: ['data', 'abi', 'method'] },
       });
@@ -1096,7 +1096,7 @@ export class EvmAdapter
       if (!/^0x[0-9a-fA-F]*$/u.test(req.data!)) {
         throw createDfrError('DFR_VALIDATION_FAILED', {
           requestId: ctx.requestId,
-          message: 'data 必须是 0x 十六进制',
+          message: 'data must be 0x hex',
           chain: this.chain.id,
           details: { fields: ['data'] },
         });
@@ -1104,14 +1104,14 @@ export class EvmAdapter
       callData = req.data!;
     } else {
       try {
-        // human-readable 字符串需要先 parseAbi；JSON 片段直接用。
+        // Human-readable strings need parseAbi first; JSON fragments are used directly.
         const rawAbi = req.abi as readonly (string | object)[];
         const parsedAbi = rawAbi.some((item) => typeof item === 'string')
           ? parseAbi(rawAbi.filter((item): item is string => typeof item === 'string'))
           : (rawAbi as never);
         const abi = parsedAbi;
         const fn = getAbiItem({ abi: abi as never, name: req.method as string } as never);
-        if (fn === undefined) throw new Error(`ABI 里没有方法 ${req.method}`);
+        if (fn === undefined) throw new Error(`ABI has no method ${req.method}`);
         callData = encodeFunctionData({
           abi: abi as never,
           functionName: req.method!,
@@ -1127,7 +1127,7 @@ export class EvmAdapter
       } catch (err) {
         throw createDfrError('DFR_VALIDATION_FAILED', {
           requestId: ctx.requestId,
-          message: `ABI 编码失败：${err instanceof Error ? err.message : String(err)}`,
+          message: `ABI encoding failed: ${err instanceof Error ? err.message : String(err)}`,
           chain: this.chain.id,
           details: { fields: ['abi', 'method', 'args'] },
         });
@@ -1143,11 +1143,11 @@ export class EvmAdapter
     const result: ContractReadResult = { data: raw };
     if (canDecode) {
       try {
-        // 解码结果里可能有 bigint（uint256）；HTTP/JSON 无法序列化 bigint，
-        // 且本仓约定数值一律十进制字符串 → 递归归一化后再返回。
+        // Decoded results may contain bigint (uint256); HTTP/JSON cannot serialize bigint,
+        // and this repo requires all values as decimal strings → normalize recursively before returning.
         (result as { decoded?: unknown }).decoded = normalizeDecoded(decode(raw));
       } catch {
-        // 返回形状与 ABI 不符：保留原始 data，不把解码失败伪装成调用失败。
+        // Return shape does not match the ABI: keep the original data; do not disguise a decode failure as a call failure.
       }
     }
     return result;
@@ -1156,10 +1156,10 @@ export class EvmAdapter
   /* ------------------------- account.code ------------------------- */
 
   /**
-   * 账户存在性 / 合约判定（ADR-036，`eth_getCode` + `eth_getTransactionCount`）。
+   * Account existence / contract determination (ADR-036, `eth_getCode` + `eth_getTransactionCount`).
    *
-   * `exists` 是**启发式**：code 非空或余额>0 或 nonce>0。对"曾经存在但已清空"的地址会判
-   * `exists:false`——这是取舍，已在 ADR 与测试里显式说明。
+   * `exists` is a **heuristic**: non-empty code, balance > 0, or nonce > 0. An address that "once existed but has been emptied" is judged
+   * `exists:false` — this is a trade-off, stated explicitly in the ADR and tests.
    */
   async getAccount(ctx: AdapterContext, account: AccountRef): Promise<Account> {
     this.assertChain(account.chain, ctx);
@@ -1196,30 +1196,30 @@ export class EvmAdapter
   private unsupportedError(capability: CapabilityId, ctx: AdapterContext): Error {
     return createDfrError('DFR_UNSUPPORTED_CAPABILITY', {
       requestId: ctx.requestId,
-      message: `Adapter 未启用能力 ${capability}`,
+      message: `Adapter has not enabled capability ${capability}`,
       chain: this.chain.id,
       details: { capability },
     });
   }
 
 
-  /* --------------------------- build 辅助 --------------------------- */
+  /* --------------------------- build helpers --------------------------- */
 
-  /** 请求的转账金额；只接受本链原生资产（代币/跨链金额缺 ABI 语义，ADR-012）。 */
+  /** Requested transfer amount; only this chain's native asset is accepted (token/cross-chain amounts lack ABI semantics, ADR-012). */
   private transactionValue(req: TransactionRequest, ctx: AdapterContext): bigint {
     if (req.value === undefined) return 0n;
     const asset = req.value.asset;
     if (asset.kind !== 'native' || asset.chain !== this.chain.id) {
       throw createDfrError('DFR_INVALID_ASSET', {
         requestId: ctx.requestId,
-        message: 'build 的原生金额必须使用本链原生资产',
+        message: 'build native amounts must use this chain's native asset',
         chain: this.chain.id,
       });
     }
     return this.decimalField(req.value.amount, 'value', ctx);
   }
 
-  /** `eth_estimateGas` 参数；只放存在且非零的可选字段，避免给节点多余假设。 */
+  /** `eth_estimateGas` parameters; only include optional fields that exist and are non-zero, to avoid giving the node extra assumptions. */
   private estimateGasParams(
     req: TransactionRequest,
     value: bigint,
@@ -1234,8 +1234,8 @@ export class EvmAdapter
   }
 
   /**
-   * nonce 解析：显式 nonce 优先（上层已通过 NonceStore 租约锁定），否则取
-   * `eth_getTransactionCount(from, "pending")`——包含内存池中已提交但未打包的交易。
+   * Nonce resolution: an explicit nonce wins (the upper layer already locked it via a NonceStore lease); otherwise fetch
+   * `eth_getTransactionCount(from, "pending")` — including mempool transactions already submitted but not yet packaged.
    */
   private async resolveNonce(
     handle: ProviderHandle,
@@ -1251,13 +1251,13 @@ export class EvmAdapter
   }
 
   /**
-   * 费用字段解析（全部返回十进制字符串，供 codec 直接使用）。
+   * Fee-field parsing (all returned as decimal strings, for direct codec use).
    *
-   * EIP-1559：`maxFeePerGas = 2 × baseFee + tip`（有界余量，否则 baseFee 在
-   * build → broadcast 之间上涨会让交易无法被打包）；`req.maxFee` 作为**每 gas
-   * 价格上限**覆盖该默认值，低于 `baseFee + tip` 时 fail-closed，不静默抬高。
+   * EIP-1559: `maxFeePerGas = 2 × baseFee + tip` (bounded margin; otherwise a baseFee rise between
+   * build → broadcast would leave the transaction unpackable); `req.maxFee` acts as the **per-gas
+   * price cap** overriding that default; below `baseFee + tip` it fails closed, never silently raising it.
    *
-   * legacy / eip2930：使用 `eth_gasPrice`；`req.maxFee` 作为上限，低于链上报价时失败。
+   * legacy / eip2930: use `eth_gasPrice`; `req.maxFee` acts as the cap, failing when below the on-chain quote.
    */
   private async resolveFees(
     handle: ProviderHandle,
@@ -1276,12 +1276,12 @@ export class EvmAdapter
         if (gasPrice < networkPrice) {
           throw this.validationFailed(
             'maxFee',
-            `maxFee 低于链上 eth_gasPrice（${networkPrice.toString(10)}）`,
+            `maxFee is below the on-chain eth_gasPrice (${networkPrice.toString(10)})`,
             ctx,
           );
         }
       }
-      if (gasPrice <= 0n) throw this.validationFailed('maxFee', 'gasPrice 必须为正数', ctx);
+      if (gasPrice <= 0n) throw this.validationFailed('maxFee', 'gasPrice must be positive', ctx);
       return { gasPrice: gasPrice.toString(10) };
     }
 
@@ -1291,10 +1291,10 @@ export class EvmAdapter
     ]);
     const baseFeeHex = block?.baseFeePerGas;
     if (baseFeeHex == null) {
-      // pre-London 端点不会给 baseFeePerGas：这条链不支持 EIP-1559 计价。
+      // Pre-London endpoints do not provide baseFeePerGas: this chain does not support EIP-1559 pricing.
       throw createDfrError('DFR_UNSUPPORTED_CAPABILITY', {
         requestId: ctx.requestId,
-        message: '最新区块缺少 baseFeePerGas：该端点不支持 EIP-1559 计价',
+        message: 'latest block is missing baseFeePerGas: this endpoint does not support EIP-1559 pricing',
         chain: this.chain.id,
         details: { capability: 'transaction.build', reason: 'no-base-fee' },
       });
@@ -1308,12 +1308,12 @@ export class EvmAdapter
       if (maxFeePerGas < floor) {
         throw this.validationFailed(
           'maxFee',
-          `maxFee 低于 baseFee + priorityFee（${floor.toString(10)}）`,
+          `maxFee is below baseFee + priorityFee (${floor.toString(10)})`,
           ctx,
         );
       }
     }
-    // codec 要求 maxPriorityFeePerGas ≤ maxFeePerGas；tip ≤ baseFee + tip ≤ maxFee 恒成立。
+    // The codec requires maxPriorityFeePerGas ≤ maxFeePerGas; tip ≤ baseFee + tip ≤ maxFee always holds.
     return {
       maxFeePerGas: maxFeePerGas.toString(10),
       maxPriorityFeePerGas: tip.toString(10),
@@ -1321,9 +1321,9 @@ export class EvmAdapter
   }
 
   /**
-   * priority fee：优先 `eth_maxPriorityFeePerGas`；端点不支持时回退到
-   * `eth_feeHistory` 的中位奖励。两者都拿不到则 fail-closed——绝不静默用 0 或常数，
-   * 否则会产出一笔几乎不可能被打包的交易。
+   * priority fee: prefer `eth_maxPriorityFeePerGas`; fall back to
+   * `eth_feeHistory`'s median reward when the endpoint does not support it. If neither is available, fail closed — never silently use 0 or a constant,
+   * which would otherwise produce a transaction almost impossible to package.
    */
   private async resolvePriorityFee(handle: ProviderHandle, ctx: AdapterContext): Promise<bigint> {
     try {
@@ -1344,13 +1344,13 @@ export class EvmAdapter
       }
       throw createDfrError('DFR_CHAIN_UNAVAILABLE', {
         requestId: ctx.requestId,
-        message: '无法获得 priority fee（eth_maxPriorityFeePerGas 与 eth_feeHistory 均不可用）',
+        message: 'cannot obtain a priority fee (both eth_maxPriorityFeePerGas and eth_feeHistory are unavailable)',
         chain: this.chain.id,
       });
     }
   }
 
-  /** 编码意图；codec 的字段级失败统一归一化为 `DFR_VALIDATION_FAILED`（含 details.fields）。 */
+  /** Encode the intent; codec field-level failures are uniformly normalized to `DFR_VALIDATION_FAILED` (with details.fields). */
   private encode(intent: EvmUnsignedIntent, ctx: AdapterContext): EvmUnsignedPayload {
     try {
       return encodeUnsignedTransaction(intent);
@@ -1359,12 +1359,12 @@ export class EvmAdapter
     }
   }
 
-  /** codec 的字段级失败 → 统一 DFR 错误；其它异常原样抛出。 */
+  /** Codec field-level failures → uniform DFR errors; other exceptions are rethrown as-is. */
   private encodeFailure(err: unknown, ctx: AdapterContext): Error {
     if (err instanceof EvmCodecError) {
       return createDfrError('DFR_VALIDATION_FAILED', {
         requestId: ctx.requestId,
-        message: `交易载荷字段非法（${err.reason}）`,
+        message: `invalid transaction payload field (${err.reason})`,
         chain: this.chain.id,
         details: {
           reason: err.reason,
@@ -1376,9 +1376,9 @@ export class EvmAdapter
     return err instanceof Error ? err : new Error(String(err));
   }
 
-  /* -------------------------- simulate 辅助 -------------------------- */
+  /* -------------------------- simulate helpers -------------------------- */
 
-  /** 已构造载荷 → 调用意图；载荷不含发送方，必须写入 warning（不伪造 from）。 */
+  /** Built payload → call intent; the payload has no sender, so a warning must be written (never fabricate from). */
   private simulationCallFromPayload(
     ctx: AdapterContext,
     unsigned: UnsignedTransaction,
@@ -1395,26 +1395,26 @@ export class EvmAdapter
     if (decoded.chainId !== null && BigInt(decoded.chainId) !== BigInt(chainId)) {
       throw this.validationFailed(
         'payload',
-        `载荷 chainId ${decoded.chainId} 与请求链 ${chainId} 不一致`,
+        `payload chainId ${decoded.chainId} does not match the requested chain ${chainId}`,
         ctx,
       );
     }
     if (decoded.to === null) {
       throw createDfrError('DFR_UNSUPPORTED_CAPABILITY', {
         requestId: ctx.requestId,
-        message: '合约创建载荷不在 M1 范围（载荷 to 为空）',
+        message: 'contract-creation payload is out of M1 scope (payload to is empty)',
         chain: this.chain.id,
         details: { capability: 'transaction.simulate', reason: 'contract-creation' },
       });
     }
-    // 调用方（composition root / Transaction Engine）持有记录，知道发送方时会显式传入；
-    // 只有真正不知道发送方时才退化为"节点默认 from"，并如实写进 warnings。
+    // The caller (composition root / Transaction Engine) holds the record and passes the sender explicitly when it knows it;
+    // Only when the sender is genuinely unknown does it fall back to the "node default from", recorded honestly in warnings.
     if (from !== undefined) {
       this.assertChain(from.chain, ctx);
       assertEvmAddress(from.address, this.chain.id, ctx.requestId);
     } else {
       warnings.push(
-        'unsigned 载荷不含发送方：本次模拟使用节点默认发送方，发送方相关检查（余额、授权、nonce）未被覆盖；请用 TransactionRequest 形式模拟以覆盖发送方',
+        'unsigned payload has no sender: this simulation uses the node default sender; sender-related checks (balance, authorization, nonce) are not covered; simulate with a TransactionRequest to cover the sender',
       );
     }
     const feePerGas = decoded.maxFeePerGas ?? decoded.gasPrice;
@@ -1428,7 +1428,7 @@ export class EvmAdapter
     };
   }
 
-  /** 请求 → 调用意图。费用在成功后才解析，避免为回滚请求白花读数。 */
+  /** Request → call intent. Fees are only parsed after success, to avoid wasting reads on reverted requests. */
   private simulationCallFromRequest(ctx: AdapterContext, req: TransactionRequest): SimulationCall {
     return {
       from: req.from.address,
@@ -1438,7 +1438,7 @@ export class EvmAdapter
     };
   }
 
-  /** `eth_call` / `eth_estimateGas` 参数；缺省字段不出现，避免给节点多余假设。 */
+  /** `eth_call` / `eth_estimateGas` parameters; omitted fields do not appear, to avoid giving the node extra assumptions. */
   private simulationParams(call: SimulationCall, gas?: bigint): Record<string, unknown> {
     const params: Record<string, unknown> = { to: call.to };
     if (call.from !== undefined) params.from = call.from;
@@ -1450,10 +1450,10 @@ export class EvmAdapter
   }
 
   /**
-   * 执行一次可能回滚的读调用。
+   * Execute one read call that may revert.
    *
-   * 回滚（transport 映射的 `DFR_TRANSACTION_REVERTED`）是**预期结果**，转成
-   * `{ ok: false, reason }`；其它错误原样抛出，不吞掉 Provider 故障。
+   * A revert (mapped by transport to `DFR_TRANSACTION_REVERTED`) is an **expected result**, converted to
+   * `{ ok: false, reason }`; other errors are rethrown as-is, without swallowing Provider failures.
    */
   private async readOrRevert<T>(
     run: () => Promise<T>,
@@ -1474,12 +1474,12 @@ export class EvmAdapter
     return result;
   }
 
-  /** 十进制字符串解析（AGENTS 红线：链上数值不得经过 JS number）。 */
+  /** Decimal-string parsing (AGENTS red line: on-chain values must never pass through JS number). */
   private decimalField(value: unknown, field: string, ctx: AdapterContext): bigint {
     if (typeof value !== 'string' || !DECIMAL_UINT_RE.test(value)) {
       throw this.validationFailed(
         field,
-        `${field} 必须是规范十进制字符串（无前导零、无符号、无小数）`,
+        `${field} must be a canonical decimal string (no leading zeros, no sign, no fraction)`,
         ctx,
       );
     }
@@ -1487,17 +1487,17 @@ export class EvmAdapter
   }
 
   /**
-   * 十六进制数量（`0x…`）→ bigint。
+   * Hex quantity (`0x…`) → bigint.
    *
-   * Provider 只校验 JSON-RPC 响应的**形状**（存在 result），不校验数值编码；
-   * 端点返回 `"0x"` / `"not-a-number"` 时若直接 `BigInt()` 会抛出 TypeError，
-   * 变成 500 内部错误。这里统一归一化为 `DFR_PROVIDER_INVALID_RESPONSE`（fail-closed）。
+   * The Provider only validates the **shape** of JSON-RPC responses (that result exists), not numeric encodings;
+   * when an endpoint returns `"0x"` / `"not-a-number"`, a direct `BigInt()` would throw a TypeError,
+   * becoming a 500 internal error. Here it is uniformly normalized to `DFR_PROVIDER_INVALID_RESPONSE` (fail-closed).
    */
   private quantity(value: unknown, label: string, ctx: AdapterContext): bigint {
     if (typeof value !== 'string' || !/^0x[0-9a-fA-F]+$/.test(value)) {
       throw createDfrError('DFR_PROVIDER_INVALID_RESPONSE', {
         requestId: ctx.requestId,
-        message: `Provider 返回的 ${label} 不是合法的十六进制数量`,
+        message: `Provider returned an invalid hex quantity for ${label}`,
         chain: this.chain.id,
       });
     }
@@ -1520,7 +1520,7 @@ export class EvmAdapter
     if (expected === undefined) {
       throw createDfrError('DFR_CONFIGURATION_ERROR', {
         requestId: ctx.requestId,
-        message: `链 ${this.chain.id} 缺少 externalChainId，无法校验 EVM chainId`,
+        message: `chain ${this.chain.id} is missing externalChainId; cannot verify the EVM chainId`,
       });
     }
     return expected;
@@ -1530,13 +1530,13 @@ export class EvmAdapter
     if (chain !== this.chain.id) {
       throw createDfrError('DFR_CHAIN_MISMATCH', {
         requestId: ctx.requestId,
-        message: `Adapter 绑定 ${this.chain.id}，收到 ${chain}`,
+        message: `Adapter is bound to ${this.chain.id}, got ${chain}`,
         chain,
       });
     }
   }
 
-  /** BlockRef → JSON-RPC 参数；不支持的分支显式失败，不静默降级（adapter-spec 第 9 章）。 */
+  /** BlockRef → JSON-RPC parameters; unsupported branches fail explicitly, without silent downgrade (adapter-spec Chapter 9). */
   private blockParam(ref: BlockRef, ctx: AdapterContext): string {
     switch (ref.kind) {
       case 'number':
@@ -1544,24 +1544,24 @@ export class EvmAdapter
       case 'hash':
         return ref.hash;
       case 'tag':
-        // EVM 不认 'safe' 以外的自定义 commitment；tag 直接透传。
+        // EVM does not recognize custom commitments other than 'safe'; tags pass through directly.
         return ref.tag;
       case 'slot':
         throw createDfrError('DFR_UNSUPPORTED_CAPABILITY', {
           requestId: ctx.requestId,
-          message: 'EVM 不支持 slot 引用',
+          message: 'EVM does not support slot references',
           chain: this.chain.id,
         });
       default:
         throw createDfrError('DFR_UNSUPPORTED_CAPABILITY', {
           requestId: ctx.requestId,
-          message: '无法识别的 BlockRef 分支',
+          message: 'unrecognized BlockRef branch',
           chain: this.chain.id,
         });
     }
   }
 
-  /** 依据 Chain Registry 的 FinalityPolicy 推导观测到的最终性。 */
+  /** Derive the observed finality from the Chain Registry's FinalityPolicy. */
   private async deriveFinality(
     ctx: AdapterContext,
     handle: ProviderHandle,
@@ -1608,10 +1608,10 @@ export class EvmAdapter
   }
 
   /**
-   * 一致性提示 → 余额查询的区块参数。
+   * Consistency hint → block parameter for balance queries.
    *
-   * `at-block` 必须带 blockRef；缺失时显式失败，不静默退回 latest
-   * （domain-model 第 6 章：不支持时返回 DFR_UNSUPPORTED_CAPABILITY，不得静默忽略）。
+   * `at-block` must carry a blockRef; when missing, fail explicitly instead of silently falling back to latest
+   * (domain-model Chapter 6: return DFR_UNSUPPORTED_CAPABILITY when unsupported; never silently ignore).
    */
   private balanceBlockParam(req: GetBalanceRequest, ctx: AdapterContext): string {
     const consistency = req.consistency;
@@ -1620,7 +1620,7 @@ export class EvmAdapter
     if (consistency.blockRef === undefined) {
       throw createDfrError('DFR_VALIDATION_FAILED', {
         requestId: ctx.requestId,
-        message: 'consistency=at-block 时必须提供 blockRef',
+        message: 'consistency=at-block requires a blockRef',
         chain: this.chain.id,
         details: { fields: ['blockRef'] },
       });
@@ -1629,7 +1629,7 @@ export class EvmAdapter
   }
 }
 
-/** 把 viem 解码结果里的 bigint 递归转成十进制字符串（HTTP/JSON 安全，符合禁 number 契约）。 */
+/** Recursively convert bigint in viem decode results to decimal strings (HTTP/JSON-safe, per the no-number rule). */
 function normalizeDecoded(value: unknown): unknown {
   if (typeof value === 'bigint') return value.toString(10);
   if (Array.isArray(value)) return value.map((v) => normalizeDecoded(v));

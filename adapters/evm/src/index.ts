@@ -1,5 +1,5 @@
 /**
- * @dfr/adapter-evm —— EVM Adapter（DFR-008，M0 只读）。
+ * @dfr/adapter-evm — EVM Adapter (DFR-008, M0 read-only).
  */
 export {
   EvmAdapter,

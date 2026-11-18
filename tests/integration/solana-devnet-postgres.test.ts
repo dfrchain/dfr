@@ -1,103 +1,103 @@
 /**
-* TX-07 / issue #22 门禁 3：Solana devnet 写链 × **真实 PostgreSQL Store** × **生产 TransactionEngine**。
+* TX-07 / issue #22 gate 3: Solana devnet write-to-chain x **real PostgreSQL Store** x **production TransactionEngine**.
 *
-* 本文件的 `010aae5` 版本驱动的是
-* `DfrCore.buildTransaction / broadcastTransaction`——那是 M1 **端口路径**
-* （`packages/core/src/core.ts`：Capability 路由 + Adapter 调用，不落库、不经状态机）。
-* TX-07 的全部持久化行为（租约 reserve、签名 CAS、markConsumed 先于广播、B43 预发送
-* 过期检查、记录状态机）只存在于 `TransactionEngine`（`packages/transaction/src/engine.ts`）；
-* 端口路径根本不进入引擎，build 之后 `sequencing_leases` 零行落库，两个场景都在第一个
-* TX-07 断言处失败（第四轮实测记录，见 EVIDENCE 门禁 3 完成附录）。引擎本身未被质疑——
-* 其离线套件与门禁 1–2 的 B45 证据仍然成立。本版按 Gateway 的生产装配
-* （`apps/gateway/src/main.ts` 的 composition root）重写场景：
+* The `010aae5` version of this file drove
+* `DfrCore.buildTransaction / broadcastTransaction` -- that is the M1 **port path**
+* (`packages/core/src/core.ts`: capability routing + Adapter calls, no persistence, no state machine).
+* All of TX-07's persistence behavior (lease reserve, signing CAS, markConsumed before broadcast, B43 pre-send
+* expiry checks, record state machine) exists only in the `TransactionEngine` (`packages/transaction/src/engine.ts`);
+* the port path never enters the engine, so after build there are zero rows in `sequencing_leases`, and both scenarios fail at the first
+* TX-07 assertion (fourth-round live-test record, see the EVIDENCE gate 3 completion appendix). The engine itself was not in doubt --
+* its offline suite and the B45 evidence for gates 1-2 still stand. This version rewrites the scenarios following the Gateway's production assembly
+* (`apps/gateway/src/main.ts` composition root):
 *
-* stores = createPostgresTransactionRuntime 的真实 PG Store（transaction / idempotency /
-* nonce / sequencing / tracker），指向本文件自建的 throwaway 数据库；
-* chain = createCoreTransactionChainPort(core)（Gateway 自己的端口实现，
-* 由 `@dfr/gateway` 导出，与 main.ts 同一函数）；
-* core = DfrCore（链访问门面：Registry + Solana/EVM Adapter，devnet RPC）。
-* 注意：DfrCore 构造函数在 milestone ≥ M1 时强制要求完整的持久化
-* transactionStores（core.ts 构造校验），因此门面与引擎共享同一份
-* runtime.stores；这不改变路径归属——本文件从不调用 Core 的端口路径
-* 方法（buildTransaction / broadcastTransaction），落库只经引擎发生；
-* engine = new TransactionEngine({ stores, chain})。
+* stores = the real PG Store from createPostgresTransactionRuntime (transaction / idempotency /
+* nonce / sequencing / tracker), pointing at the throwaway database this file creates itself;
+* chain = createCoreTransactionChainPort(core) (the Gateway's own port implementation,
+* exported by `@dfr/gateway`, the same function as in main.ts);
+* core = DfrCore (chain-access facade: Registry + Solana/EVM Adapter, devnet RPC).
+* Note: the DfrCore constructor requires complete persistent
+* transactionStores when milestone >= M1 (core.ts constructor check), so the facade and the engine share the same
+* runtime.stores; this does not change which path owns what -- this file never calls Core's port-path
+* methods (buildTransaction / broadcastTransaction); persistence happens only through the engine;
+* engine = new TransactionEngine({ stores, chain}).
 *
-* 步骤映射（旧端口路径 → 本版引擎路径）：
+* Step mapping (old port path → this version's engine path):
 *
 * core.buildTransaction(req) → engine.build({ request, idempotencyKey})
-* 返回 transactionId / sequencingToken /
-* unsignedTransaction；记录落库 `built`、租约落库
-* `reserved`（按 transactionId 直查，不再需要旧版
-* 的集合差定位租约）。
-* （旧版无此步） → engine.simulate({ transactionId, unsignedTransaction})
-* 引擎广播的前置条件：assertBroadcastable 只接受
-* `simulated`（`built` 直广播会被
+* returns transactionId / sequencingToken /
+* unsignedTransaction; the record is persisted as `built` and the lease is persisted as
+* `reserved` (looked up directly by transactionId, no longer needing the old version's
+* set-difference lease lookup).
+* (no such step in the old version) → engine.simulate({ transactionId, unsignedTransaction})
+* Precondition for engine broadcast: assertBroadcastable only accepts
+* `simulated` (`built` broadcast directly would be
 * DFR_TRANSACTION_REJECTED / simulation_required
-* 拒绝）。这是引擎真实流程的一部分，不是测试便利。
+* rejected). This is part of the engine's real flow, not a test convenience.
 * core.broadcastTransaction(signed) → engine.broadcast({ transactionId, signed})
-* 引擎内部顺序：sign CAS 落库 → markConsumed 落库 →
-* B43 预发送过期检查（读 Store 里的 token，不读客户端
-* 回显）→ 端口广播 → broadcast.accepted 落库（tx_hash）。
-* 广播被接受时 consumed 早已落库——B45 的顺序契约。
-* core.observeConfirmation 轮询 → engine.confirm({ chain, txHash, minFinality,
-* timeoutMs})（tracker lease 支撑的引擎确认路径，
-* 与 Gateway 同构），断言 reached。
-* core.getTransaction 查无此笔 → 原始 JSON-RPC `getTransaction` 按签名直查
-* （不经 DFR 代码，证据独立性更强）。
+* Engine internal order: sign CAS persisted → markConsumed persisted →
+* B43 pre-send expiry check (reads the token from the Store, not the client
+* echo) → port broadcast → broadcast.accepted persisted (tx_hash).
+* By the time a broadcast is accepted, consumed is already persisted -- the B45 ordering contract.
+* core.observeConfirmation polls → engine.confirm({ chain, txHash, minFinality,
+* timeoutMs}) (the engine confirmation path backed by the tracker lease,
+* isomorphic to the Gateway), asserting reached.
+* core.getTransaction finds nothing → raw JSON-RPC `getTransaction` looks it up directly by signature
+* (without going through DFR code, so the evidence is more independent).
 *
-* 场景 2 的时序映射：引擎要求先模拟才可广播，而模拟必须趁 blockhash 新鲜（过期
-* blockhash 的模拟会被节点以 blockhash not found 拒绝、记录转 `reverted` 后广播
-* 不可达），因此顺序是 build → simulate（新鲜）→ 等链高越过落库 token 的
-* lastValidBlockHeight → 外部签名 → engine.broadcast。等待发生在 simulate 与
-* broadcast 之间，正是 B43 要防的窗口（签名方慢于 blockhash 有效期）；引擎的预发送
-* 检查在 markConsumed **之后**、端口广播**之前**执行，所以过期时租约已 consumed、
-* 记录经 broadcast.rejected 落 `failed`，且零网络发送。
+* Scenario 2 timing map: the engine requires simulation before broadcast, and simulation must happen while the blockhash is fresh (an expired
+* blockhash simulation is rejected by the node with blockhash not found and the record moves to `reverted`, after which broadcast
+* is unreachable), so the order is build → simulate (fresh) → wait for the chain height to pass the persisted token's
+* lastValidBlockHeight → external signing → engine.broadcast. The wait happens between simulate and
+* broadcast -- exactly the window B43 guards against (the signer being slower than the blockhash lifetime); the engine's pre-send
+* check runs **after** markConsumed and **before** the port broadcast, so when it expires the lease is already consumed,
+* the record lands in `failed` via broadcast.rejected, with zero network sends.
 *
- * 场景 1 的 confirm 重试（第五轮首跑后的记录性适配）：首跑中广播真实落链并
- * finalized，但紧随其后的 engine.confirm 因 RPC 可见性滞后抛
- * DFR_TRANSACTION_NOT_FOUND 而中止（Core.observeConfirmation 对空观测抛错；
- * ConfirmationTracker 前台 trackUntil 不吞该错误、立即上抛，后台
- * runBackground 则 catch 后重试）。场景因此只对该错误码、在总预算内重试
- * confirm 调用本身，桥接 RPC 可见性窗口；任何断言均未改变。该引擎行为在
- * EVIDENCE 门禁 3 中作为发现项单独报告，不在本文件里被掩盖成"已修复"。
+ * Scenario 1 confirm retry (a recorded adaptation after the fifth round's first run): in the first run the broadcast really landed on-chain and
+ * finalized, but the engine.confirm right after it threw
+ * DFR_TRANSACTION_NOT_FOUND and aborted because of RPC visibility lag (Core.observeConfirmation throws on empty observations;
+ * ConfirmationTracker foreground trackUntil does not swallow that error and rethrows immediately, while the background
+ * runBackground catches and retries). So the scenario retried the confirm call itself, only for that error code and within the total budget,
+ * bridging the RPC visibility window; no assertion changed. That engine behavior is reported separately as a finding in
+ * EVIDENCE gate 3, not papered over in this file as "fixed".
  *
- * F-2 后续（2026-11-05 第九轮）：所有者裁决修复 F-2——
- * ConfirmationTracker 前台 trackUntil 现对
- * DFR_TRANSACTION_NOT_FOUND 按「链上尚不可见」处理并继续轮询
- * 至截止（仅容忍该错误码，其余错误仍立即上抛），与 runBackground
- * 语义一致。上文所述 confirm 重试桥接已移除，场景 1 恢复为对
- * engine.confirm 的单次直接调用（总预算 120s 不变），断言不变。
+ * F-2 follow-up (2026-11-05 ninth round): the owner ruled to fix F-2 --
+ * ConfirmationTracker foreground trackUntil now treats
+ * DFR_TRANSACTION_NOT_FOUND as "not yet visible on-chain" and keeps polling
+ * until the deadline (tolerating only that error code; other errors still rethrow immediately), consistent with runBackground
+ * semantics. The confirm retry bridge described above has been removed; scenario 1 is back to a single direct call to
+ * engine.confirm (total budget still 120s), with the assertions unchanged.
  *
- * 场景 1 的 confirm 结论（第五轮实测发现，详见 EVIDENCE 门禁 3 第五轮附录）：
- * engine.confirm 对 solana-devnet 当前**无法收敛**——registry 对该链的
- * finality levels 只声明 [processed, confirmed]（chains.yaml：devnet 的
- * finalized 与 confirmed 不可区分的刻意声明），而 Adapter 观测按
- * finalized → confirmed 顺序取最强档，evaluateFinality 对
- * observed=finalized 做 commitment 反查后因 levels 不含 finalized 判
- * unsupported_commitment、reached=false（与 required 无关）。交易落链十余秒
- * 进入 finalized 可见后，confirm 永远达不到 reached。这不是本测试的装配
- * 问题（探针已对两笔 finalized 交易在 Core 与 Engine 两层确定性复现）。
- * 本文件保持 confirm 断言不变（reached 必须为 true），让场景 1 在该缺陷
- * 修复前如实失败；修复属生产代码，不在本测试的边界内。
+ * Scenario 1 confirm conclusion (fifth-round live-test finding, see the EVIDENCE gate 3 fifth-round appendix):
+ * engine.confirm currently **cannot converge** for solana-devnet -- the registry declares only [processed, confirmed] as the
+ * finality levels for that chain (chains.yaml: a deliberate declaration that devnet's
+ * finalized and confirmed are indistinguishable), while Adapter observations take the strongest tier in
+ * finalized → confirmed order, and evaluateFinality reverse-looks-up the commitment for
+ * observed=finalized and rules it unsupported_commitment because levels do not include finalized,
+ * so reached=false (regardless of required). More than ten seconds after the transaction lands on-chain and
+ * becomes visible as finalized, confirm can never reach reached. This is not an assembly problem in this test
+ * (a probe deterministically reproduced it for two finalized transactions at both the Core and Engine layers).
+ * This file keeps the confirm assertion unchanged (reached must be true), so scenario 1 fails honestly until that defect
+ * is fixed; the fix belongs to production code, outside this test's scope.
  *
- * F-1 后续（2026-11-05 第六轮）：ADR-031 已经所有者裁决修订，
- * evaluateFinality 改为单调语义（观测反查的 commitment 按序达到/超过
- * required 即达标，不再受 levels 准入闸门限制），本文件与该修复一并
- * 落地 main。场景 1 的 confirm 断言不变，现预期端到端收敛
- * （reached=true）；上段保留为发现当时的记录。
+ * F-1 follow-up (2026-11-05 sixth round): ADR-031 has been revised by owner ruling;
+ * evaluateFinality now uses monotonic semantics (a reverse-looked-up commitment counts once it reaches/exceeds
+ * required in order, no longer limited by the levels admission gate), and this file lands on main together with that fix.
+ * Scenario 1's confirm assertion is unchanged, and is now expected to converge end to end
+ * (reached=true); the paragraph above is kept as the record of the finding at the time.
  *
-* 默认跳过。需要**四重**显式开启（缺一即整文件 skip，零网络、零落库）：
+* Skipped by default. Requires **four** explicit enables (missing any one skips the whole file, zero network, zero persistence):
 *
 * DFR_RUN_SOLANA_WRITE=1 \
 * DFR_SOLANA_KEYPAIR=/path/to/funded-devnet-id.json \
 *./scripts/db-test.sh tests/integration/solana-devnet-postgres.test.ts
 *
-* （`db-test.sh` 负责导出 `DFR_TRANSACTION_*_DATABASE_URL` 并管理测试容器；
-* 本文件在该 DSN 指向的服务器上自建独立数据库，用完即删。）
+* (`db-test.sh` exports `DFR_TRANSACTION_*_DATABASE_URL` and manages the test containers;
+* this file creates its own database on the server that DSN points to, and deletes it when done.)
 *
-* 签名由**外部**完成（support/solana-signer 用本地测试账户扮演外部签名者）；
-* 服务端从不接触私钥（ADR-007/009）。只记录非敏感证据（txHash / finality）。
-* devnet 执行需要仓库所有者单独的测试网授权——本文件被写好不等于被授权运行。
+* Signing is done **externally** (support/solana-signer uses a local test account to play the external signer);
+* the server never touches private keys (ADR-007/009). Only non-sensitive evidence is recorded (txHash / finality).
+* Running on devnet needs a separate testnet authorization from the repo owner -- this file being written does not mean it is authorized to run.
 */
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
@@ -128,9 +128,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 const migrationsDir = resolve(here, '..', '..', 'packages', 'storage-postgres', 'migrations');
 
 /**
-* 从拥有 pg 依赖的 storage-postgres 包加载驱动（与 m1-write-path 同一手法）：
-* @dfr/tests 刻意不直接依赖 pg。Client 的类型从 runMigrations 的签名反推，
-* 保证与迁移运行器要求的客户端形状逐字一致。
+* Load the driver from the storage-postgres package, which owns the pg dependency (same technique as m1-write-path):
+* @dfr/tests deliberately does not depend on pg directly. The Client type is inferred from runMigrations' signature,
+* guaranteeing it matches the client shape the migration runner requires, word for word.
 */
 type PgClient = Parameters<typeof runMigrations>[0]['client'];
 const { Client: PgClient } = createRequire(
@@ -185,18 +185,18 @@ function makeCore(): DfrCore {
       { id: 'solana', version: '0.1.0', create: (chain) => new SolanaAdapter({ chain }) },
     ],
     milestone: 'M2',
-    // DfrCore 在 milestone ≥ M1 时强制要求完整 transactionStores（构造校验，
-    // core.ts），与 Gateway 同样地把同一份持久化 Store 交给它；场景的全部
-    // 落库断言仍只经 TransactionEngine 发生（本文件不调用 Core 端口路径）。
+    // DfrCore requires complete transactionStores when milestone >= M1 (constructor check,
+    // core.ts), handing it the same persistent Store as the Gateway does; all of the scenario's
+    // persistence assertions still happen only through the TransactionEngine (this file does not call Core's port path).
     transactionStores: runtime.stores,
   });
 }
 
 /**
-* 按 Gateway 生产装配（apps/gateway/src/main.ts）构造引擎：真实 PG Store
-* 全量注入（含 tracker——confirm 路径缺它 fail-closed；含 sequencing——
-* Solana 路径缺它 fail-closed），链访问经 Gateway 自己的
-* `createCoreTransactionChainPort` 接到 Core/Adapter。
+* Build the engine following the Gateway's production assembly (apps/gateway/src/main.ts): real PG Store
+* fully injected (including tracker -- the confirm path is fail-closed without it; including sequencing --
+* the Solana path is fail-closed without it), with chain access going through the Gateway's own
+* `createCoreTransactionChainPort` to Core/Adapter.
 */
 function makeEngine(core: DfrCore): TransactionEngine {
   return new TransactionEngine({
@@ -213,7 +213,7 @@ function makeEngine(core: DfrCore): TransactionEngine {
   });
 }
 
-/** 自转 0 SOL 的引擎请求：只验证链路与落库契约，不动资金（仅付手续费）。 */
+/** Engine request self-transferring 0 SOL: only verifies the chain and persistence contracts, moves no funds (only pays fees). */
 function selfTransferRequest(from: string): TransactionRequest {
   const account: AccountRef = { chain: DEVNET, address: from };
   return {
@@ -224,7 +224,7 @@ function selfTransferRequest(from: string): TransactionRequest {
   };
 }
 
-/** 用外部 keypair 给未签名载荷（带零签名槽位）填写真实签名。与 D02 同一实现。 */
+/** Fill a real signature into the unsigned payload (with zero signature slots) using an external keypair. Same implementation as D02. */
 function signUnsigned(payloadBase64: string, sign: (m: Uint8Array) => Uint8Array): string {
   const bytes = fromBase64(payloadBase64, 'payload');
   const { signatures, messageBytes } = splitSignatures(bytes);
@@ -246,7 +246,7 @@ interface LeaseRow {
   status: string;
 }
 
-/** 引擎路径下 transactionId 已知，按主键直查本次 build 的那一条租约。 */
+/** Under the engine path the transactionId is known, so look up this build's lease directly by primary key. */
 async function leaseRow(transactionId: string): Promise<LeaseRow | undefined> {
   const { rows } = await inspector.query<LeaseRow>(
     `SELECT transaction_id, token_value,
@@ -286,11 +286,11 @@ async function currentBlockHeight(): Promise<bigint> {
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getBlockHeight', params: [] }),
   });
   const data = (await response.json()) as { result?: number };
-  if (typeof data.result !== 'number') throw new Error('getBlockHeight 未返回数值结果');
+  if (typeof data.result !== 'number') throw new Error('getBlockHeight did not return a numeric result');
   return BigInt(data.result);
 }
 
-/** 原始 JSON-RPC 按签名查交易（不经 DFR 代码）：查无此笔是"从未上链"的独立证据。 */
+/** Raw JSON-RPC transaction lookup by signature (without going through DFR code): not finding it is independent evidence of "never landed on-chain". */
 async function rpcGetTransaction(signature: string): Promise<unknown> {
   const response = await fetch(RPC, {
     method: 'POST',
@@ -315,7 +315,7 @@ beforeAll(async () => {
   await admin.connect();
   const { rows } = await admin.query<{ db: string }>('SELECT current_database() AS db');
   if (!/_test$/u.test(rows[0]!.db)) {
-    throw new Error(`拒绝在非测试库 "${rows[0]!.db}" 上执行（库名必须以 _test 结尾）`);
+    throw new Error(`refusing to run on a non-test database "${rows[0]!.db}" (the database name must end with _test)`);
   }
 
   await admin.query(`DROP DATABASE IF EXISTS ${PRIVATE_DB} WITH (FORCE)`);
@@ -351,8 +351,8 @@ afterAll(async () => {
   }
 }, 60_000);
 
-describe.skipIf(!ENABLED)('Solana devnet × PostgreSQL Store × TransactionEngine（TX-07 / issue #22 门禁 3）', () => {
-  it('引擎路径：build 落 reserved 租约并绑定 blockhash → simulate → 外部签名 → consumed 先于广播落库 → confirm 收敛', async () => {
+describe.skipIf(!ENABLED)('Solana devnet × PostgreSQL Store × TransactionEngine (TX-07 / issue #22 gate 3)', () => {
+  it('engine path: build persists a reserved lease bound to the blockhash → simulate → external signing → consumed persisted before broadcast → confirm converges', async () => {
     const engine = makeEngine(makeCore());
     const keypair = loadSolanaKeypair(process.env['DFR_SOLANA_KEYPAIR']!);
     const from = base58Encode(keypair.publicKeyBytes);
@@ -366,23 +366,23 @@ describe.skipIf(!ENABLED)('Solana devnet × PostgreSQL Store × TransactionEngin
       const txnId = built.transactionId;
       const blockhash = built.unsignedTransaction.meta.recentBlockhash;
       expect(blockhash).toBeTruthy();
-      // 引擎返回的排序前提与载荷 blockhash 必须是同一个（ADR-033 注入契约）。
+      // The sequencing precondition returned by the engine must be the same as the payload's blockhash (ADR-033 injection contract).
       expect(built.sequencingToken).toEqual({
         kind: 'blockhash',
         value: blockhash,
         lastValidBlockHeight: expect.any(String),
       });
 
-      // TX-07 证据 1：租约已落真实 PG（按 transactionId 直查），status=reserved，
-      // 且 token 与载荷的 blockhash 逐字一致（租约 ↔ 载荷绑定）；交易记录已落库为 built。
+      // TX-07 evidence 1: the lease is persisted in real PG (looked up directly by transactionId), status=reserved,
+      // and the token matches the payload's blockhash word for word (lease ↔ payload binding); the transaction record is persisted as built.
       const lease = await leaseRow(txnId);
       expect(lease).toBeDefined();
       expect(lease!.status).toBe('reserved');
       expect(lease!.token_value).toBe(blockhash);
       expect((await recordRow(txnId))?.status).toBe('built');
 
-      // 引擎广播前置：simulate 把记录推进到 simulated（built 直广播会被
-      // assertBroadcastable 以 simulation_required 拒绝）。
+      // Engine broadcast precondition: simulate advances the record to simulated (a built record broadcast directly would be
+      // rejected by assertBroadcastable with simulation_required).
       const simulated = await engine.simulate({
         transactionId: txnId,
         unsignedTransaction: built.unsignedTransaction,
@@ -408,19 +408,19 @@ describe.skipIf(!ENABLED)('Solana devnet × PostgreSQL Store × TransactionEngin
       expect(broadcast.status).toBe('broadcast');
       expect(broadcast.txHash).toBe(txHash);
 
-      // TX-07 证据 2：广播被接受时，markConsumed 早已落库（引擎内的持久化顺序
-      // sign CAS → markConsumed → 预发送检查 → 端口广播）；记录推进 broadcast
-      // 且 tx_hash 落库。consumed 租约随后被 sweep 也不可回收。
+      // TX-07 evidence 2: by the time the broadcast is accepted, markConsumed is already persisted (the persistence order inside the engine:
+      // sign CAS → markConsumed → pre-send check → port broadcast); the record advances to broadcast
+      // with tx_hash persisted. A consumed lease cannot be reclaimed even if swept afterwards.
       expect(await leaseStatus(txnId)).toBe('consumed');
       const record = await recordRow(txnId);
       expect(record?.status).toBe('broadcast');
       expect(record?.tx_hash).toBe(txHash);
 
-      // finality：走引擎的 confirm（tracker lease 支撑的确认路径，与 Gateway
-      // 同构），要求至少 confirmed 并在超时前 reached。F-2 修复后前台
-      // trackUntil 已容忍广播后可见性窗口内的 DFR_TRANSACTION_NOT_FOUND
-      // 并轮询至截止（见文件头"F-2 后续"段），此处单次直接调用，总预算
-      // 仍为 120s；reached / finality 断言不变。
+      // finality: go through the engine's confirm (the tracker-lease-backed confirmation path,
+      // isomorphic to the Gateway), requiring at least confirmed and reached before the timeout. After the F-2 fix, foreground
+      // trackUntil already tolerates DFR_TRANSACTION_NOT_FOUND within the post-broadcast visibility window
+      // and polls until the deadline (see the "F-2 follow-up" section in the file header); here it is a single direct call, with the total budget
+      // still 120s; the reached / finality assertions are unchanged.
       const confirmation = await engine.confirm({
         chain: DEVNET,
         txHash,
@@ -434,7 +434,7 @@ describe.skipIf(!ENABLED)('Solana devnet × PostgreSQL Store × TransactionEngin
       await runtime.stores.sequencing!.releaseExpiredOrphaned({ limit: 100 });
       expect(await leaseStatus(txnId)).toBe('consumed');
 
-      // 只记录非敏感证据。
+      // Only record non-sensitive evidence.
       console.log(
         `TX-07 devnet evidence: txHash=${txHash} finality=${confirmation.finality} lease=consumed record=broadcast`,
       );
@@ -443,7 +443,7 @@ describe.skipIf(!ENABLED)('Solana devnet × PostgreSQL Store × TransactionEngin
     }
   }, 300_000);
 
-  it('引擎路径：blockhash 过期后再广播：预发送 fail-closed、记录落 failed、载荷从未上链、consumed 不可回收', async () => {
+  it('engine path: broadcast after the blockhash expires: pre-send fail-closed, record lands in failed, payload never lands on-chain, consumed cannot be reclaimed', async () => {
     const engine = makeEngine(makeCore());
     const keypair = loadSolanaKeypair(process.env['DFR_SOLANA_KEYPAIR']!);
     const from = base58Encode(keypair.publicKeyBytes);
@@ -456,32 +456,32 @@ describe.skipIf(!ENABLED)('Solana devnet × PostgreSQL Store × TransactionEngin
       const lease = await leaseRow(txnId);
       expect(lease).toBeDefined();
       expect(lease!.status).toBe('reserved');
-      // 权威过期线是落库 token 的 lastValidBlockHeight，不是客户端回显。
+      // The authoritative expiry line is the persisted token's lastValidBlockHeight, not the client echo.
       const lastValid = BigInt(lease!.last_valid_block_height);
 
-      // 模拟必须趁 blockhash 新鲜时完成：引擎广播只接受 simulated 记录；
-      // 过期后再模拟会被节点以 blockhash not found 拒绝并把记录推入 reverted。
+      // Simulation must complete while the blockhash is fresh: engine broadcast only accepts simulated records;
+      // simulating after expiry is rejected by the node with blockhash not found and pushes the record into reverted.
       const simulated = await engine.simulate({
         transactionId: txnId,
         unsignedTransaction: built.unsignedTransaction,
       });
       expect(simulated.status).toBe('simulated');
 
-      // 等链高越过 lastValidBlockHeight（devnet blockhash 有效期约 150 个块高）。
-      // 等待位于 simulate 与 broadcast 之间——正是 B43 要防的窗口。
+      // Wait for the chain height to pass lastValidBlockHeight (a devnet blockhash is valid for about 150 blocks).
+      // The wait sits between simulate and broadcast -- exactly the window B43 guards against.
       const deadline = Date.now() + 420_000;
       for (; ;) {
         if (await currentBlockHeight() > lastValid) break;
-        if (Date.now() > deadline) throw new Error('等待 blockhash 过期超时（链高未越过 lastValid）');
+        if (Date.now() > deadline) throw new Error('timed out waiting for the blockhash to expire (chain height did not pass lastValid)');
         await delay(5_000);
       }
 
       const signedPayload = signUnsigned(built.unsignedTransaction.payload, keypair.sign);
       const txHash = base58Encode(splitSignatures(fromBase64(signedPayload, 'payload')).signatures[0]!);
 
-      // B43 预发送检查必须 fail-closed：错误码 DFR_BLOCKHASH_EXPIRED。
-      // 该检查在引擎内 markConsumed 之后、端口广播之前执行，因此本次调用
-      // 不产生任何网络发送（下方原始 RPC 查无此笔即是证明）。
+      // The B43 pre-send check must be fail-closed: error code DFR_BLOCKHASH_EXPIRED.
+      // That check runs inside the engine after markConsumed and before the port broadcast, so this call
+      // produces no network sends at all (the raw RPC lookup below finding nothing is the proof).
       await expect(
         engine.broadcast({
           transactionId: txnId,
@@ -496,9 +496,9 @@ describe.skipIf(!ENABLED)('Solana devnet × PostgreSQL Store × TransactionEngin
         }),
       ).rejects.toMatchObject({ code: 'DFR_BLOCKHASH_EXPIRED' });
 
-      // 持久化事实：签名已落 CAS 且 markConsumed 已执行（租约 consumed——
-      // 这个 blockhash 确实被一笔签名交易用掉了）；记录经 broadcast.rejected
-      // 落 failed 并留下错误码；链上按签名原始 RPC 直查必须查无此笔（从未真发）。
+      // Persistence facts: the signature is already in CAS and markConsumed has run (the lease is consumed --
+      // this blockhash was indeed used by a signed transaction); the record lands in failed via broadcast.rejected
+      // leaving the error code; a raw RPC lookup on-chain by signature must find nothing (it was never actually sent).
       expect(await leaseStatus(txnId)).toBe('consumed');
       const record = await recordRow(txnId);
       expect(record?.status).toBe('failed');

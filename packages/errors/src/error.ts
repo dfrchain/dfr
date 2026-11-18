@@ -1,10 +1,10 @@
 /**
- * DFR 统一错误（见 docs/architecture/error-spec-v0.1.md）。
+ * DFR unified error (see docs/architecture/error-spec-v0.1.md).
  *
- * 规则：
- * - 所有对外错误必须由 `createDfrError()` 构造，禁止 `throw new Error('...')` 进入响应；
- * - 每条错误都带 requestId，便于跨日志检索；
- * - 与错误无关的内部异常只保留在 `cause`，不进入序列化结果。
+ * Rules:
+ * - Every outward-facing error must be constructed by `createDfrError()`; `throw new Error('...')` must never reach a response;
+ * - Every error carries a requestId for cross-log lookup;
+ * - Internal exceptions unrelated to the error are kept only in `cause`, never in serialized output.
  */
 import type { ChainError, ChainId, DfrErrorCode, ErrorCategory, ProviderId, RequestId } from '@dfr/types';
 import { ERROR_METADATA, type ErrorMetadata } from './metadata.js';
@@ -12,21 +12,21 @@ import { redactDetails, redactText } from './redact.js';
 
 export interface CreateDfrErrorOptions {
   requestId: RequestId;
-  /** 面向开发者、可直接展示的说明；会被脱敏。省略时使用元数据 title。 */
+  /** Developer-facing, display-ready explanation; it is redacted. When omitted, the metadata title is used. */
   message?: string;
   chain?: ChainId;
   provider?: ProviderId;
   details?: Record<string, unknown>;
-  /** 来自链或 Provider 的原始错误；只保留 code + 已脱敏 message。 */
+  /** Raw error from the chain or Provider; only code + redacted message are kept. */
   chainError?: ChainError;
-  /** 内部异常，仅用于日志与服务端排查，不序列化。 */
+  /** Internal exception, only for logs and server-side debugging, never serialized. */
   cause?: unknown;
 }
 
 /**
- * DFR 领域错误。
+ * DFR domain error.
  *
- * 继承 Error 以便 `instanceof` / 堆栈正常工作，同时携带规范要求的全部字段。
+ * Extends Error so `instanceof` / stack traces work normally, while carrying every field the spec requires.
  */
 export class DfrError extends Error {
   override readonly name = 'DfrError';
@@ -42,7 +42,7 @@ export class DfrError extends Error {
   readonly provider?: ProviderId;
   readonly details?: Record<string, unknown>;
   readonly chainError?: ChainError;
-  /** 内部原因；不进入任何序列化输出（见 toErrorResponse）。 */
+  /** Internal cause; never enters any serialized output (see toErrorResponse). */
   override readonly cause?: unknown;
 
   constructor(code: DfrErrorCode, metadata: ErrorMetadata, options: CreateDfrErrorOptions) {
@@ -72,7 +72,7 @@ export class DfrError extends Error {
     }
   }
 
-  /** 是否达到某个 HTTP 状态区间（网关做状态码映射时使用）。 */
+  /** Whether it falls in a given HTTP status range (used by the gateway when mapping status codes). */
   isClientError(): boolean {
     return this.httpStatus >= 400 && this.httpStatus < 500;
   }
@@ -82,7 +82,7 @@ export class DfrError extends Error {
   }
 }
 
-/** 统一错误工厂。 */
+/** Unified error factory. */
 export function createDfrError(
   code: DfrErrorCode,
   options: CreateDfrErrorOptions,
@@ -91,23 +91,23 @@ export function createDfrError(
   return new DfrError(code, metadata, options);
 }
 
-/** 类型守卫：跨包边界判断错误是否已被归一化。 */
+/** Type guard: decide across package boundaries whether an error has already been normalized. */
 export function isDfrError(value: unknown): value is DfrError {
   return value instanceof DfrError;
 }
 
 /**
- * 把任意异常归一化为 DfrError。
+ * Normalize any exception into a DfrError.
  *
- * 未分类异常降级为 `DFR_INTERNAL_ERROR` 并保留脱敏后的 cause message。
- * 分类不确定时不猜测（error-spec 第 5.2 章第 2 条）。
+ * Unclassified exceptions degrade to `DFR_INTERNAL_ERROR`, keeping the redacted cause message.
+ * When classification is uncertain, do not guess (error-spec section 5.2, rule 2).
  */
 export function toDfrError(
   cause: unknown,
   options: CreateDfrErrorOptions,
 ): DfrError {
   if (isDfrError(cause)) {
-    // 已归一化的错误只补齐缺失的关联字段，不重新分类。
+    // An already-normalized error only gets its missing correlation fields filled in; it is not reclassified.
     if (cause.requestId === options.requestId) return cause;
     return createDfrError(cause.code, {
       requestId: options.requestId,

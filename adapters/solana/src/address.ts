@@ -1,15 +1,15 @@
 /**
- * Solana 地址校验（ADR-028：校验位置在 Adapter，Core 不做链特定假设）。
+ * Solana address validation (ADR-028: validation lives in the Adapter; Core makes no chain-specific assumptions).
  *
- * 规则：base58 解码成功 + 恰好 32 字节 + 不强制 on-curve（PDA / 程序地址同样合法）。
+ * Rules: base58 decodes successfully + exactly 32 bytes + no on-curve requirement (PDA / program addresses are equally valid).
  */
 import { createDfrError } from '@dfr/errors';
 import type { ChainId } from '@dfr/types';
 import { base58Decode, isBase58 } from './base58.js';
 
-/** Solana 公钥固定 32 字节。 */
+/** Solana public keys are always 32 bytes. */
 export const SOLANA_PUBKEY_BYTES = 32;
-/** base58 表示的 32 字节最长 44 字符。 */
+/** 32 bytes in base58 is at most 44 characters. */
 export const SOLANA_ADDRESS_MAX_LENGTH = 44;
 
 export function isSolanaAddress(value: string): boolean {
@@ -19,7 +19,7 @@ export function isSolanaAddress(value: string): boolean {
   return decoded !== null && decoded.length === SOLANA_PUBKEY_BYTES;
 }
 
-/** 交易签名（txHash）与地址同形：base58 编码的 64 字节签名。 */
+/** Transaction signatures (txHash) have the same shape as addresses: a base58-encoded 64-byte signature. */
 const SIGNATURE_BYTES = 64;
 
 export function isSolanaSignature(value: string): boolean {
@@ -29,7 +29,7 @@ export function isSolanaSignature(value: string): boolean {
   return decoded !== null && decoded.length === SIGNATURE_BYTES;
 }
 
-/** 非法地址 → DFR_INVALID_ACCOUNT（422，不可重试）。 */
+/** Invalid address → DFR_INVALID_ACCOUNT (422, not retryable). */
 export function assertSolanaAddress(
   value: string,
   chain: ChainId,
@@ -38,13 +38,13 @@ export function assertSolanaAddress(
   if (!isSolanaAddress(value)) {
     throw createDfrError('DFR_INVALID_ACCOUNT', {
       requestId: requestId as never,
-      message: '不是合法的 Solana 地址（期望 base58 编码的 32 字节公钥）',
+      message: 'not a valid Solana address (expected a base58-encoded 32-byte public key)',
       chain,
     });
   }
 }
 
-/** 非法签名 → DFR_INVALID_REQUEST（签名是路径参数，不是账户）。 */
+/** Invalid signature → DFR_INVALID_REQUEST (the signature is a path parameter, not an account). */
 export function assertSolanaSignature(
   value: string,
   chain: ChainId,
@@ -53,7 +53,7 @@ export function assertSolanaSignature(
   if (!isSolanaSignature(value)) {
     throw createDfrError('DFR_INVALID_REQUEST', {
       requestId: requestId as never,
-      message: '不是合法的 Solana 签名（期望 base58 编码的 64 字节）',
+      message: 'not a valid Solana signature (expected base58-encoded 64 bytes)',
       chain,
     });
   }

@@ -1,9 +1,9 @@
 /**
- * Solana blockhash 过期的 build 重试语义（DFR-M3-C03）。
+ * Solana blockhash-expiry build retry semantics (DFR-M3-C03).
  *
- * 权威来源：m3-taskbook C03、ADR-033、error-spec §4.4。
- * 目标：过期后被链拒绝 → 明确的错误码 + "需重新 build"的可执行提示；
- *       **不得自动重新签名**（签名属外部）。
+ * Authoritative sources: m3-taskbook C03, ADR-033, error-spec §4.4.
+ * Goal: after expiry the chain rejects the transaction → a clear error code + an actionable hint
+ * ("rebuild needed"); **must not re-sign automatically** (signing belongs outside).
  */
 import { describe, expect, it } from 'vitest';
 import { createDfrError } from '@dfr/errors';
@@ -36,10 +36,10 @@ const signed = (): SignedTransaction => ({
   expectedHash: TX_HASH,
 });
 
-describe('Solana blockhash 过期（M3-C03）', () => {
+describe('Solana blockhash expiry (M3-C03)', () => {
   const adapter = new SolanaAdapter({ chain });
 
-  it('节点报 "Blockhash not found" → DFR_BLOCKHASH_EXPIRED + 可执行提示（重新 build）', async () => {
+  it('node reports "Blockhash not found" → DFR_BLOCKHASH_EXPIRED + actionable hint (rebuild)', async () => {
     const ctx = makeContext(chain, {
       sendTransaction: () => {
         throw createDfrError('DFR_PROVIDER_INVALID_RESPONSE', {
@@ -59,7 +59,7 @@ describe('Solana blockhash 过期（M3-C03）', () => {
     }
   });
 
-  it('普通 revert / 其它错误不会被误判为 blockhash 过期', async () => {
+  it('an ordinary revert / other error is not misclassified as blockhash expiry', async () => {
     const ctx = makeContext(chain, {
       sendTransaction: () => {
         throw createDfrError('DFR_TRANSACTION_REJECTED', {
@@ -75,8 +75,8 @@ describe('Solana blockhash 过期（M3-C03）', () => {
   });
 });
 
-describe('引擎对 blockhash 过期的状态归属（M3-C03 / ADR-019）', () => {
-  it('DFR_BLOCKHASH_EXPIRED 被分类为 rejected（可证明不可自愈 → 终态 failed）', () => {
+describe('Engine attribution of blockhash expiry (M3-C03 / ADR-019)', () => {
+  it('DFR_BLOCKHASH_EXPIRED is classified as rejected (provably unrecoverable → terminal state failed)', () => {
     const error = createDfrError('DFR_BLOCKHASH_EXPIRED', {
       requestId: 'req_01J8Z6W3Q2K9M4ABCDEFGHJKMN' as never,
       chain: DEVNET,
@@ -85,7 +85,7 @@ describe('引擎对 blockhash 过期的状态归属（M3-C03 / ADR-019）', () =
     expect(classifyBroadcastFailure(error)).toBe('rejected');
   });
 
-  it('未分类错误保持 indeterminate（不猜测）', () => {
+  it('an unclassified error stays indeterminate (no guessing)', () => {
     const error = createDfrError('DFR_PROVIDER_TIMEOUT', {
       requestId: 'req_01J8Z6W3Q2K9M4ABCDEFGHJKMN' as never,
       chain: DEVNET,

@@ -1,8 +1,8 @@
-// D04 常驻重组巡检的 composition root 接线测试（关闭 D04/D05/D07 遗留运行时缺口）。
+// D04 standing reorg sweep composition-root wiring test (closes the D04/D05/D07 leftover runtime gap).
 //
-// 为什么必须用真实 startGateway：调度器是否被装配、是否被 close() 停掉，只有
-// 真实 composition root 才能证明。组件级行为由 packages/transaction/test/reorg-scheduler.test.ts
-// 与 reorg.test.ts 覆盖；这里只证明"生产入口真的把它跑起来了"。
+// Why a real startGateway is required: whether the scheduler is assembled and whether close() stops it can only be proven by
+// a real composition root. Component-level behavior is covered by packages/transaction/test/reorg-scheduler.test.ts
+// and reorg.test.ts; here we only prove "the production entry point really runs it".
 import { describe, expect, it, vi } from 'vitest';
 import type { TransactionStores } from '@dfr/core';
 import { hashSecret } from '../src/index.js';
@@ -25,9 +25,9 @@ const BASE_ENV = {
   DFR_PROVIDER_ETHEREUM_SEPOLIA_SECONDARY_URL: 'https://stub.local/sepolia-secondary',
 };
 
-/** 记录 listRecoverable 调用次数：巡检唯一会触达的 Store 方法（statuses=['included']）。 */
+/** Record the number of listRecoverable calls: the only Store method a sweep touches (statuses=['included']). */
 function countingPersistence() {
-  // 显式标注入参类型，测试才能断言传给 Store 的 limit。
+  // Explicitly annotate the input parameter types, so the test can assert the limit passed to the Store.
   const listRecoverable = vi.fn(async (_input: { limit: number; statuses?: readonly string[] }) => [] as never[]);
   const persistence: GatewayPersistence = {
     stores: {
@@ -62,25 +62,25 @@ async function withGateway(
   }
 }
 
-describe('D04 常驻重组巡检接线（关闭发布阻塞缺口）', () => {
-  it('M1 启动后按配置间隔周期性驱动 ReorgReconciler', async () => {
+describe('D04 standing reorg sweep wiring (closing the release-blocking gap)', () => {
+  it('after M1 startup, drives ReorgReconciler periodically at the configured interval', async () => {
     const { persistence, listRecoverable } = countingPersistence();
     await withGateway(
       { ...BASE_ENV, DFR_REORG_SWEEP_INTERVAL_MS: '1000', DFR_REORG_SWEEP_BATCH: '50' },
       persistence,
       async () => {
-        // 启动阶段的 RecoveryCoordinator 也会调 listRecoverable；先记基线。
+        // The startup-phase RecoveryCoordinator also calls listRecoverable; record the baseline first.
         const baseline = listRecoverable.mock.calls.length;
         await new Promise((resolve) => setTimeout(resolve, 1_400));
         expect(listRecoverable.mock.calls.length).toBeGreaterThan(baseline);
-        // 批次上限必须来自环境变量，而不是硬编码默认值。
+        // The batch cap must come from environment variables, not a hardcoded default.
         const sweep = listRecoverable.mock.calls.at(-1)?.[0];
         expect(sweep?.limit).toBe(50);
       },
     );
   }, 15_000);
 
-  it('close() 会停掉巡检：关闭后不再有新的 listRecoverable 调用', async () => {
+  it('close() stops the sweep: no new listRecoverable calls after closing', async () => {
     const { persistence, listRecoverable } = countingPersistence();
     const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
@@ -100,7 +100,7 @@ describe('D04 常驻重组巡检接线（关闭发布阻塞缺口）', () => {
     }
   }, 15_000);
 
-  it('非法巡检间隔 / 批次上限 fail-closed，不静默回落到默认值', async () => {
+  it('an illegal sweep interval / batch cap fails closed, without silently falling back to defaults', async () => {
     const { persistence } = countingPersistence();
     await expect(
       startGateway({ ...BASE_ENV, DFR_REORG_SWEEP_INTERVAL_MS: 'abc' }, async () => persistence),

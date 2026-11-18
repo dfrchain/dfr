@@ -1,9 +1,9 @@
 /**
- * Store 调用记录 → 结构化日志字段（observability-spec 第 4 章 `store.read` / `store.write`）。
+ * Store call records → structured log fields (observability-spec chapter 4 `store.read` / `store.write`).
  *
- * 与 provider / adapter 日志同构：**白名单**而非透传。Store 调用的参数含地址、nonce、
- * 载荷与租约 token，返回值含完整交易记录——这些都不入日志。白名单还确保未来给
- * `StoreCallRecord` 加字段时，不会静默把业务值写进生产日志。
+ * Isomorphic to the provider / adapter logs: an **allowlist**, not pass-through. Store call arguments contain addresses, nonces,
+ * payloads, and lease tokens, and return values contain full transaction records — none of these enter logs. The allowlist also ensures that future fields added to
+ * `StoreCallRecord` never silently write business values into production logs.
  */
 import type { StoreCallRecord } from '@dfr/transaction';
 
@@ -20,16 +20,16 @@ export const STORE_CALL_LOG_FIELDS = {
 } as const satisfies Partial<Record<keyof StoreCallRecord, string>>;
 
 /**
- * 已知但**故意不写日志**的字段。
+ * Fields known but **deliberately not logged**.
  *
- * 当前为空：`StoreCallRecord` 的每个字段都可入日志（它本身已被设计为"只有调用形状"）。
- * 保留该常量是为了让契约测试能区分"新增字段忘了归类"与"有意排除"。
+ * Currently empty: every field of `StoreCallRecord` may enter logs (it was designed to hold "only the call shape").
+ * This constant is kept so contract tests can distinguish "a new field was not classified" from "deliberately excluded".
  */
 export const STORE_CALL_LOG_EXCLUDED: readonly (keyof StoreCallRecord)[] = [];
 
 /**
- * `kind` 在日志里展开为 observability-spec 的 span 名称（`store.read` / `store.write`），
- * 这样看板与 Trace 可以直接按 span 名称对齐，而不必在查询侧再做映射。
+ * `kind` is expanded in logs into the observability-spec span name (`store.read` / `store.write`),
+ * so dashboards and Traces can align directly on span names without another mapping on the query side.
  */
 export function storeCallLogFields(record: StoreCallRecord): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -46,7 +46,7 @@ export function storeCallLogFields(record: StoreCallRecord): Record<string, unkn
   return out;
 }
 
-/** 构造 Store 调用日志出口；出口不得抛错（观测失败不影响业务）。 */
+/** Build the Store call log outlet; the outlet must never throw (observability failures do not affect business logic). */
 export function createStoreCallLogger(
   write: (line: string) => void,
 ): (record: StoreCallRecord) => void {
@@ -54,7 +54,7 @@ export function createStoreCallLogger(
     try {
       write(`${JSON.stringify(storeCallLogFields(record))}\n`);
     } catch {
-      // 观测是尽力而为。
+      // Observability is best-effort.
     }
   };
 }

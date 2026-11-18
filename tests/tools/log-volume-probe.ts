@@ -1,23 +1,23 @@
 /**
- * 日志量压测（M5 生产加固 E7，launch-plan "每请求 5+ 行"）。
+ * Log-volume load test (M5 production hardening E7, launch-plan "5+ lines per request").
  *
- * 为什么需要：观测规范要求每个请求产出 http.request / core.operation /
- * adapter.call / provider.request（必要时还有 store.*）多行结构化日志。
- * "每请求几行、每行多少字节"直接决定日志成本与磁盘水位，但一直**没有实测数字**——
- * 运维容量规划不能靠"大概不多"。
+ * Why it is needed: the observability spec requires each request to produce http.request / core.operation /
+ * adapter.call / provider.request (and store.* when needed) -- several lines of structured logs.
+ * "How many lines per request, how many bytes per line" directly decides log cost and disk headroom, but there were **no measured numbers** --
+ * ops capacity planning cannot rely on "probably not much".
  *
- * 本探针在**真实 Gateway + 真实 Core/Adapter** 上打真实 HTTP 请求，
- * 捕获 stdout 的每一行并按来源分类计数/计量，产出一份可直接引用的报告。
- * Provider 是本地 stub HTTP（不联网、无资金、无签名），因此可重复。
+ * This probe fires real HTTP requests at the **real Gateway + real Core/Adapter**,
+ * captures every stdout line, counts/measures them by source, and produces a report that can be cited directly.
+ * The Provider is a local stub HTTP server (no network, no funds, no signing), so it is repeatable.
  *
- * 用法：
+ * Usage:
  *   node --experimental-strip-types --experimental-transform-types \
  *     --import ./scripts/ts-runtime/register.mjs tests/tools/log-volume-probe.ts
  *
- * 可选环境变量：
- *   DFR_PROBE_REQUESTS（默认 200）：请求数
- *   DFR_PROBE_CONCURRENCY（默认 20）：并发度
- *   DFR_PROBE_OUT（默认 artifacts/log-volume-report.json）
+ * Optional environment variables:
+ *   DFR_PROBE_REQUESTS (default 200): number of requests
+ *   DFR_PROBE_CONCURRENCY (default 20): concurrency
+ *   DFR_PROBE_OUT (default artifacts/log-volume-report.json)
  */
 import { createServer } from 'node:http';
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -30,12 +30,12 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const REQUESTS = Number.parseInt(process.env['DFR_PROBE_REQUESTS'] ?? '200', 10);
 const CONCURRENCY = Number.parseInt(process.env['DFR_PROBE_CONCURRENCY'] ?? '20', 10);
 /**
- * 请求间隔（毫秒）。
+ * Request interval (milliseconds).
  *
- * 为什么需要它：`startGateway` 使用默认令牌桶（read: 容量 40、20/s）。
- * 探针要测的是**日志量**而不是限流行为，因此必须把速率压在限额以下，
- * 否则 429 会让统计失真（429 也写日志，会把"每请求行数"算歪）。
- * 默认 60ms ≈ 16.7 req/s，低于 20/s；并发度相应限制为 1 以免瞬时突发。
+ * Why it is needed: `startGateway` uses the default token bucket (read: capacity 40, 20/s).
+ * The probe measures **log volume**, not rate-limit behavior, so the rate must stay below the limit,
+ * otherwise 429s distort the statistics (429s also write logs, skewing "lines per request").
+ * Default 60ms ≈ 16.7 req/s, below 20/s; concurrency is limited to 1 accordingly to avoid instant bursts.
  */
 const PACE_MS = Number.parseInt(process.env['DFR_PROBE_PACE_MS'] ?? '60', 10);
 const OUT = process.env['DFR_PROBE_OUT'] ?? resolve(REPO_ROOT, 'artifacts/log-volume-report.json');
@@ -45,7 +45,7 @@ const PEPPER = 'log-volume-pepper';
 const KEY_ID = 'LogVol01';
 const API_KEY = `dfr_${KEY_ID}_${SECRET}`;
 
-/** 本地 JSON-RPC stub：只回本探针需要的两个方法，返回固定值。 */
+/** Local JSON-RPC stub: only answers the two methods this probe needs, returning fixed values. */
 function startStubRpc(): Promise<{ server: ReturnType<typeof createServer>; port: number }> {
   const server = createServer((req, res) => {
     let body = '';
@@ -86,8 +86,8 @@ interface LineStats {
 async function main(): Promise<number> {
   const { server: rpc, port } = await startStubRpc();
 
-  // 捕获 stdout 的每一行。Gateway 与探针自身都写 stdout，因此按前缀过滤：
-  // 只有 JSON Lines（以 `{` 开头）才算日志行，探针的进度输出不算。
+  // Capture every stdout line. Both the Gateway and the probe itself write stdout, so filter by prefix:
+  // only JSON Lines (starting with `{`) count as log lines; the probe's own progress output does not.
   const perSource = new Map<string, LineStats>();
   const rawLines: number[] = [];
   const originalWrite = process.stdout.write.bind(process.stdout);
@@ -97,10 +97,10 @@ async function main(): Promise<number> {
       const line = raw.trim();
       if (!line.startsWith('{')) continue;
       rawLines.push(Buffer.byteLength(line, 'utf8'));
-      // 分类必须覆盖**实际的**行形状，否则会落到 unknown 而失去意义。
-      // 实测形状（2026-10-08，200 请求）：
-      //   provider call ×4、adapter call ×1、core.operation ×1、http.request ×1 = 7 行/请求。
-      // OTLP span 行只在 DFR_OTLP_SPANS=true 时出现，单独归类（本探针默认不开启）。
+      // Classification must cover the **actual** line shapes, otherwise lines land in unknown and the result is meaningless.
+      // Measured shapes (2026-10-08, 200 requests):
+      //   provider call x4, adapter call x1, core.operation x1, http.request x1 = 7 lines/request.
+      // OTLP span lines only appear when DFR_OTLP_SPANS=true, classified separately (this probe does not enable it by default).
       let source = 'unknown';
       try {
         const parsed = JSON.parse(line) as Record<string, unknown>;
@@ -112,8 +112,8 @@ async function main(): Promise<number> {
           else if (msg === 'adapter call') source = 'adapter.call';
           else if (msg === 'core operation') source = 'core.operation';
           else if (msg === 'store call') source = 'store';
-          // http.request 行没有 msg/span：它是 {requestId,trace_id,span_id,method,path,status,latencyMs}。
-          // 用 `path` + `requestId` 双重判据，避免把别的行误归（如 Provider 行也有 method）。
+          // http.request lines have no msg/span: they are {requestId,trace_id,span_id,method,path,status,latencyMs}.
+          // Use `path` + `requestId` as dual criteria to avoid misclassifying other lines (e.g. Provider lines also have method).
           else if (
             typeof parsed['method'] === 'string' &&
             typeof parsed['path'] === 'string' &&
@@ -156,7 +156,7 @@ async function main(): Promise<number> {
     }),
   );
 
-  // 预热 1 次（避免把冷启动的额外日志算进平均值）。
+  // Warm up once (so cold-start extra logs are not counted in the average).
   await fetch(`http://127.0.0.1:${app.port}/v1/chains/base-sepolia`, { headers: { 'x-dfr-key': API_KEY } });
   perSource.clear();
   rawLines.length = 0;
@@ -164,8 +164,8 @@ async function main(): Promise<number> {
   const startedAt = Date.now();
   let ok = 0;
   let failed = 0;
-  // 串行 + 定速：限流器是默认桶，突发的并发请求会被 429，令日志量统计失真。
-  // CONCURRENCY 保留为显式约束，但定速本身就是单并发。
+  // Serial + fixed rate: the rate limiter is the default bucket, and bursty concurrent requests would get 429s and distort the log-volume statistics.
+  // CONCURRENCY is kept as an explicit constraint, but the fixed rate is already single-concurrency.
   void CONCURRENCY;
   for (let i = 0; i < REQUESTS; i += 1) {
     const res = await fetch(`http://127.0.0.1:${app.port}/v1/chains/base-sepolia`, {
@@ -203,12 +203,12 @@ async function main(): Promise<number> {
     bySource,
   };
 
-  // 自检：分类器必须把**所有**行归入已知来源。
-  // 若出现 unknown / unparsable-json，说明日志形状变了而分类器没跟上——
-  // 那种报告的数字是误导性的，宁可让探针非零退出，也不要产出一份"看起来正常"的假报告。
+  // Self-check: the classifier must place **every** line into a known source.
+  // If unknown / unparsable-json appears, the log shapes changed and the classifier did not keep up --
+  // then the report's numbers are misleading; better to have the probe exit non-zero than produce a fake report that "looks fine".
   const unclassified = (perSource.get('unknown')?.count ?? 0) + (perSource.get('unparsable-json')?.count ?? 0);
   if (unclassified > 0) {
-    process.stderr.write(`日志量压测：分类器漏掉 ${unclassified} 行，报告不可信（见 bySource.unknown）\n`);
+    process.stderr.write(`Log-volume load test: the classifier missed ${unclassified} lines; the report is unreliable (see bySource.unknown)\n`);
     mkdirSync(dirname(OUT), { recursive: true });
     writeFileSync(OUT, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
     return 2;
@@ -216,11 +216,11 @@ async function main(): Promise<number> {
 
   mkdirSync(dirname(OUT), { recursive: true });
   writeFileSync(OUT, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
-  // 报告摘要走 stderr，避免污染我们刚断言的 stdout 口径。
+  // The report summary goes to stderr, so it does not pollute the stdout shape just asserted.
   process.stderr.write(
-    `日志量压测：${REQUESTS} 请求（ok=${ok} failed=${failed}, ${CONCURRENCY} 并发, ${elapsedMs}ms）\n` +
-      `  每请求 ${report.totals.linesPerRequest} 行 / ${report.totals.bytesPerRequest} 字节；每行均值 ${report.totals.bytesPerLine} 字节\n` +
-      `  证据：${OUT}\n`,
+    `Log-volume load test: ${REQUESTS} requests (ok=${ok} failed=${failed}, ${CONCURRENCY} concurrent, ${elapsedMs}ms)\n` +
+      `  ${report.totals.linesPerRequest} lines / ${report.totals.bytesPerRequest} bytes per request; ${report.totals.bytesPerLine} bytes per line on average\n` +
+      `  Evidence: ${OUT}\n`,
   );
   return failed === 0 ? 0 : 1;
 }

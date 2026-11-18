@@ -1,7 +1,7 @@
 /**
- * @dfr/errors —— DFR 统一错误模型。
+ * @dfr/errors — the DFR unified error model.
  *
- * 规范来源：docs/architecture/error-spec-v0.1.md（DFR-011）
+ * Spec source: docs/architecture/error-spec-v0.1.md (DFR-011)
  */
 export { ERROR_METADATA, KNOWN_ERROR_CODES, isKnownErrorCode } from './metadata.js';
 export type { ErrorMetadata } from './metadata.js';

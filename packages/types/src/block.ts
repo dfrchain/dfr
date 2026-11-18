@@ -1,5 +1,5 @@
 /**
- * 区块模型与区块引用（见 docs/architecture/domain-model.md 第 4.4 节）。
+ * Block model and block references (see docs/architecture/domain-model.md section 4.4).
  */
 import type { ChainId, DecimalUint, Iso8601, Commitment } from './primitives.js';
 
@@ -11,28 +11,28 @@ export type BlockRef =
 
 export interface Block {
   chain: ChainId;
-  /** EVM 高度。 */
+  /** EVM height. */
   number?: DecimalUint;
-  /** Solana slot。 */
+  /** Solana slot. */
   slot?: DecimalUint;
   hash: string;
   parentHash?: string;
-  /** Unix 秒，十进制字符串。 */
+  /** Unix seconds, decimal string. */
   timestamp?: DecimalUint;
-  /** 交易数量（只给出计数，交易列表通过分页接口获取）。 */
+  /** Transaction count (count only; the transaction list comes from the paged endpoint). */
   transactionCount?: number;
-  /** EVM 该区块使用的基础费。 */
+  /** The base fee used by this EVM block. */
   baseFeePerGas?: DecimalUint;
-  /** 该区块是否已被后续区块确认（由 FinalityPolicy 判定）。 */
+  /** Whether this block has been confirmed by later blocks (decided by FinalityPolicy). */
   finality?: FinalityState;
   observedAt: Iso8601;
 }
 
 /**
- * 交易/区块的**观测到**的最终性状态。独立声明以避免与 transaction.ts 产生循环依赖。
+ * The **observed** finality state of a transaction/block. Declared separately to avoid a circular dependency with transaction.ts.
  *
- * 注意（审计修正 A-09）：本类型包含 `orphaned` / `unknown` 这类**不是有序目标**的取值，
- * 因此**不得**用作"最低要求"参数。需要目标语义时使用 `FinalityLevel`。
+ * Note (audit fix A-09): this type includes values like `orphaned` / `unknown` that are **not ordered targets**,
+ * so it must **not** be used as a "minimum requirement" parameter. Use `FinalityLevel` when target semantics are needed.
  */
 export type FinalityState =
   | 'submitted'
@@ -43,23 +43,23 @@ export type FinalityState =
   | 'unknown';
 
 /**
- * 严格有序的最终性**目标等级**（审计修正 A-10）。
+ * Strictly ordered finality **target levels** (audit fix A-10).
  *
- * 用于 `ConfirmRequest.minFinality`、`TransactionOptions.waitForFinality` 等"至少达到"语义。
- * 顺序（由弱到强）：submitted < included < confirmed < finalized。
+ * For `ConfirmRequest.minFinality`, `TransactionOptions.waitForFinality`, and other "at least" semantics.
+ * Order (weak to strong): submitted < included < confirmed < finalized.
  *
- * 这里刻意不含 `orphaned` / `unknown`：它们描述异常观测结果，不是可追求的目标；
- * 旧版本用完整的 `FinalityState` 导致调用方可以传 `orphaned` 作为"最低最终性"。
+ * Deliberately excludes `orphaned` / `unknown`: they describe abnormal observations, not pursuable targets;
+ * the old version used the full `FinalityState`, letting callers pass `orphaned` as a "minimum finality".
  */
 export type FinalityLevel = 'submitted' | 'included' | 'confirmed' | 'finalized';
 
 /**
- * `Commitment`（Solana 域）到 `FinalityState`（DFR 观察域）的映射（ADR-031）。
+ * Mapping from `Commitment` (Solana domain) to `FinalityState` (DFR observation domain) (ADR-031).
  *
- * 两个枚举只有 `confirmed` / `finalized` 同名；`processed` 在 `FinalityState` 中
- * 没有对应值，最接近的语义是 `included`（已进入区块、未确认）。
- * 该映射必须**显式**存在，否则按 `Commitment` 比 `FinalityState` 会把
- * `included` 误判为"不受支持的 commitment"。
+ * The two enums share only `confirmed` / `finalized`; `processed` has no counterpart in `FinalityState`,
+ * and the closest semantics is `included` (in a block, unconfirmed).
+ * The mapping must exist **explicitly**, otherwise comparing by `Commitment` against `FinalityState` would
+ * misjudge `included` as an "unsupported commitment".
  */
 export const COMMITMENT_TO_FINALITY_STATE: Readonly<Record<Commitment, FinalityState>> = {
   processed: 'included',
@@ -67,7 +67,7 @@ export const COMMITMENT_TO_FINALITY_STATE: Readonly<Record<Commitment, FinalityS
   finalized: 'finalized',
 };
 
-/** `FinalityState` → `Commitment` 的反查（不属于任何 commitment 时返回 undefined）。 */
+/** Reverse lookup from `FinalityState` to `Commitment` (returns undefined when it belongs to no commitment). */
 export function commitmentOf(observed: FinalityState): Commitment | undefined {
   if (observed === 'included') return 'processed';
   if (observed === 'confirmed') return 'confirmed';
@@ -75,7 +75,7 @@ export function commitmentOf(observed: FinalityState): Commitment | undefined {
   return undefined;
 }
 
-/** FinalityLevel 的强度序号，供 Core 比较"是否达到要求"使用。 */
+/** Strength index of a FinalityLevel, for Core to compare "whether the requirement is met". */
 export const FINALITY_ORDER: Readonly<Record<FinalityLevel, number>> = {
   submitted: 0,
   included: 1,
@@ -83,7 +83,7 @@ export const FINALITY_ORDER: Readonly<Record<FinalityLevel, number>> = {
   finalized: 3,
 };
 
-/** 判断观测状态是否已达到某个目标等级。`orphaned` / `unknown` 一律视为未达到。 */
+/** Decide whether an observed state has reached a target level. `orphaned` / `unknown` always count as not reached. */
 export function reachesFinalityLevel(
   observed: FinalityState,
   required: FinalityLevel,

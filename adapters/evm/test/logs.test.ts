@@ -1,7 +1,7 @@
 /**
- * EVM Adapter `logs()`（ADR-034）单元测试。
+ * EVM Adapter `logs()` (ADR-034) unit tests.
  *
- * 覆盖：eth_getLogs 参数构造、ChainLog 映射、有界区间红线、非法输入 fail-closed。
+ * Covers: eth_getLogs parameter construction, ChainLog mapping, the bounded-range red line, and fail-closed invalid input.
  */
 import { describe, expect, it } from 'vitest';
 import { EvmAdapter } from '../src/adapter.js';
@@ -34,7 +34,7 @@ function ctxWith(handlers: Record<string, (params: readonly unknown[]) => unknow
 
 const RPC_LOG = {
   address: ADDRESS,
-  // ERC-20 Transfer(address,address,uint256) 的 topic0（公开常量）。
+  // ERC-20 Transfer(address,address,uint256) topic0 (public constant).
   topics: ['0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef'], // secret-scan:allow erc20-transfer-topic0
   data: '0x' + '00'.repeat(32),
   blockNumber: '0x64',
@@ -46,8 +46,8 @@ const RPC_LOG = {
 
 const n = (v: string): BlockRef => ({ kind: 'number', number: v as DecimalUint });
 
-describe('EVM Adapter logs（ADR-034）', () => {
-  it('声明 contract.logs，并按 eth_getLogs 构造参数、映射 ChainLog', async () => {
+describe('EVM Adapter logs (ADR-034)', () => {
+  it('declares contract.logs, builds eth_getLogs params, and maps ChainLog', async () => {
     const adapter = new EvmAdapter({ chain });
     expect(adapter.capabilities().capabilities).toContain('contract.logs');
 
@@ -72,7 +72,7 @@ describe('EVM Adapter logs（ADR-034）', () => {
     });
   });
 
-  it('区间跨度超过 maxBlockRange → DFR_VALIDATION_FAILED（不截断）', async () => {
+  it('range wider than maxBlockRange → DFR_VALIDATION_FAILED (no truncation)', async () => {
     const adapter = new EvmAdapter({ chain, maxBlockRange: '100' as DecimalUint });
     const ctx = ctxWith({ eth_getLogs: () => [] });
     await expect(
@@ -80,7 +80,7 @@ describe('EVM Adapter logs（ADR-034）', () => {
     ).rejects.toMatchObject({ code: 'DFR_VALIDATION_FAILED' });
   });
 
-  it('恰好等于 maxBlockRange 的区间被允许（+1 边界）', async () => {
+  it('a range exactly equal to maxBlockRange is allowed (+1 boundary)', async () => {
     const adapter = new EvmAdapter({ chain, maxBlockRange: '100' as DecimalUint });
     const ctx = ctxWith({ eth_getLogs: () => [] });
     await expect(
@@ -96,7 +96,7 @@ describe('EVM Adapter logs（ADR-034）', () => {
     ).rejects.toMatchObject({ code: 'DFR_VALIDATION_FAILED' });
   });
 
-  it('tag/hash 不能作为区间端点 → DFR_VALIDATION_FAILED', async () => {
+  it('tag/hash cannot be range endpoints → DFR_VALIDATION_FAILED', async () => {
     const adapter = new EvmAdapter({ chain });
     const ctx = ctxWith({ eth_getLogs: () => [] });
     await expect(
@@ -107,7 +107,7 @@ describe('EVM Adapter logs（ADR-034）', () => {
     ).rejects.toMatchObject({ code: 'DFR_VALIDATION_FAILED' });
   });
 
-  it('非法合约地址 → DFR_INVALID_ACCOUNT', async () => {
+  it('invalid contract address → DFR_INVALID_ACCOUNT', async () => {
     const adapter = new EvmAdapter({ chain });
     const ctx = ctxWith({ eth_getLogs: () => [] });
     await expect(
@@ -115,7 +115,7 @@ describe('EVM Adapter logs（ADR-034）', () => {
     ).rejects.toMatchObject({ code: 'DFR_INVALID_ACCOUNT' });
   });
 
-  it('limit 截断返回条数', async () => {
+  it('limit truncates the number of returned entries', async () => {
     const adapter = new EvmAdapter({ chain });
     const many = Array.from({ length: 5 }, (_, i) => ({ ...RPC_LOG, logIndex: `0x${i.toString(16)}` }));
     const ctx = ctxWith({ eth_getLogs: () => many });
@@ -123,7 +123,7 @@ describe('EVM Adapter logs（ADR-034）', () => {
     expect(logs).toHaveLength(2);
   });
 
-  it('省略 address 仍查询（任意合约）', async () => {
+  it('query still runs without address (any contract)', async () => {
     const adapter = new EvmAdapter({ chain });
     const calls: Array<Record<string, unknown>> = [];
     const ctx = ctxWith({ eth_getLogs: (params) => { calls.push(params[0] as Record<string, unknown>); return []; } });

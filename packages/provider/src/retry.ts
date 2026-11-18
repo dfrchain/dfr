@@ -1,16 +1,16 @@
 /**
- * 重试策略（见 docs/architecture/provider-spec-v0.1.md 第 6 章）。
+ * Retry policy (see docs/architecture/provider-spec-v0.1.md, chapter 6).
  *
- * | idempotency          | 自动重试                                       |
+ * | idempotency          | auto-retry                                       |
  * |----------------------|-----------------------------------------------|
- * | safe-read            | 是，最多 min(3, 可用 Provider 数)，不得重复同一 Provider |
- * | idempotent-write     | 谨慎，最多在同一 Provider 重试 1 次，需显式授权        |
- * | non-idempotent-write | 否（广播类，重复提交由上层按交易哈希去重）           |
+ * | safe-read            | yes, at most min(3, available Provider count), never the same Provider twice |
+ * | idempotent-write     | cautious, at most 1 retry on the same Provider, explicit authorization required        |
+ * | non-idempotent-write | no (broadcasts; duplicate submissions are deduped upstream by transaction hash)           |
  */
 import { isDfrError } from '@dfr/errors';
 import type { IdempotencyClass } from '@dfr/types';
 
-/** 禁止重试的错误码（error-spec + provider-spec 第 6 章）。 */
+/** Error codes that forbid retry (error-spec + provider-spec chapter 6). */
 const NEVER_RETRY_CODES: ReadonlySet<string> = new Set([
   'DFR_INVALID_REQUEST',
   'DFR_VALIDATION_FAILED',
@@ -32,36 +32,36 @@ const NEVER_RETRY_CODES: ReadonlySet<string> = new Set([
   'DFR_INSUFFICIENT_FUNDS',
 ]);
 
-/** 指数退避基数（毫秒）：50 / 150 / 400。 */
+/** Exponential backoff base (milliseconds): 50 / 150 / 400. */
 export const BACKOFF_SCHEDULE_MS = [50, 150, 400] as const;
 
 export interface RetryDecision {
   retry: boolean;
-  /** 需要重试时使用的退避时长（含抖动）。 */
+  /** The backoff duration to use when a retry is needed (with jitter). */
   delayMs?: number;
 }
 
 export interface RetryInput {
   error: unknown;
   idempotency: IdempotencyClass;
-  /** 已完成的尝试次数（首次调用后为 1）。 */
+  /** The number of attempts completed (1 after the first call). */
   attempts: number;
-  /** safe-read 的重试预算：min(3, 可用 Provider 数)。 */
+  /** The safe-read retry budget: min(3, available Provider count). */
   safeReadBudget: number;
-  /** 是否还有未被尝试过的 Provider。 */
+  /** Whether any Provider has not been tried yet. */
   hasUntriedProvider: boolean;
-  /** idempotent-write 是否被显式授权重试同一 Provider。 */
+  /** Whether idempotent-write is explicitly authorized to retry on the same Provider. */
   allowIdempotentWriteRetry: boolean;
-  /** 随机抖动来源 0..1。 */
+  /** The random jitter source, 0..1. */
   jitter: number;
 }
 
-/** 判定是否重试；纯函数，便于逐条回归映射表。 */
+/** Decide whether to retry; a pure function, easy to map to regression cases one by one. */
 export function decideRetry(input: RetryInput): RetryDecision {
   const { error, idempotency } = input;
   if (!isDfrError(error)) return { retry: false };
 
-  // HTTP 4xx（除 408/429）禁止重试。上游状态在 details.httpStatus 里。
+  // HTTP 4xx (except 408/429) forbid retry. The upstream status is in details.httpStatus.
   const httpStatus = error.details?.['httpStatus'];
   if (typeof httpStatus === 'number' && httpStatus >= 400 && httpStatus < 500) {
     if (httpStatus !== 408 && httpStatus !== 429) return { retry: false };
@@ -69,7 +69,7 @@ export function decideRetry(input: RetryInput): RetryDecision {
 
   switch (idempotency) {
     case 'non-idempotent-write':
-      // 广播类绝不自动重试 —— 这是防资金事故的核心约束。
+      // Broadcasts are never auto-retried — this is the core constraint against funds accidents.
       return { retry: false };
     case 'idempotent-write': {
       if (!input.allowIdempotentWriteRetry) return { retry: false };
@@ -92,6 +92,6 @@ export function decideRetry(input: RetryInput): RetryDecision {
 
 function withJitter(baseMs: number, jitter: number): number {
   const clamped = Math.min(1, Math.max(0, jitter));
-  // ±30% 抖动，避免多个调用方同时重试造成同步风暴。
+  // ±30% jitter, so multiple callers retrying at once do not create a synchronized storm.
   return Math.round(baseMs * (0.7 + 0.6 * clamped));
 }

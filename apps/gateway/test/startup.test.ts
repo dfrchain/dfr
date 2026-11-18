@@ -129,8 +129,8 @@ describe('B35: stale-abandon window must fail at Gateway startup', () => {
   );
 });
 
-describe('M1 Gateway composition root fail-closed（DFR-M1-A13）', () => {
-  it('M0 默认不需要数据库，也不创建持久化连接', async () => {
+describe('M1 Gateway composition root fail-closed (DFR-M1-A13)', () => {
+  it('M0 needs no database by default, and creates no durable connection', async () => {
     const createPersistence = vi.fn(async () => persistence());
 
     const runtime = await resolveGatewayRuntime({}, createPersistence);
@@ -139,7 +139,7 @@ describe('M1 Gateway composition root fail-closed（DFR-M1-A13）', () => {
     expect(createPersistence).not.toHaveBeenCalled();
   });
 
-  it('M0 无数据库 URL 可完整监听并关闭 HTTP 运行时', async () => {
+  it('M0 with no database URL can fully listen and shut down the HTTP runtime', async () => {
     const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     try {
       const app = await startGateway({
@@ -153,7 +153,7 @@ describe('M1 Gateway composition root fail-closed（DFR-M1-A13）', () => {
     }
   });
 
-  it('M1 缺少 DFR_TRANSACTION_DATABASE_URL 时拒绝启动', async () => {
+  it('M1 refuses to start without DFR_TRANSACTION_DATABASE_URL', async () => {
     await expect(
       resolveGatewayRuntime({ DFR_M1_ALLOW_WRITE: 'true' }, async () => persistence()),
     ).rejects.toMatchObject({
@@ -162,13 +162,13 @@ describe('M1 Gateway composition root fail-closed（DFR-M1-A13）', () => {
     });
   });
 
-  it('非法写开关不得被默认当成 M0', async () => {
+  it('an illegal write switch must not be defaulted to M0', async () => {
     await expect(resolveGatewayRuntime({ DFR_M1_ALLOW_WRITE: 'yes' })).rejects.toThrow(
       'DFR_M1_ALLOW_WRITE',
     );
   });
 
-  it('API Key 轮换变量必须成对：只配 previous keyId 或只配 hash 都 fail-closed', async () => {
+  it('API Key rotation variables must come in pairs: configuring only the previous keyId or only the hash fails closed', async () => {
     const base = {
       DFR_M0_API_KEY_ID: 'CurrKey1',
       DFR_M0_API_KEY_HASH: 'a'.repeat(64),
@@ -176,26 +176,26 @@ describe('M1 Gateway composition root fail-closed（DFR-M1-A13）', () => {
     };
     await expect(
       startGateway({ ...base, DFR_M0_API_KEY_ID_PREVIOUS: 'PrevKey1' }),
-    ).rejects.toThrow(/DFR_M0_API_KEY_ID_PREVIOUS.*DFR_M0_API_KEY_HASH_PREVIOUS|成对/);
+    ).rejects.toThrow(/DFR_M0_API_KEY_ID_PREVIOUS.*DFR_M0_API_KEY_HASH_PREVIOUS|configured together/);
     await expect(
       startGateway({ ...base, DFR_M0_API_KEY_HASH_PREVIOUS: 'b'.repeat(64) }),
-    ).rejects.toThrow(/DFR_M0_API_KEY_ID_PREVIOUS.*DFR_M0_API_KEY_HASH_PREVIOUS|成对/);
+    ).rejects.toThrow(/DFR_M0_API_KEY_ID_PREVIOUS.*DFR_M0_API_KEY_HASH_PREVIOUS|configured together/);
   });
 
-  it('API Key keyId / hash 格式非法时拒绝启动（配置参考承诺，不允许运行到鉴权时才发现）', async () => {
+  it('refuses to start on an illegal API Key keyId / hash format (a configuration-reference promise: must not run until auth to discover it)', async () => {
     const base = {
       DFR_M0_API_KEY_ID: 'CurrKey1',
       DFR_M0_API_KEY_HASH: 'a'.repeat(64),
       DFR_GATEWAY_PORT: '0',
     };
-    // keyId 必须恰好 8 位 alnum：7 位、9 位、含短横线都拒绝。
+    // keyId must be exactly 8 alnum characters: 7, 9, or containing a hyphen are all rejected.
     for (const badKeyId of ['Short', 'TooLong01', 'Bad-Key1']) {
       await expect(
         startGateway({ ...base, DFR_M0_API_KEY_ID: badKeyId }),
         badKeyId,
       ).rejects.toThrow(/DFR_M0_API_KEY_ID/);
     }
-    // hash 必须是 64 位 hex：长度不足、非 hex、带 0x 前缀都拒绝。
+    // hash must be 64 hex characters: too short, non-hex, or with a 0x prefix are all rejected.
     for (const badHash of ['a'.repeat(63), 'g'.repeat(64), `0x${'a'.repeat(64)}`]) {
       await expect(
         startGateway({ ...base, DFR_M0_API_KEY_HASH: badHash }),
@@ -204,7 +204,7 @@ describe('M1 Gateway composition root fail-closed（DFR-M1-A13）', () => {
     }
   });
 
-  it('DFR_GATEWAY_PORT 非法时 fail-closed，不静默用 NaN/越界端口', async () => {
+  it('an illegal DFR_GATEWAY_PORT fails closed, without silently using a NaN/out-of-range port', async () => {
     const base = {
       DFR_M0_API_KEY_ID: 'CurrKey1',
       DFR_M0_API_KEY_HASH: 'a'.repeat(64),
@@ -216,7 +216,7 @@ describe('M1 Gateway composition root fail-closed（DFR-M1-A13）', () => {
     }
   });
 
-  it('M1 数据库不可达时错误与序列化日志均不泄漏 URL 或凭证', async () => {
+  it('when the M1 database is unreachable, errors and serialized logs leak neither URL nor credentials', async () => {
     const databaseUrl = 'postgres://runtime:do-not-log@example.invalid:5432/dfr?ssl=true';
     const createPersistence = vi.fn(async () => {
       throw new Error(`connect ECONNREFUSED ${databaseUrl}`);
@@ -240,7 +240,7 @@ describe('M1 Gateway composition root fail-closed（DFR-M1-A13）', () => {
     expect((caught as Error).message).toBe('M1 transaction database is unavailable');
   });
 
-  it('M1 数据库就绪时返回四个 Store 与关闭句柄', async () => {
+  it('when the M1 database is ready, returns the four Stores and the close handle', async () => {
     const stores = persistence();
     const runtime = await resolveGatewayRuntime(
       {
@@ -255,8 +255,8 @@ describe('M1 Gateway composition root fail-closed（DFR-M1-A13）', () => {
     expect(runtime.persistence).toBe(stores);
   });
 
-  // ADR-038 / issue #1：显式里程碑开关必须能真正加载 M4 的链。
-  it('DFR_DEPLOY_MILESTONE=M4 在持久化就绪时返回 M4', async () => {
+  // ADR-038 / issue #1: an explicit milestone switch must really load M4 chains.
+  it('DFR_DEPLOY_MILESTONE=M4 returns M4 when persistence is ready', async () => {
     const stores = persistence();
     const runtime = await resolveGatewayRuntime(
       {
@@ -271,7 +271,7 @@ describe('M1 Gateway composition root fail-closed（DFR-M1-A13）', () => {
     expect(runtime.allowWrite).toBe(true);
   });
 
-  it('缺省 DFR_DEPLOY_MILESTONE 时保持历史行为（M0/M1）', async () => {
+  it('without DFR_DEPLOY_MILESTONE, historical behavior is kept (M0/M1)', async () => {
     await expect(resolveGatewayRuntime({}, async () => persistence())).resolves.toEqual({
       milestone: 'M0',
       allowWrite: false,
@@ -286,27 +286,27 @@ describe('M1 Gateway composition root fail-closed（DFR-M1-A13）', () => {
     expect(runtime.milestone).toBe('M1');
   });
 
-  it('非法 DFR_DEPLOY_MILESTONE 不得被当成缺省值', async () => {
+  it('an illegal DFR_DEPLOY_MILESTONE must not be treated as the default', async () => {
     await expect(
       resolveGatewayRuntime({ DFR_DEPLOY_MILESTONE: 'M9' }),
     ).rejects.toThrow('DFR_DEPLOY_MILESTONE');
   });
 
-  it('未开放写路径时请求高于 M0 的里程碑 → 拒绝启动（fail-closed）', async () => {
+  it('requesting a milestone above M0 without an open write path → refuses to start (fail-closed)', async () => {
     await expect(
       resolveGatewayRuntime({ DFR_DEPLOY_MILESTONE: 'M4' }),
     ).rejects.toThrow('requires DFR_M1_ALLOW_WRITE=true');
   });
 });
 
-describe('Core 的 M1 Store 端口集合', () => {
-  it('M0 允许不配置 M1 Store', () => {
+describe('Core's M1 Store port set', () => {
+  it('M0 allows no M1 Store to be configured', () => {
     expect(
       () => new DfrCore({ registry: m0Registry, adapters, milestone: 'M0' }),
     ).not.toThrow();
   });
 
-  it('M1 缺少 Store 集合或任一 Store 时拒绝构造', () => {
+  it('M1 refuses construction when the Store set or any Store is missing', () => {
     expect(
       () => new DfrCore({ registry: m0Registry, adapters, milestone: 'M1' }),
     ).toThrow(/persistent transaction stores/i);
@@ -324,7 +324,7 @@ describe('Core 的 M1 Store 端口集合', () => {
     ).toThrow(/persistent transaction stores/i);
   });
 
-  it('M1 四个 Store 完整时 Core 保留端口引用', () => {
+  it('when all four M1 Stores are present, Core keeps the port references', async () => {
     const stores = persistence().stores;
     const core = new DfrCore({
       registry: m0Registry,

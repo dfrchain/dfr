@@ -3,72 +3,72 @@ import type { DecimalUint, FinalityPolicy, FinalityState } from '@dfr/types';
 import { evaluateFinality } from '../src/finality.js';
 
 describe('evaluateFinality', () => {
-  it('confirmations 使用十进制字符串比较，达到阈值后为 confirmed', () => {
+  it('confirmations compares with decimal strings; confirmed once the threshold is reached', () => {
     const policy: FinalityPolicy = { kind: 'confirmations', confirmations: 12 };
     expect(evaluateFinality({ policy, finalityStatus: 'verified', confirmations: '11' as DecimalUint, required: 'confirmed' }).reached).toBe(false);
     expect(evaluateFinality({ policy, finalityStatus: 'verified', confirmations: '12' as DecimalUint, required: 'confirmed' })).toMatchObject({ observed: 'confirmed', reached: true });
   });
 
-  it('checkpoint 只有 finalized tag 才满足 finalized', () => {
+  it('a checkpoint only satisfies finalized with a finalized tag', () => {
     const policy: FinalityPolicy = { kind: 'checkpoint', finalizedTag: true };
     expect(evaluateFinality({ policy, finalityStatus: 'verified', observed: 'confirmed', required: 'finalized' }).reached).toBe(false);
     expect(evaluateFinality({ policy, finalityStatus: 'verified', observed: 'finalized', required: 'finalized' }).reached).toBe(true);
   });
 
-  it('未验证策略不能作为结算级 finalized 依据', () => {
+  it('an unverified strategy cannot serve as a settlement-grade finalized basis', () => {
     expect(evaluateFinality({ policy: { kind: 'checkpoint', finalizedTag: true }, finalityStatus: 'unverified', observed: 'finalized', required: 'finalized' })).toMatchObject({ reached: false, reason: 'unverified_policy' });
   });
 
-  it('unknown/orphaned 永不达标', () => {
+  it('unknown/orphaned never qualifies', () => {
     expect(evaluateFinality({ policy: { kind: 'none' }, finalityStatus: 'verified', observed: 'unknown', required: 'submitted' }).reached).toBe(false);
     expect(evaluateFinality({ policy: { kind: 'none' }, finalityStatus: 'verified', observed: 'orphaned', required: 'submitted' }).reached).toBe(false);
   });
 });
 
-describe('commitment 策略（ADR-031，M2 Solana 路径的前提）', () => {
+describe('commitment strategy (ADR-031, the premise of the M2 Solana path)', () => {
   const policy: FinalityPolicy = {
     kind: 'commitment',
     levels: ['processed', 'confirmed', 'finalized'],
   };
 
-  it('included 等价于 processed，属于已声明层级（修复前被误判 unsupported_commitment）', () => {
-    // 真实缺陷：policy.levels 是 Commitment（processed|confirmed|finalized），
-    // 而 observed 是 FinalityState（submitted|included|...）。两域只有两个值相交，
-    // `processed` 在 FinalityState 中无对应值——最接近的 `included` 会被判"不受支持"。
+  it('included is equivalent to processed and belongs to a declared level (before the fix it was misjudged unsupported_commitment)', () => {
+    // The real defect: policy.levels is a Commitment (processed|confirmed|finalized),
+    // while observed is a FinalityState (submitted|included|...). Only two values intersect,
+    // and `processed` has no counterpart in FinalityState — the closest value, `included`, was judged "unsupported".
     const result = evaluateFinality({
       policy, finalityStatus: 'verified', observed: 'included', required: 'confirmed',
     });
     expect(result.observed).toBe('included');
     expect(result.reason).not.toBe('unsupported_commitment');
-    expect(result.reached).toBe(false); // processed < confirmed，尚未达标但路径可用
+    expect(result.reached).toBe(false); // processed < confirmed: not yet met, but the path is usable
   });
 
-  it('processed 本身即可满足 required=included', () => {
+  it('processed itself can satisfy required=included', () => {
     const result = evaluateFinality({
       policy, finalityStatus: 'verified', observed: 'included', required: 'included',
     });
     expect(result).toMatchObject({ observed: 'included', reached: true });
   });
 
-  it('submitted 尚未进入 commitment 层级 → 未达标，但不是"不受支持"', () => {
+  it('submitted has not entered any commitment level → not met, but not "unsupported"', () => {
     const result = evaluateFinality({
       policy, finalityStatus: 'verified', observed: 'submitted', required: 'included',
     });
     expect(result.reached).toBe(false);
-    expect(result.reason, '未进入层级不应报 unsupported_commitment').not.toBe('unsupported_commitment');
+    expect(result.reason, 'not yet in any level must not report unsupported_commitment').not.toBe('unsupported_commitment');
   });
 
-  it('confirmed / finalized 达标（同名映射）', () => {
+  it('confirmed / finalized qualify (same-name mapping)', () => {
     expect(evaluateFinality({ policy, finalityStatus: 'verified', observed: 'confirmed', required: 'confirmed' }).reached).toBe(true);
     expect(evaluateFinality({ policy, finalityStatus: 'verified', observed: 'finalized', required: 'finalized' }).reached).toBe(true);
   });
 
-  it('无法反查为 commitment 的观察仍报 unsupported_commitment（负对照，ADR-031 修订后保留）', () => {
-    // 修订前的负对照用"收窄 levels + observed finalized"断言 unsupported——
-    // 那正是 F-1 的悖论：观测比声明的最高层级更强，按单调语义应当达标
-    // （见下方回归用例）。修订后仍须 fail-closed 的，是根本无法反查、
-    // 无法与 commitment 全序比较的观察：例如运行时出现枚举之外的
-    // FinalityState（未来扩展或异构 Adapter 的未知值）。
+  it('an observation that cannot be reverse-mapped to a commitment still reports unsupported_commitment (negative control, kept after the ADR-031 revision)', () => {
+    // The pre-revision negative control asserted unsupported with a "narrowed levels + observed finalized" shape —
+    // that is exactly the F-1 paradox: an observation stronger than the highest declared level should qualify under monotonic semantics
+    // (see the regression case below). After the revision, what must still fail closed is an observation that fundamentally cannot be reverse-mapped
+    // or compared against the commitment total order: for example a FinalityState outside the enum at runtime
+    // (a future extension or an unknown value from a heterogeneous Adapter).
     const result = evaluateFinality({
       policy, finalityStatus: 'verified',
       observed: 'snapshot' as FinalityState, required: 'confirmed',
@@ -77,22 +77,22 @@ describe('commitment 策略（ADR-031，M2 Solana 路径的前提）', () => {
     expect(result.reached).toBe(false);
   });
 
-  it('观测强于声明的最高层级仍按单调语义达标（ADR-031 修订：F-1 回归）', () => {
-    // solana-devnet 的真实形状：levels 只声明 [processed, confirmed]
-    // （finalityStatus unverified），Adapter 却如实观测到 finalized。
-    // 修订前 evaluateFinality 在此报 unsupported_commitment、reached=false，
-    // engine.confirm 对已 finalized 的交易永远无法收敛（Finding F-1）。
+  it('an observation stronger than the highest declared level still qualifies under monotonic semantics (ADR-031 revision: F-1 regression)', () => {
+    // The real shape of solana-devnet: levels only declares [processed, confirmed]
+    // (finalityStatus unverified), yet the Adapter faithfully observes finalized.
+    // Before the revision, evaluateFinality reported unsupported_commitment with reached=false here,
+    // and engine.confirm could never converge a finalized transaction (Finding F-1).
     const devnet: FinalityPolicy = { kind: 'commitment', levels: ['processed', 'confirmed'] };
     expect(evaluateFinality({
       policy: devnet, finalityStatus: 'unverified', observed: 'finalized', required: 'confirmed',
     })).toMatchObject({ observed: 'finalized', reached: true });
-    // required 的 processed 等级在 FinalityLevel 域写作 included。
+    // The processed grade of required is written as included in the FinalityLevel domain.
     expect(evaluateFinality({
       policy: devnet, finalityStatus: 'unverified', observed: 'finalized', required: 'included',
     }).reached).toBe(true);
   });
 
-  it('收窄 levels 到 [confirmed] 时 finalized 观测同样达标（原负对照形状的修订后语义）', () => {
+  it('narrowing levels to [confirmed] still qualifies a finalized observation (the post-revision semantics of the old negative-control shape)', () => {
     const narrowed: FinalityPolicy = { kind: 'commitment', levels: ['confirmed'] };
     const result = evaluateFinality({
       policy: narrowed, finalityStatus: 'verified', observed: 'finalized', required: 'confirmed',
@@ -100,7 +100,7 @@ describe('commitment 策略（ADR-031，M2 Solana 路径的前提）', () => {
     expect(result).toMatchObject({ observed: 'finalized', reached: true });
   });
 
-  it('观测弱于要求时仍未达标（单调语义不改变未达标判定）', () => {
+  it('an observation weaker than the requirement is still not met (monotonic semantics does not change the not-met verdict)', () => {
     const devnet: FinalityPolicy = { kind: 'commitment', levels: ['processed', 'confirmed'] };
     const result = evaluateFinality({
       policy: devnet, finalityStatus: 'unverified', observed: 'included', required: 'confirmed',
@@ -109,7 +109,7 @@ describe('commitment 策略（ADR-031，M2 Solana 路径的前提）', () => {
     expect(result.reason).not.toBe('unsupported_commitment');
   });
 
-  it('未验证的 devnet 仍不得据此宣称 finalized（finalityStatus 保护伞）', () => {
+  it('an unverified devnet must still not be used to claim finalized (the finalityStatus umbrella)', () => {
     const result = evaluateFinality({
       policy, finalityStatus: 'unverified', observed: 'finalized', required: 'finalized',
     });

@@ -1,21 +1,21 @@
 /**
- * 统一错误模型（见 docs/architecture/error-spec-v0.1.md）。
+ * Unified error model (see docs/architecture/error-spec-v0.1.md).
  *
- * 规则：
- * - 错误码是稳定契约，只增不改语义；运行时清单见 DFR_ERROR_CODES；
- * - detail 面向开发者，不得包含凭证、私钥、签名原文；
- * - chainError 只保留 code 与已脱敏 message。
+ * Rules:
+ * - Error codes are a stable contract: only additions, never semantic changes; the runtime list is DFR_ERROR_CODES;
+ * - detail is developer-facing and must not contain credentials, private keys, or raw signatures;
+ * - chainError keeps only code and the redacted message.
  */
 import type { ChainId, RequestId, ProviderId } from './primitives.js';
 
 /**
- * 错误码的运行时清单，是 `DfrErrorCode` 的唯一事实来源。
+ * The runtime list of error codes, the only fact source for `DfrErrorCode`.
  *
- * 以常量数组形式存在，使契约可被机器校验：一致性测试会断言本数组与
- * `docs/architecture/error-spec-v0.1.md`、`docs/api/openapi.yaml` 中的错误码集合完全相同
- * （见 tests/contract/spec-consistency.test.ts）。
+ * Exists as a constant array so the contract is machine-checkable: consistency tests assert this array is
+ * exactly the same as the error-code sets in `docs/architecture/error-spec-v0.1.md` and `docs/api/openapi.yaml`
+ * (see tests/contract/spec-consistency.test.ts).
  *
- * 错误码是稳定契约：只增不改语义。
+ * Error codes are a stable contract: only additions, never semantic changes.
  */
 export const DFR_ERROR_CODES = [
   /* client */
@@ -30,7 +30,7 @@ export const DFR_ERROR_CODES = [
   'DFR_PAYLOAD_TOO_LARGE',
   /* auth */
   'DFR_UNAUTHENTICATED',
-  /** SSE 一次性票据无效（过期/已用/未找到/绑定不匹配——统一不区分原因，避免枚举，ADR-029）。 */
+  /** SSE one-time ticket invalid (expired/used/not found/binding mismatch — deliberately not distinguished, to avoid enumeration, ADR-029). */
   'DFR_INVALID_TICKET',
   'DFR_UNAUTHORIZED',
   'DFR_PROJECT_SCOPE_DENIED',
@@ -67,7 +67,7 @@ export const DFR_ERROR_CODES = [
   'DFR_SIGNING_FAILED',
 ] as const;
 
-/** 由运行时清单派生的错误码类型。 */
+/** Error-code type derived from the runtime list. */
 export type DfrErrorCode = (typeof DFR_ERROR_CODES)[number];
 
 export type ErrorCategory =
@@ -80,7 +80,7 @@ export type ErrorCategory =
 
 export interface ChainError {
   code?: string;
-  /** 已脱敏的原始信息，仅供排障。 */
+  /** Redacted raw information, for troubleshooting only. */
   message?: string;
 }
 
@@ -88,14 +88,14 @@ export interface DfrError {
   code: DfrErrorCode;
   category: ErrorCategory;
   message: string;
-  /** 传输层是否值得重试。 */
+  /** Whether the transport layer is worth retrying. */
   retryable: boolean;
-  /** 业务层是否可安全重复执行。 */
+  /** Whether the business layer can be safely executed again. */
   safeToRetry: boolean;
   requestId: RequestId;
   chain?: ChainId;
   provider?: ProviderId;
-  /** 已脱敏的补充信息。 */
+  /** Redacted supplementary information. */
   details?: Record<string, unknown>;
   chainError?: ChainError;
 }

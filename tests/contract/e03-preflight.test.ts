@@ -1,13 +1,15 @@
-// E03 前置检查脚本的行为测试。
+// E03 preflight script behavior tests.
 //
-// 为什么值得测：该脚本的失效模式很危险 —— 如果它在**未就绪**时误报 READY，
-// 人工就会在缺 RPC / 缺资金账户的情况下继续，把 E03 的证据变成废纸。
-// 反之，如果它在**已就绪**时误报 NOT READY，会让人以为环境有问题而反复排查。
+// Why this is worth testing: the failure modes of this script are dangerous — if it
+// misreports READY while **not ready**, a human will carry on without an RPC or a
+// funded account, turning the E03 evidence into waste paper.
+// Conversely, if it misreports NOT READY while **ready**, people will assume the
+// environment is broken and debug it over and over.
 //
-// 两条路径都锁定：
-//   1. 空环境下 → NOT READY + 退出码 1（fail-closed）；
-//   2. 前置齐备（含正确 chainId 的 stub RPC）→ READY + 退出码 0；
-//   3. 附带一条负对照：chainId 不是 Sepolia → 必须拒绝。
+// Both paths are locked:
+//   1. Empty environment -> NOT READY + exit code 1 (fail-closed);
+//   2. All preconditions met (with a stub RPC returning the correct chainId) -> READY + exit code 0;
+//   3. Plus a negative control: chainId is not Sepolia -> must be rejected.
 import { spawn } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
 import { dirname, resolve } from 'node:path';
@@ -25,7 +27,7 @@ afterEach(async () => {
   }
 });
 
-/** 最小 JSON-RPC stub：对任何请求都回 `eth_chainId` 的结果。 */
+/** Minimal JSON-RPC stub: answers every request with the `eth_chainId` result. */
 async function startRpc(chainId: string): Promise<string> {
   const server = createServer((req, res) => {
     let body = '';
@@ -48,7 +50,7 @@ interface PreflightResult {
   readonly stdout: string;
 }
 
-/** 用**受控环境**运行脚本：不继承宿主变量，避免测试结果依赖开发机的偶然配置。 */
+/** Run the script in a **controlled environment**: do not inherit host variables, so test results do not depend on the dev machine's incidental configuration. */
 function runPreflight(env: Record<string, string>): Promise<PreflightResult> {
   return new Promise((resolveRun, reject) => {
     const child = spawn('bash', [SCRIPT], {
@@ -69,19 +71,19 @@ function runPreflight(env: Record<string, string>): Promise<PreflightResult> {
   });
 }
 
-describe('E03 前置检查脚本', () => {
-  it('空环境 → NOT READY 且退出码 1（缺 RPC / DB / 密钥 / 资金地址）', async () => {
+describe('E03 preflight script', () => {
+  it('Empty environment -> NOT READY with exit code 1 (missing RPC / DB / key / funded address)', async () => {
     const result = await runPreflight({});
 
     expect(result.code).toBe(1);
     expect(result.stdout).toContain('NOT READY');
-    // 缺失项要明确指出，而不是笼统失败。
+    // Missing items must be named explicitly, not just reported as a generic failure.
     expect(result.stdout).toContain('DFR_PROVIDER_ETHEREUM_SEPOLIA_PRIMARY_URL');
     expect(result.stdout).toContain('DFR_TRANSACTION_DATABASE_URL');
     expect(result.stdout).toContain('DFR_E03_FUNDED_ADDRESS');
   });
 
-  it('前置齐备（Sepolia chainId）→ READY 且退出码 0', async () => {
+  it('All preconditions met (Sepolia chainId) -> READY with exit code 0', async () => {
     const rpc = await startRpc('0xaa36a7');
     const result = await runPreflight({
       DFR_E03_SKIP_DB: '1',
@@ -95,17 +97,17 @@ describe('E03 前置检查脚本', () => {
 
     expect(result.code).toBe(0);
     expect(result.stdout).toContain('READY');
-    expect(result.stdout).toContain('已声明 transaction.broadcast');
+    expect(result.stdout).toContain('has declared transaction.broadcast');
   });
 
-  it('数据库探测能加载 pg 驱动（防"工具问题被误报成数据库不可达"）', async () => {
-    // 真实缺陷（2026-10-06 发现）：脚本原先从**仓库根** `require("pg")`，而 `pg` 只装在
-    // `packages/storage-postgres/node_modules` 下，于是探测恒以 MODULE_NOT_FOUND 失败，
-    // 输出"数据库不可达"——即使数据库完全正常。这正是本文件开头警告的
-    // "已就绪却误报 NOT READY"：操作者会去反复排查网络与权限，而真正的问题是脚本自己。
+  it('Database probe can load the pg driver (guards against "a tooling problem misreported as database unreachable")', async () => {
+    // Real defect (found 2026-10-06): the script used to `require("pg")` from the **repo root**, while `pg` is only installed under
+    // `packages/storage-postgres/node_modules`, so the probe always failed with MODULE_NOT_FOUND and printed
+    // "Database is unreachable" — even when the database was perfectly fine. This is exactly the
+    // "ready but misreported as NOT READY" failure warned about at the top of this file: the operator would keep debugging the network and permissions, when the real problem was the script itself.
     //
-    // 这里不依赖真实数据库：断言脚本**先确认驱动可加载**，再报告连接结果，
-    // 两类失败因此可区分（驱动不可用 = 仓库/安装问题；不可达 = 网络/凭证问题）。
+    // This does not depend on a real database: it asserts the script **first confirms the driver loads**, then reports the connection result,
+    // so the two failure kinds stay distinguishable (driver unavailable = repo/installation problem; unreachable = network/credential problem).
     const rpc = await startRpc('0xaa36a7');
     const result = await runPreflight({
       DFR_PROVIDER_ETHEREUM_SEPOLIA_PRIMARY_URL: rpc,
@@ -114,17 +116,17 @@ describe('E03 前置检查脚本', () => {
       DFR_M0_API_KEY_HASH: '0'.repeat(64),
       DFR_M1_ALLOW_WRITE: 'true',
       DFR_E03_FUNDED_ADDRESS: '0x1111111111111111111111111111111111111111',
-      // 指向必然拒绝连接的端口：驱动应能加载，然后如实报告"不可达"。
+      // Point at a port that will certainly refuse connections: the driver should load, then honestly report "unreachable".
       DFR_TRANSACTION_DATABASE_URL: 'postgres://dfr_runtime:x@127.0.0.1:1/dfr_m1_test',
     });
 
-    expect(result.stdout).toContain('数据库驱动可用');
-    expect(result.stdout).toContain('数据库不可达');
-    expect(result.stdout).not.toContain('数据库驱动不可用');
+    expect(result.stdout).toContain('Database driver is available');
+    expect(result.stdout).toContain('Database is unreachable');
+    expect(result.stdout).not.toContain('Database driver is unavailable');
   });
 
-  it('RPC 指向非 Sepolia 链 → 必须拒绝（负对照）', async () => {
-    // 0x14a34 = Base Sepolia。指向别的链会让"Sepolia 验收"名不副实。
+  it('RPC pointing at a non-Sepolia chain -> must be rejected (negative control)', async () => {
+    // 0x14a34 = Base Sepolia. Pointing at another chain makes the "Sepolia acceptance" a misnomer.
     const rpc = await startRpc('0x14a34');
     const result = await runPreflight({
       DFR_E03_SKIP_DB: '1',
@@ -137,10 +139,10 @@ describe('E03 前置检查脚本', () => {
     });
 
     expect(result.code).toBe(1);
-    expect(result.stdout).toContain('不是 Sepolia');
+    expect(result.stdout).toContain('is not Sepolia');
   });
 
-  it('未开启写开关 → 必须拒绝（M1 写路径 fail-closed）', async () => {
+  it('Write switch not enabled -> must be rejected (M1 write path fail-closed)', async () => {
     const rpc = await startRpc('0xaa36a7');
     const result = await runPreflight({
       DFR_E03_SKIP_DB: '1',
@@ -149,7 +151,7 @@ describe('E03 前置检查脚本', () => {
       DFR_M0_API_KEY_ID: 'TestKey1',
       DFR_M0_API_KEY_HASH: '0'.repeat(64),
       DFR_E03_FUNDED_ADDRESS: '0x1111111111111111111111111111111111111111',
-      // DFR_M1_ALLOW_WRITE 故意不设
+      // DFR_M1_ALLOW_WRITE deliberately not set
     });
 
     expect(result.code).toBe(1);

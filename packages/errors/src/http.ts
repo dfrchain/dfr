@@ -1,13 +1,13 @@
 /**
- * HTTP 错误映射（见 docs/architecture/error-spec-v0.1.md 第 2 章）。
+ * HTTP error mapping (see docs/architecture/error-spec-v0.1.md chapter 2).
  *
- * 响应体 = RFC 9457 Problem Details + DFR 扩展字段。
- * 网关只做透传与状态码映射，不重新分类（gateway-spec 第 8 章）。
+ * Response body = RFC 9457 Problem Details + DFR extension fields.
+ * The gateway only passes through and maps status codes; it does not reclassify (gateway-spec chapter 8).
  */
 import type { DfrErrorResponse } from '@dfr/types';
 import type { DfrError } from './error.js';
 
-/** 错误码文档站前缀，稳定契约的一部分。 */
+/** Error-code documentation site prefix, part of the stable contract. */
 export const ERROR_TYPE_BASE = 'https://docs.dfr.example/errors';
 
 export function toErrorResponse(error: DfrError, instance?: string): DfrErrorResponse {
@@ -31,9 +31,9 @@ export function toErrorResponse(error: DfrError, instance?: string): DfrErrorRes
 }
 
 /**
- * 429 响应必须带 Retry-After；其余错误不写。
+ * A 429 response must carry Retry-After; other errors omit it.
  *
- * 返回值为 HTTP 响应头集合，键名大小写不敏感。
+ * Return value is a set of HTTP response headers; key names are case-insensitive.
  */
 export function errorHeaders(error: DfrError): Record<string, string> {
   const headers: Record<string, string> = {};

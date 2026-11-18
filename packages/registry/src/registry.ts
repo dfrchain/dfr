@@ -1,14 +1,14 @@
 /**
- * Chain Registry（见 docs/adr/ADR-003-chain-registry.md、packages/registry/config/README.md）。
+ * Chain Registry (see docs/adr/ADR-003-chain-registry.md and packages/registry/config/README.md).
  *
- * 职责：
- * - 加载并校验 chains.yaml（JSON Schema 2020-12，与 CI 共用同一份 schema）；
- * - 执行 JSON Schema 无法表达的跨字段完整性检查；
- * - 把注册表条目投影为领域模型（Chain / ChainRegistryEntry / ProviderDescriptor）；
- * - 在启动时校验 `registry.capabilities ⊆ adapter.capabilities()`（fail-closed）。
+ * Responsibilities:
+ * - Load and validate chains.yaml (JSON Schema 2020-12, sharing the same schema with CI);
+ * - Run cross-field integrity checks that JSON Schema cannot express;
+ * - Project registry entries into domain models (Chain / ChainRegistryEntry / ProviderDescriptor);
+ * - At startup, validate `registry.capabilities ⊆ adapter.capabilities()` (fail-closed).
  *
- * 安全：本类只保存**引用**（env: / file: / vault:）。端点与凭证在 `resolve*` 时
- * 才被解析，且调用方不得把它们写入日志。
+ * Security: this class only stores **references** (env: / file: / vault:). Endpoints and credentials are only
+ * resolved inside `resolve*`, and callers must never write them to logs.
  */
 import { readFileSync } from 'node:fs';
 import { parse as parseYaml } from 'yaml';
@@ -35,7 +35,7 @@ import { scanForSecrets } from './secret-scan.js';
 import { vaultFromEnv, type VaultReader } from './vault.js';
 
 /* ------------------------------------------------------------------ */
-/* 原始（已解析 YAML）结构                                             */
+/* Raw (parsed YAML) structure                                             */
 /* ------------------------------------------------------------------ */
 
 export interface RawProvider {
@@ -72,21 +72,21 @@ export interface RawRegistry {
 }
 
 export interface LoadRegistryOptions {
-  /** 注册表文件路径；默认 packages/registry/config/chains.yaml。 */
+  /** Registry file path; defaults to packages/registry/config/chains.yaml. */
   file?: string;
-  /** 环境变量来源；默认 process.env。测试可注入。 */
+  /** Environment variable source; defaults to process.env. Injectable in tests. */
   env?: NodeJS.ProcessEnv;
-  /** 文件读取函数；测试可注入。 */
+  /** File-reading function; injectable in tests. */
   readFile?: (path: string) => string;
   /**
-   * `vault:` 引用的解析器；默认按 `DFR_VAULT_DIR` 走文件型 vault。
-   * 显式注入用于测试与"接真实 Vault"的替换点（见 `vault.ts`）。
+   * Resolver for `vault:` references; by default a file-based vault under `DFR_VAULT_DIR`.
+   * Explicit injection is for tests and as the replacement point for "connecting a real Vault" (see `vault.ts`).
    */
   vault?: VaultReader;
 }
 
 /* ------------------------------------------------------------------ */
-/* 校验                                                                */
+/* Validation                                                           */
 /* ------------------------------------------------------------------ */
 
 interface ValidationIssue {
@@ -104,7 +104,7 @@ function validateWithSchema(raw: unknown): ValidationIssue[] {
   }));
 }
 
-/** JSON Schema 无法表达的跨字段规则（README 校验规则 1–4）。 */
+/** Cross-field rules JSON Schema cannot express (README validation rules 1–4). */
 function validateCrossField(raw: RawRegistry): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
   const chainIds = new Set(Object.keys(raw.chains));
@@ -113,19 +113,19 @@ function validateCrossField(raw: RawRegistry): ValidationIssue[] {
     if (!chainIds.has(provider.chain)) {
       issues.push({
         path: `providers.${id}.chain`,
-        message: `指向不存在的 chain "${provider.chain}"（孤儿 Provider）`,
+        message: `points to a nonexistent chain "${provider.chain}" (orphaned Provider)`,
       });
     }
   }
 
-  // registry ⊆ adapter 的前置条件：能力必须是已知能力。
-  // 已知能力集合的**唯一事实来源**是 `@dfr/types` 的 `CAPABILITY_IDS`（ADR-034 前这里是
-  // 一份硬编码副本，新增能力时会漂移——改为直接引用，消除重复来源）。
+  // Precondition for registry ⊆ adapter: capabilities must be known capabilities.
+  // The **single source of truth** for the known-capability set is `@dfr/types`' `CAPABILITY_IDS` (before ADR-034 this was
+  // a hardcoded copy that drifted whenever a capability was added — now referenced directly, eliminating the duplicate source).
   const known = new Set<string>(CAPABILITY_IDS);
   for (const [id, chain] of Object.entries(raw.chains)) {
     for (const cap of chain.capabilities) {
       if (!known.has(cap)) {
-        issues.push({ path: `chains.${id}.capabilities`, message: `未知能力 "${cap}"` });
+        issues.push({ path: `chains.${id}.capabilities`, message: `unknown capability "${cap}"` });
       }
     }
   }
@@ -143,9 +143,9 @@ export class ChainRegistry {
   private readonly entries: ReadonlyMap<string, ChainRegistryEntry>;
   private readonly descriptors: ReadonlyMap<string, ProviderDescriptor>;
   /**
-   * `vault:` 解析器。未显式注入时按 `DFR_VAULT_DIR` 构造（未设置则为 undefined）。
-   * 保持 undefined 而不是"抛错占位"：只有真正遇到 `vault:` 引用时才需要它，
-   * 未使用 vault 的部署不应因为缺少这个可选配置而启动失败。
+   * `vault:` resolver. When not explicitly injected, it is built from `DFR_VAULT_DIR` (undefined when unset).
+   * It stays undefined rather than a "throwing placeholder": it is only needed when a `vault:` reference is actually encountered,
+   * and a deployment that does not use a vault should not fail startup over this optional configuration.
    */
   private readonly vault: VaultReader | undefined;
 
@@ -163,16 +163,16 @@ export class ChainRegistry {
     const descriptors = new Map<string, ProviderDescriptor>();
     for (const [id, provider] of Object.entries(raw.providers)) {
       const chain = entries.get(provider.chain);
-      if (chain === undefined) continue; // 已在校验阶段报错，这里防御性跳过。
+      if (chain === undefined) continue; // Already reported during validation; skipped defensively here.
       descriptors.set(id, projectProvider(id, provider, chain));
     }
     this.descriptors = descriptors;
   }
 
   /**
-   * 从文件加载并校验。
+   * Load from a file and validate.
    *
-   * 任一步失败都抛 `DFR_CONFIGURATION_ERROR`（fail-closed，不降级启动）。
+   * Any failing step throws `DFR_CONFIGURATION_ERROR` (fail-closed; never start degraded).
    */
   static load(options: LoadRegistryOptions = {}): ChainRegistry {
     const file = options.file ?? DEFAULT_REGISTRY_FILE;
@@ -183,12 +183,12 @@ export class ChainRegistry {
     try {
       text = readFile(file);
     } catch (cause) {
-      throw configError(`无法读取注册表文件：${file}`, cause);
+      throw configError(`cannot read registry file: ${file}`, cause);
     }
     return ChainRegistry.fromText(text, { env, source: file, ...(vault !== undefined ? { vault } : {}) });
   }
 
-  /** 从 YAML 文本加载并校验。 */
+  /** Load from YAML text and validate. */
   static fromText(
     text: string,
     options: { env?: NodeJS.ProcessEnv; source?: string; vault?: VaultReader } = {},
@@ -197,12 +197,12 @@ export class ChainRegistry {
     try {
       parsed = parseYaml(text);
     } catch (cause) {
-      throw configError('注册表不是合法 YAML', cause);
+      throw configError('registry is not valid YAML', cause);
     }
     return ChainRegistry.fromObject(parsed, options);
   }
 
-  /** 从已解析对象加载并校验。 */
+  /** Load from an already-parsed object and validate. */
   static fromObject(
     parsed: unknown,
     options: { env?: NodeJS.ProcessEnv; source?: string; vault?: VaultReader } = {},
@@ -214,15 +214,15 @@ export class ChainRegistry {
     const findings = scanForSecrets(parsed);
     if (findings.length > 0) {
       const summary = findings
-        .map((f) => `${f.path}（${f.pattern}）`)
+        .map((f) => `${f.path} (${f.pattern})`)
         .join(', ');
-      throw configError(`注册表 ${source} 命中疑似密钥：${summary}`);
+      throw configError(`registry ${source} hit a suspected secret: ${summary}`);
     }
 
     const issues = validateWithSchema(parsed);
     if (issues.length > 0) {
       throw configError(
-        `注册表 ${source} 未通过 schema 校验：${issues
+        `registry ${source} failed schema validation: ${issues
           .map((i) => `${i.path} ${i.message}`)
           .join('; ')}`,
       );
@@ -232,7 +232,7 @@ export class ChainRegistry {
     const crossIssues = validateCrossField(raw);
     if (crossIssues.length > 0) {
       throw configError(
-        `注册表 ${source} 未通过完整性校验：${crossIssues
+        `registry ${source} failed integrity validation: ${crossIssues
           .map((i) => `${i.path} ${i.message}`)
           .join('; ')}`,
       );
@@ -241,14 +241,14 @@ export class ChainRegistry {
     return new ChainRegistry(raw, env, vault);
   }
 
-  /* ---------------- 查询 ---------------- */
+  /* ---------------- Queries ---------------- */
 
-  /** 全部链（领域模型，不含 milestone）。顺序与配置文件一致。 */
+  /** All chains (domain models, without milestone). Order matches the config file. */
   listChains(): readonly Chain[] {
     return [...this.entries.values()].map(projectChain);
   }
 
-  /** 全部注册表条目（含 milestone 部署元数据）。 */
+  /** All registry entries (including milestone deployment metadata). */
   listEntries(): readonly ChainRegistryEntry[] {
     return [...this.entries.values()];
   }
@@ -257,7 +257,7 @@ export class ChainRegistry {
     return this.entries.has(id);
   }
 
-  /** 取注册表条目；不存在 → DFR_NOT_FOUND。 */
+  /** Get a registry entry; missing → DFR_NOT_FOUND. */
   getEntry(id: string): ChainRegistryEntry {
     const entry = this.entries.get(id);
     if (entry === undefined) {
@@ -279,34 +279,34 @@ export class ChainRegistry {
   getProvider(id: string): ProviderDescriptor {
     const descriptor = this.descriptors.get(id);
     if (descriptor === undefined) {
-      throw configError(`未知 Provider "${id}"`);
+      throw configError(`unknown Provider "${id}"`);
     }
     return descriptor;
   }
 
-  /** 某条链的 Provider 数量；用于 M0 验收（至少 2 个 EVM Provider）。 */
+  /** Number of Providers for a chain; used by M0 acceptance (at least 2 EVM Providers). */
   providerCount(chainId: string): number {
     return this.listProviders(chainId).length;
   }
 
   /**
-   * 解析端点引用。
+   * Resolve an endpoint reference.
    *
-   * 缺失即配置错误：把请求发到一个未定义的地址比启动失败更危险。
+   * A missing reference is a configuration error: sending a request to an undefined address is more dangerous than failing startup.
    */
   resolveEndpoint(descriptor: ProviderDescriptor): string {
     const value = this.resolveRef(descriptor.endpointRef, `provider ${descriptor.id} endpointRef`);
     if (value === undefined) {
-      throw configError(`provider ${descriptor.id} endpointRef 解析为空`);
+      throw configError(`provider ${descriptor.id} endpointRef resolved to empty`);
     }
     return value;
   }
 
   /**
-   * 解析凭证引用。
+   * Resolve a credential reference.
    *
-   * `'none'`（公开端点）与"引用的环境变量未设置"都返回 undefined —— 后者表示
-   * 该端点以未认证方式访问。配置错误（如 `vault:` 未实现）会抛错。
+   * Both `'none'` (public endpoint) and "the referenced environment variable is unset" return undefined — the latter means
+   * the endpoint is accessed unauthenticated. Configuration errors (e.g. unimplemented `vault:`) throw.
    */
   resolveCredential(descriptor: ProviderDescriptor): string | undefined {
     if (descriptor.credentialRef === 'none') return undefined;
@@ -329,7 +329,7 @@ export class ChainRegistry {
         const value = this.env[target];
         if (value === undefined || value === '') {
           if (options.missingIsUndefined === true) return undefined;
-          throw configError(`${where}: 环境变量 ${target} 未设置`);
+          throw configError(`${where}: environment variable ${target} is not set`);
         }
         return value;
       }
@@ -338,25 +338,25 @@ export class ChainRegistry {
           return readFileSync(target, 'utf8').trim();
         } catch (cause) {
           if (options.missingIsUndefined === true) return undefined;
-          throw configError(`${where}: 无法读取文件 ${target}`, cause);
+          throw configError(`${where}: cannot read file ${target}`, cause);
         }
       }
       case 'vault':
         return this.resolveVault(target, where, options);
       default:
-        throw configError(`${where}: 无法识别的引用格式 "${ref}"`);
+        throw configError(`${where}: unrecognized reference format "${ref}"`);
     }
   }
 
   /**
-   * 解析 `vault:path`。
+   * Resolve `vault:path`.
    *
-   * 三种失败必须区分（这是安全语义，不是风格问题）：
-   * - **未配置 vault**：`DFR_VAULT_DIR` 缺失且未注入 reader → 抛配置错误。
-   *   绝不能当作"未认证"静默降级，否则一个需要密钥的端点在配置错误时会以匿名访问。
-   * - **路径逃逸**：reader 视为未找到 → 同样按"未提供"处理，但**不区分**日志文本，
-   *   避免把"越界探测"变成可区分的探针。
-   * - **未找到**：交给 `missingIsUndefined` 决定语义（凭证可缺失，端点不可缺失）。
+   * Three failures must be distinguished (this is security semantics, not style):
+   * - **Vault not configured**: `DFR_VAULT_DIR` missing and no reader injected → throw a configuration error.
+   *   It must never silently degrade to "unauthenticated", or an endpoint needing a key would be accessed anonymously on a configuration error.
+   * - **Path escape**: the reader treats it as not found → handled the same as "not provided", but the log text must **not distinguish** it,
+   *   so that "out-of-bounds probing" cannot become a distinguishable probe.
+   * - **Not found**: `missingIsUndefined` decides the semantics (credentials may be missing, endpoints may not).
    */
   private resolveVault(
     path: string,
@@ -365,44 +365,44 @@ export class ChainRegistry {
   ): string | undefined {
     if (this.vault === undefined) {
       throw configError(
-        `${where}: vault: 引用需要配置 DFR_VAULT_DIR（或注入 VaultReader）`,
+        `${where}: a vault: reference requires DFR_VAULT_DIR to be configured (or a VaultReader to be injected)`,
       );
     }
     const value = this.vault.read(path);
     if (value === undefined) {
       if (options.missingIsUndefined === true) return undefined;
-      throw configError(`${where}: vault 中未找到条目`);
+      throw configError(`${where}: entry not found in vault`);
     }
     return value;
   }
 
-  /* ---------------- Adapter 能力校验 ---------------- */
+  /* ---------------- Adapter capability validation ---------------- */
 
   /**
-   * 启动时校验 `registry ⊆ adapter`（评审修正 R-03）。
+   * Validate `registry ⊆ adapter` at startup (review fix R-03).
    *
-   * 违反 → `DFR_CONFIGURATION_ERROR`，拒绝启动；不做静默降级。
+   * A violation → `DFR_CONFIGURATION_ERROR`, refuse to start; no silent degradation.
    */
   assertAdapterCapabilities(chainId: string, adapterCapabilities: readonly CapabilityId[]): void {
     const entry = this.entries.get(chainId);
-    if (entry === undefined) throw configError(`未知链 "${chainId}"`);
+    if (entry === undefined) throw configError(`unknown chain "${chainId}"`);
     const declared = new Set<string>(adapterCapabilities);
     const missing = entry.capabilities.filter((cap) => !declared.has(cap));
     if (missing.length > 0) {
       throw configError(
-        `链 ${chainId} 的 registry 能力超出 Adapter 声明：${missing.join(', ')}`,
+        `chain ${chainId} declares registry capabilities beyond those declared by the Adapter: ${missing.join(', ')}`,
       );
     }
   }
 
-  /** 注册表更新时间，用于审计与缓存失效。 */
+  /** Registry update time, used for auditing and cache invalidation. */
   get updatedAt(): string {
     return this.raw.updatedAt;
   }
 }
 
 /* ------------------------------------------------------------------ */
-/* 投影                                                                */
+/* Projection                                                           */
 /* ------------------------------------------------------------------ */
 
 function projectRegistryEntry(id: string, raw: RawChain): ChainRegistryEntry {
@@ -422,10 +422,10 @@ function projectRegistryEntry(id: string, raw: RawChain): ChainRegistryEntry {
 }
 
 /**
- * 投影为领域模型：显式丢弃 milestone。
+ * Project into domain models: explicitly drop milestone.
  *
- * 审计修正 A-01：milestone 是部署元数据，不进运行时领域对象。
- * 这里逐字段构造而不是解构后展开，避免"忘记删除某个部署字段"的静默泄漏。
+ * Audit fix A-01: milestone is deployment metadata and does not enter runtime domain objects.
+ * Fields are constructed one by one here instead of spreading after destructuring, to avoid silently leaking a forgotten deployment field.
  */
 export function projectChain(entry: ChainRegistryEntry): Chain {
   const chain: Chain = {

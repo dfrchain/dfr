@@ -36,7 +36,7 @@ function trackerLeases(): TrackerLeaseStore {
 }
 
 describe('TransactionEngine.confirm', () => {
-  it('在 tracker lease 内按既有状态机与 CAS 持久化链上确认结果', async () => {
+  it('persists on-chain confirmation results inside the tracker lease, using the existing state machine and CAS', async () => {
     const record = {
       transactionId: 'txn_01J8Z6W3Q2K9M4ABCDEFGHJK01',
       projectId: 'default',
@@ -86,7 +86,7 @@ describe('TransactionEngine.confirm', () => {
     engine.close();
   });
 
-  it('未验证的 finalized 观测最多推进到 confirmed，不落库为 finalized', async () => {
+  it('an unverified finalized observation advances at most to confirmed, never persisting as finalized', async () => {
     let current: {
       transactionId: string;
       projectId: string;
@@ -143,7 +143,7 @@ describe('TransactionEngine.confirm', () => {
     engine.close();
   });
 
-  it('超时返回最后观测 reached=false，并用独立 signal 继续后台跟踪', async () => {
+  it('a timeout returns the last observation with reached=false, and keeps following in the background with an independent signal', async () => {
     let clock = 0;
     let calls = 0;
     const signals: AbortSignal[] = [];
@@ -174,7 +174,7 @@ describe('TransactionEngine.confirm', () => {
     engine.close();
   });
 
-  it('缺少 tracker lease 或 chain confirm 端口时 fail-closed', async () => {
+  it('fail-closed when the tracker lease or the chain confirm port is missing', async () => {
     const engine = new TransactionEngine({
       stores: { transaction: {} as never, idempotency: {} as never, nonce: {} as never },
       chain: {} as unknown as TransactionChainPort,
@@ -184,7 +184,7 @@ describe('TransactionEngine.confirm', () => {
     });
   });
 
-  it('广播后短暂查无此笔不中止 confirm：截止返回 pending 并转后台收敛（F-2）', async () => {
+  it('a transaction briefly unfindable right after broadcast does not abort confirm: return pending at the deadline and converge in the background (F-2)', async () => {
     let clock = 0;
     let calls = 0;
     const signals: AbortSignal[] = [];
@@ -200,7 +200,7 @@ describe('TransactionEngine.confirm', () => {
           calls += 1;
           signals.push(input.signal);
           if (calls < 3) {
-            throw createDfrError('DFR_TRANSACTION_NOT_FOUND', { requestId: newRequestId(), message: '链上未找到该交易', chain });
+            throw createDfrError('DFR_TRANSACTION_NOT_FOUND', { requestId: newRequestId(), message: 'Transaction not found on-chain', chain });
           }
           return confirmation(true);
         },

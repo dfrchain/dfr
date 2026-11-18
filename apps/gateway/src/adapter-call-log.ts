@@ -1,12 +1,12 @@
 /**
- * Adapter 调用记录 → 结构化日志字段（DFR-M1-E02 观测补充）。
+ * Adapter call records → structured log fields (DFR-M1-E02 observability supplement).
  *
- * 权威来源：observability-spec 第 3 章统一关联字段、第 4 章 span 层级
- * （`core.operation` → `adapter.call` → `provider.request`）。
+ * Authoritative sources: observability-spec chapter 3 (unified correlation fields) and chapter 4 (span hierarchy)
+ * (`core.operation` → `adapter.call` → `provider.request`).
  *
- * 与 `provider-call-log.ts` 同构：**白名单**而非透传。Adapter 的调用参数可能含
- * calldata / unsigned payload / 地址列表，返回值可能含完整交易；这些都不入日志。
- * 白名单确保未来给 `AdapterCallRecord` 加字段时不会静默把参数或载荷写进生产日志。
+ * Isomorphic to `provider-call-log.ts`: an **allowlist**, not pass-through. Adapter call arguments may contain
+ * calldata / unsigned payloads / address lists, and return values may contain full transactions; none of these enter logs.
+ * The allowlist ensures that future fields added to `AdapterCallRecord` are never silently written into production logs with their arguments or payloads.
  */
 import type { AdapterCallRecord } from '@dfr/core';
 
@@ -25,14 +25,14 @@ export const ADAPTER_CALL_LOG_FIELDS = {
 } as const satisfies Partial<Record<keyof AdapterCallRecord, string>>;
 
 /**
- * 已知但**故意不写日志**的字段。
+ * Fields known but **deliberately not logged**.
  *
- * 当前为空：`AdapterCallRecord` 的每个字段都可入日志。保留该常量是为了让契约测试
- * 能区分"新增字段忘了归类"与"有意排除"，与 provider 日志保持同一种结构。
+ * Currently empty: every field of `AdapterCallRecord` may enter logs. This constant is kept so contract tests
+ * can distinguish "a new field was not classified" from "deliberately excluded", keeping the same structure as the provider logs.
  */
 export const ADAPTER_CALL_LOG_EXCLUDED: readonly (keyof AdapterCallRecord)[] = [];
 
-/** 从一条 Adapter 调用记录构造日志字段；只取白名单键，undefined 一律丢弃。 */
+/** Build log fields from one Adapter call record; take only allowlisted keys, dropping all undefined values. */
 export function adapterCallLogFields(record: AdapterCallRecord): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [sourceKey, logKey] of Object.entries(ADAPTER_CALL_LOG_FIELDS) as [
@@ -48,11 +48,11 @@ export function adapterCallLogFields(record: AdapterCallRecord): Record<string, 
 }
 
 /**
- * 构造 `DfrCore.onAdapterCall` 的日志出口。
+ * Build the log outlet for `DfrCore.onAdapterCall`.
  *
- * 与 Provider 版本相同的约定：出口**不得抛错**，观测失败不能影响业务路径。
- * 之所以再加一层 try/catch（Core 已经包了一层），是因为序列化本身也可能失败
- * （例如循环引用），而这里最清楚如何安全降级。
+ * Same convention as the Provider version: the outlet **must never throw**; observability failures cannot affect the business path.
+ * The extra try/catch (Core already wraps one layer) exists because serialization itself can fail
+ * (e.g. circular references), and this is the place that knows best how to degrade safely.
  */
 export function createAdapterCallLogger(
   write: (line: string) => void,
@@ -61,7 +61,7 @@ export function createAdapterCallLogger(
     try {
       write(`${JSON.stringify(adapterCallLogFields(record))}\n`);
     } catch {
-      // 观测是尽力而为。
+      // Observability is best-effort.
     }
   };
 }

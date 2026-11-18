@@ -1,19 +1,19 @@
 /**
- * 错误码元数据表（见 docs/architecture/error-spec-v0.1.md 第 4 章）。
+ * Error-code metadata table (see docs/architecture/error-spec-v0.1.md chapter 4).
  *
- * 类型为 `Record<DfrErrorCode, ErrorMetadata>`：新增错误码却忘记补元数据时，
- * 这里会直接编译失败，而不是在运行时退化成一个没有 HTTP 状态的错误。
+ * Typed as `Record<DfrErrorCode, ErrorMetadata>`: if a new error code is added without its metadata,
+ * this fails compilation directly instead of degrading at runtime into an error with no HTTP status.
  */
 import { DFR_ERROR_CODES, type DfrErrorCode, type ErrorCategory } from '@dfr/types';
 
 export interface ErrorMetadata {
   category: ErrorCategory;
   httpStatus: number;
-  /** 传输层是否值得重试（网络/超时/5xx 类）。 */
+  /** Whether the transport layer is worth retrying (network/timeout/5xx classes). */
   retryable: boolean;
-  /** 业务层是否可安全重复执行。 */
+  /** Whether the business layer can be safely executed again. */
   safeToRetry: boolean;
-  /** RFC 9457 title，稳定英文短语。 */
+  /** RFC 9457 title, a stable English phrase. */
   title: string;
 }
 
@@ -71,7 +71,7 @@ export const ERROR_METADATA: Readonly<Record<DfrErrorCode, ErrorMetadata>> = {
   DFR_SIGNING_FAILED: { category: 'internal', httpStatus: 500, retryable: false, safeToRetry: false, title: 'Signing failed' },
 };
 
-/** 已知错误码集合，供网关与 SDK 校验外部输入。 */
+/** The known error-code set, for the gateway and SDK to validate external input. */
 export const KNOWN_ERROR_CODES: ReadonlySet<string> = new Set(DFR_ERROR_CODES);
 
 export function isKnownErrorCode(value: string): value is DfrErrorCode {

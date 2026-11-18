@@ -1,16 +1,16 @@
 /**
- * PostgresIdempotencyStore 契约测试（DFR-M1-A10）。
+ * PostgresIdempotencyStore contract test (DFR-M1-A10).
  *
- * 权威来源：docs/architecture/m1-storage-model.md 第 3.3 节、ADR-015。
+ * Authoritative sources: docs/architecture/m1-storage-model.md section 3.3, ADR-015.
  *
- * 默认**跳过**；`pnpm test:db` 会导出所需 DSN。
+ * Skipped by **default**; `pnpm test:db` exports the required DSN.
  *
- * 与 transaction-store 测试同样自建一次性数据库（`dfr_t_idem_test`）：
- * 不同测试文件共用数据库会因 schema DROP / TRUNCATE 互相破坏。
+ * Like the transaction-store test, it builds its own throwaway database (`dfr_t_idem_test`):
+ * different test files sharing one database would break each other via schema DROP / TRUNCATE.
  *
- * 任务卡要求的两个关键验证：
- *   1. 两个连接并发 begin，只有一个 acquire；
- *   2. 不同 fingerprint 永不覆盖原记录。
+ * The two key verifications the task card requires:
+ *   1. Two connections begin concurrently, and exactly one acquires;
+ *   2. A different fingerprint never overwrites the original record.
  */
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -92,7 +92,7 @@ beforeAll(async () => {
   await admin.connect();
   const { rows } = await admin.query<{ db: string }>('SELECT current_database() AS db');
   if (!/_test$/u.test(rows[0]!.db)) {
-    throw new Error(`拒绝在非测试库 "${rows[0]!.db}" 上执行（库名必须以 _test 结尾）`);
+    throw new Error(`refusing to run against non-test database "${rows[0]!.db}" (database name must end with _test)`);
   }
 
   await admin.query(`DROP DATABASE IF EXISTS ${PRIVATE_DB} WITH (FORCE)`);
@@ -114,8 +114,8 @@ afterAll(async () => {
   if (inspector) await inspector.end();
   if (pool) await pool.end();
   if (admin) {
-    // pool.end() 后服务器端 backend 的退出不是瞬时的。等待连接自然归零，
-    // 不用 FORCE/terminate 强杀仍在关闭的 pg client（会产生 57P01 未处理异常）。
+    // Server-side backends do not exit instantly after pool.end(). Wait for connections to drain naturally;
+    // do not FORCE/terminate pg clients that are still closing (that produces an unhandled 57P01 error).
     for (let attempt = 0; attempt < 50; attempt += 1) {
       const { rows } = await admin.query<{ count: string }>(
         `SELECT count(*)::text AS count FROM pg_stat_activity WHERE datname = $1`,
@@ -129,8 +129,8 @@ afterAll(async () => {
   }
 }, 60_000);
 
-describe.skipIf(!ENABLED)('PostgresIdempotencyStore（DFR-M1-A10）', () => {
-  it('首次 begin → acquired，记录为 in_flight', async () => {
+describe.skipIf(!ENABLED)('PostgresIdempotencyStore (DFR-M1-A10)', () => {
+  it('first begin → acquired, record is in_flight', async () => {
     await reset();
     const result = await store.begin({
       scope: scope('k-acquire'),
@@ -146,7 +146,7 @@ describe.skipIf(!ENABLED)('PostgresIdempotencyStore（DFR-M1-A10）', () => {
     expect(await rawRow('k-acquire')).toMatchObject({ fingerprint: F1, state: 'in_flight' });
   });
 
-  it('同键同指纹未完成 → in_flight 且给出正数 retryAfterMs', async () => {
+  it('same key + fingerprint, unfinished → in_flight with a positive retryAfterMs', async () => {
     await reset();
     await store.begin({ scope: scope('k-inflight'), fingerprint: F1, ownerToken: 'o1', leaseTtlMs: 60_000 });
     const second = await store.begin({
@@ -158,14 +158,14 @@ describe.skipIf(!ENABLED)('PostgresIdempotencyStore（DFR-M1-A10）', () => {
     expect(second.kind).toBe('in_flight');
     if (second.kind === 'in_flight') {
       expect(second.retryAfterMs).toBeGreaterThan(0);
-      // 租约 60s，剩余时间应接近但不等于 0。
+      // The lease is 60s, so the remaining time should be close to but not equal to 0.
       expect(second.retryAfterMs).toBeLessThanOrEqual(60_000);
     }
   });
 
-  it('complete 后同键同指纹 → replayed', async () => {
+  it('after complete, same key + fingerprint → replayed', async () => {
     await reset();
-    // idempotency_records.transaction_id 有 FK，先建父交易行。
+    // idempotency_records.transaction_id has an FK, so create the parent transaction row first.
     await inspector.query(
       `INSERT INTO ${SCHEMA}.transactions
          (id, project_id, chain_id, request_fingerprint, status, from_address)
@@ -197,7 +197,7 @@ describe.skipIf(!ENABLED)('PostgresIdempotencyStore（DFR-M1-A10）', () => {
     }
   });
 
-  it('同键不同指纹 → conflict，且原记录永不被覆盖', async () => {
+  it('same key, different fingerprint → conflict, and the original record is never overwritten', async () => {
     await reset();
     await store.begin({ scope: scope('k-conflict'), fingerprint: F1, ownerToken: 'o1', leaseTtlMs: 60_000 });
 
@@ -209,11 +209,11 @@ describe.skipIf(!ENABLED)('PostgresIdempotencyStore（DFR-M1-A10）', () => {
     });
     expect(conflicting.kind).toBe('conflict');
 
-    // 关键断言：原记录（fingerprint 与 owner）未被改动。
+    // Key assertion: the original record (fingerprint and owner) is unchanged.
     expect(await rawRow('k-conflict')).toMatchObject({ fingerprint: F1, owner_token: 'o1' });
   });
 
-  it('complete 时 owner token 不匹配 → lost_ownership，结果被丢弃', async () => {
+  it('complete with a mismatched owner token → lost_ownership, result is discarded', async () => {
     await reset();
     await store.begin({ scope: scope('k-lost'), fingerprint: F1, ownerToken: 'o1', leaseTtlMs: 60_000 });
     const stale = await store.complete({
@@ -222,11 +222,11 @@ describe.skipIf(!ENABLED)('PostgresIdempotencyStore（DFR-M1-A10）', () => {
       statusCode: 202,
     });
     expect(stale.kind).toBe('lost_ownership');
-    // 记录仍为 in_flight，且 owner 未变。
+    // The record is still in_flight, and the owner is unchanged.
     expect(await rawRow('k-lost')).toMatchObject({ state: 'in_flight', owner_token: 'o1' });
   });
 
-  it('complete 未知 scope → not_found', async () => {
+  it('complete with an unknown scope → not_found', async () => {
     await reset();
     const result = await store.complete({
       scope: scope('k-none'),
@@ -236,10 +236,10 @@ describe.skipIf(!ENABLED)('PostgresIdempotencyStore（DFR-M1-A10）', () => {
     expect(result.kind).toBe('not_found');
   });
 
-  it('租约过期后新 owner 可接管（acquired），并换掉 owner token', async () => {
+  it('after the lease expires, a new owner can take over (acquired) and replace the owner token', async () => {
     await reset();
-    // TTL 必须合法且为正数；用测试库时钟构造已过期的租约。
-    // 不能再传负 TTL：安全边界在 begin() 入口明确 fail-closed。
+    // The TTL must be legal and positive; build an already-expired lease with the test database clock.
+    // Negative TTLs may no longer be passed: the safety boundary fails closed explicitly at the begin() entry point.
     await store.begin({ scope: scope('k-takeover'), fingerprint: F1, ownerToken: 'old', leaseTtlMs: 60_000 });
     const expired = await inspector.query(
       `UPDATE ${SCHEMA}.idempotency_records
@@ -258,7 +258,7 @@ describe.skipIf(!ENABLED)('PostgresIdempotencyStore（DFR-M1-A10）', () => {
     expect(taken.kind).toBe('acquired');
     expect(await rawRow('k-takeover')).toMatchObject({ state: 'in_flight', owner_token: 'new' });
 
-    // 旧 owner 已失去所有权，不能再完成。
+    // The old owner has lost ownership and can no longer complete.
     const stale = await store.complete({
       scope: scope('k-takeover'),
       ownerToken: 'old',
@@ -372,7 +372,7 @@ describe.skipIf(!ENABLED)('PostgresIdempotencyStore（DFR-M1-A10）', () => {
     }
   });
 
-  it('多连接并发 begin：恰好一个 acquired，其余 in_flight', async () => {
+  it('concurrent begin from many connections: exactly one acquired, the rest in_flight', async () => {
     await reset();
     const N = 8;
     const results = await Promise.all(
@@ -388,7 +388,7 @@ describe.skipIf(!ENABLED)('PostgresIdempotencyStore（DFR-M1-A10）', () => {
     expect(results.filter((r) => r.kind === 'acquired')).toHaveLength(1);
     expect(results.filter((r) => r.kind === 'in_flight')).toHaveLength(N - 1);
 
-    // 只应存在一行。
+    // Exactly one row should exist.
     const { rows } = await inspector.query<{ n: string }>(
       `SELECT count(*)::text AS n FROM ${SCHEMA}.idempotency_records
         WHERE key = 'k-concurrent'`,
@@ -396,7 +396,7 @@ describe.skipIf(!ENABLED)('PostgresIdempotencyStore（DFR-M1-A10）', () => {
     expect(rows[0]!.n).toBe('1');
   });
 
-  it('get 返回记录；未找到返回 null', async () => {
+  it('get returns the record; missing returns null', async () => {
     await reset();
     expect(await store.get(scope('k-missing'))).toBeNull();
     await store.begin({ scope: scope('k-get'), fingerprint: F1, ownerToken: 'o1', leaseTtlMs: 60_000 });
@@ -476,11 +476,11 @@ describe.skipIf(!ENABLED)('PostgresIdempotencyStore（DFR-M1-A10）', () => {
     expect(rows[0]?.n).toBe('1');
   });
 
-  it('pruneExpired 依据记录保留期（expires_at）而非租约，并遵守批次上限', async () => {
+  it('pruneExpired follows the record retention period (expires_at), not the lease, and respects the batch cap', async () => {
     await reset();
 
-    // ① 租约已过期但记录保留期未到：**不得**被清理。
-    //    这条断言把"租约过期（可接管）"与"记录过期（可清理）"两个概念钉死在测试里。
+    // 1) Lease expired but retention period not reached: must **not** be cleaned up.
+    //    This assertion pins down the two distinct concepts "lease expired (takeover allowed)" and "record expired (cleanup allowed)" in the test.
     await store.begin({
       scope: scope('k-lease-expired-only'),
       fingerprint: F1,
@@ -523,7 +523,7 @@ describe.skipIf(!ENABLED)('PostgresIdempotencyStore（DFR-M1-A10）', () => {
       [chain, expiredKeys],
     );
     expect(expiredRecords.rowCount).toBe(3);
-    // ③ 两条有效记录。
+    // 3) Two valid records.
     for (let i = 0; i < 2; i += 1) {
       await store.begin({
         scope: scope(`k-live-${i}`),
@@ -533,14 +533,14 @@ describe.skipIf(!ENABLED)('PostgresIdempotencyStore（DFR-M1-A10）', () => {
       });
     }
 
-    // 批次上限 2：第一次只删 2 条。
+    // Batch cap of 2: the first pass deletes only 2 rows.
     expect(await store.pruneExpired({ limit: 2 })).toBe(2);
-    // 第二次删掉剩余 1 条。
+    // The second pass deletes the remaining 1 row.
     expect(await store.pruneExpired({ limit: 2 })).toBe(1);
-    // 有效记录不受影响。
+    // Valid records are unaffected.
     expect(await store.get(scope('k-live-0'))).not.toBeNull();
     expect(await store.get(scope('k-expired-0'))).toBeNull();
-    // 租约过期的记录仍然在（保留期内）。
+    // Records with expired leases are still there (within retention).
     expect(await store.get(scope('k-lease-expired-only'))).not.toBeNull();
   });
 });

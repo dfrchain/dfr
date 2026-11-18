@@ -1,9 +1,9 @@
 /**
- * 资产与余额模型（见 docs/architecture/domain-model.md 第 4.3 节）。
+ * Asset and balance model (see docs/architecture/domain-model.md section 4.3).
  *
- * EVM:     assetId = ERC-20 合约地址, standard = "erc20"
- * Solana:  assetId = SPL mint 地址,   standard = "spl-token"
- * Bitcoin: 无 token 概念，返回 DFR_UNSUPPORTED_CAPABILITY
+ * EVM:     assetId = ERC-20 contract address, standard = "erc20"
+ * Solana:  assetId = SPL mint address,   standard = "spl-token"
+ * Bitcoin: no token concept; returns DFR_UNSUPPORTED_CAPABILITY
  */
 import type { ChainId, DecimalUint } from './primitives.js';
 import type { BlockRef } from './block.js';
@@ -15,21 +15,21 @@ export type AssetRef =
 export interface Asset {
   ref: AssetRef;
   symbol?: string;
-  /** 0..36；decimals 是数量而非金额，允许使用 number。 */
+  /** 0..36; decimals is a quantity, not an amount, so number is allowed. */
   decimals: number;
   name?: string;
-  /** 是否被视为稳定币/计价资产，仅用于展示与策略。 */
+  /** Whether it is treated as a stablecoin/pricing asset, for display and policy only. */
   isQuote?: boolean;
 }
 
 export interface Balance {
   account: string;
   asset: AssetRef;
-  /** 最小单位金额，十进制字符串。 */
+  /** Amount in the smallest unit, decimal string. */
   amount: DecimalUint;
   decimals: number;
-  /** 该余额对应的区块，用于一致性判断。 */
+  /** The block this balance corresponds to, for consistency checks. */
   blockRef?: BlockRef;
-  /** 链上原始值（已解码），不含敏感信息。 */
+  /** On-chain raw value (decoded), containing no sensitive information. */
   raw?: unknown;
 }

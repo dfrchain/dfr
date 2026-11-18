@@ -1,29 +1,29 @@
 /**
- * Provider 评分（见 docs/architecture/provider-spec-v0.1.md 第 4 章）。
+ * Provider scoring (see docs/architecture/provider-spec-v0.1.md, chapter 4).
  *
- * 规则 M0 定稿：数值可调，规则不可暗改。
+ * Rules finalized at M0: the numbers are tunable, the rules must not be changed silently.
  *
  *   score = 100
- *         - latencyPenalty(0..30)   基于 P95 相对基线
- *         - errorPenalty(0..30)     基于错误率
- *         - quotaPenalty(0..20)     额度剩余不足时惩罚
- *         - costPenalty(0..10)      单位成本
- *         + priorityBonus(0..10)    运营优先级（与 Registry priority 同量纲）
- *   下限 0，上限 100
+ *         - latencyPenalty(0..30)   based on P95 vs. baseline
+ *         - errorPenalty(0..30)     based on error rate
+ *         - quotaPenalty(0..20)     penalty when remaining quota is low
+ *         - costPenalty(0..10)      unit cost
+ *         + priorityBonus(0..10)    ops priority (same dimension as Registry priority)
+ *   floor 0, cap 100
  */
 import type { ProviderDescriptor, ProviderId, ProviderScore } from '@dfr/types';
 
-/** P95 基线：达到该延迟即扣满延迟分。 */
+/** The P95 baseline: reaching this latency deducts the full latency score. */
 export const LATENCY_BASELINE_MS = 1000;
 
-/** 延迟未知时的中性取值（P95 的一半），避免新 Provider 被无端惩罚或过度优待。 */
+/** The neutral value when latency is unknown (half of P95), avoiding unfairly penalizing or favoring a new Provider. */
 export const LATENCY_UNKNOWN_MS = LATENCY_BASELINE_MS / 2;
 
 export interface ScoreInputs {
   descriptor: ProviderDescriptor;
   latencyP95Ms?: number | undefined;
   errorRate?: number | undefined;
-  /** 已用配额比例 0..1；undefined 表示无限额或未统计。 */
+  /** The used quota ratio, 0..1; undefined means unlimited or uncounted. */
   quotaUsedRatio?: number | undefined;
   now: number;
 }
@@ -50,7 +50,7 @@ function costPenalty(descriptor: ProviderDescriptor): number {
   if (price === undefined) return 0;
   const parsed = Number(price);
   if (!Number.isFinite(parsed) || parsed <= 0) return 0;
-  // 每请求 1 美元即扣满；M0 配置全为 0，保留公式供后续接入付费 Provider。
+  // $1 per request deducts the full amount; all M0 configs are 0, keeping the formula for later paid Providers.
   return clamp(parsed * 10, 0, 10);
 }
 
@@ -58,7 +58,7 @@ function priorityBonus(descriptor: ProviderDescriptor): number {
   return clamp(descriptor.priority, 0, 10);
 }
 
-/** 计算单个 Provider 的得分。 */
+/** Compute one Provider's score. */
 export function scoreProvider(inputs: ScoreInputs): ProviderScore {
   const { descriptor, now } = inputs;
   const latency = latencyPenalty(inputs.latencyP95Ms ?? LATENCY_UNKNOWN_MS);

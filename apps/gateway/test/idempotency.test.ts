@@ -4,13 +4,13 @@ import type { ChainId, Iso8601 } from '@dfr/types';
 import { GatewayIdempotencyCoordinator, canonicalJson, fingerprintRequest } from '../src/idempotency.js';
 
 describe('GatewayIdempotencyCoordinator', () => {
-  it('按键排序并忽略 undefined，数组顺序保持不变', () => {
+  it('sorts by key and ignores undefined, keeping array order unchanged', () => {
     expect(canonicalJson({ b: 1, a: undefined, c: { z: 2, y: 1 }, list: [2, 1] }))
       .toBe('{"b":1,"c":{"y":1,"z":2},"list":[2,1]}');
     expect(fingerprintRequest({ a: 1, b: 2 })).toBe(fingerprintRequest({ b: 2, a: 1 }));
   });
 
-  it('规范化 JSON 键使用 UTF-16 码元排序，而非区域语言排序', () => {
+  it('normalized JSON keys sort by UTF-16 code unit, not locale collation', () => {
     // RFC 8785 property ordering must not vary with server locale/ICU data.
     expect(canonicalJson({ a: 2, Z: 1 })).toBe('{"Z":1,"a":2}');
     expect(canonicalJson({ 'ä': 2, z: 1 })).toBe('{"z":1,"ä":2}');
@@ -21,7 +21,7 @@ describe('GatewayIdempotencyCoordinator', () => {
       .toBe('{"list":[null,2],"nested":{"a":1}}');
   });
 
-  it('只委托 Store，保留 acquired/replayed/conflict/in_flight 判定', async () => {
+  it('only delegates to the Store, keeping the acquired/replayed/conflict/in_flight decisions', async () => {
     const calls: unknown[] = [];
     const record = { scope: { projectId: 'p', chain: 'ethereum-sepolia' as ChainId, key: 'k' }, fingerprint: 'f', state: 'in_flight' as const, ownerToken: 'o', leaseExpiresAt: '2026-01-01T00:00:00.000Z' as Iso8601, expiresAt: '2026-01-02T00:00:00.000Z' as Iso8601 } satisfies IdempotencyRecord;
     const store: IdempotencyStore = {

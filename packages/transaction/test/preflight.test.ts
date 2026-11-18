@@ -1,33 +1,33 @@
 /**
- * TransactionEngine.preflight 契约测试（ADR-037 方案 B）。
+ * TransactionEngine.preflight contract test (ADR-037, option B).
  *
- * 权威来源：`docs/adr/ADR-037-abandoned-built-transaction-reclaim.md`。
+ * Authoritative source: `docs/adr/ADR-037-abandoned-built-transaction-reclaim.md`.
  *
- * 本测试的核心断言是**零副作用**：preflight 必须
- *   - 不 reserve nonce（`nonce.reserveCalls` 为空）；
- *   - 不创建交易记录（`transactions.created` 为空）；
- *   - 不写幂等表（`idempotency.beginCalls` 为空）；
- *   - 不改 nonce 水位 / 不产生任何可回收状态。
+ * The core assertion of this test is **zero side effects**: preflight must
+ *   - not reserve a nonce (`nonce.reserveCalls` is empty);
+ *   - not create a transaction record (`transactions.created` is empty);
+ *   - not write the idempotency table (`idempotency.beginCalls` is empty);
+ *   - not move the nonce watermark / not produce any reclaimable state.
  *
- * 为什么这是重点：ADR-037 的实测成因正是"调用方用 build 做预检"，
- * 每次 build 消耗一个 nonce。若 preflight 也占 nonce，它就毫无意义。
+ * Why this matters: the cause ADR-037 measured is exactly "callers using build for preflight",
+ * burning one nonce per build. If preflight also took a nonce, it would be pointless.
  */
 import { describe, expect, it } from 'vitest';
 import { dec, harness, REQUEST, REQUEST_ID } from './support/engine-fakes.js';
 
-describe('TransactionEngine.preflight（ADR-037 方案 B）', () => {
-  it('零副作用：不 reserve nonce、不建记录、不写幂等表', async () => {
+describe('TransactionEngine.preflight (ADR-037, option B)', () => {
+  it('zero side effects: no nonce reserve, no record created, no idempotency-table write', async () => {
     const h = harness();
     h.chain.allowSimulate = true;
 
     const result = await h.engine.preflight({ request: REQUEST, requestId: REQUEST_ID });
 
-    // 核心断言：三处副作用**全部为零**。
+    // Core assertion: all three side effects are **exactly zero**.
     expect(h.nonce.reserveCalls).toEqual([]);
     expect(h.transactions.created).toEqual([]);
     expect(h.idempotency.beginCalls).toEqual([]);
 
-    // 但它确实读了口径、构造了载荷、跑了模拟。
+    // But it did read the parameters, construct the payload, and run the simulation.
     expect(h.chain.pendingNonceCalls).toHaveLength(1);
     expect(h.chain.buildCalls).toHaveLength(1);
     expect(h.chain.simulateCalls).toHaveLength(1);
@@ -35,7 +35,7 @@ describe('TransactionEngine.preflight（ADR-037 方案 B）', () => {
     expect(result.requestId).toBe(REQUEST_ID);
   });
 
-  it('反复调用 10 次仍然零副作用（这正是调用方此前用 build 做的事）', async () => {
+  it('10 repeated calls still have zero side effects (exactly what callers used to do with build)', async () => {
     const h = harness();
     h.chain.allowSimulate = true;
 
@@ -48,7 +48,7 @@ describe('TransactionEngine.preflight（ADR-037 方案 B）', () => {
     expect(h.chain.buildCalls).toHaveLength(10);
   });
 
-  it('只读地取 pending nonce 并回报 observedNonce（不落租约）', async () => {
+  it('read-only fetch of the pending nonce and report observedNonce (no lease persisted)', async () => {
     const h = harness();
     h.chain.allowSimulate = true;
     h.chain.pendingNonce = dec('7');
@@ -56,12 +56,12 @@ describe('TransactionEngine.preflight（ADR-037 方案 B）', () => {
     const result = await h.engine.preflight({ request: REQUEST });
 
     expect(result.observedNonce).toBe('7');
-    // 传给 Adapter 的请求带上了该 nonce（否则构造不出载荷），但**没有**租约。
+    // The request passed to the Adapter carries that nonce (otherwise no payload could be constructed), but there is **no** lease.
     expect(h.chain.buildCalls[0]!.request.nonce).toBe('7');
     expect(h.nonce.reserveCalls).toEqual([]);
   });
 
-  it('模拟回滚不抛错：以 success=false 返回（与 simulate 的 422 语义刻意不同）', async () => {
+  it('a simulation revert does not throw: return with success=false (deliberately different from the 422 semantics of simulate)', async () => {
     const h = harness();
     h.chain.allowSimulate = true;
     h.chain.simulateResult = { success: false, revertReason: 'insufficient output amount' };
@@ -70,12 +70,12 @@ describe('TransactionEngine.preflight（ADR-037 方案 B）', () => {
 
     expect(result.simulation.success).toBe(false);
     expect(result.simulation.revertReason).toBe('insufficient output amount');
-    // 仍然没有副作用——失败也不该留记录。
+    // Still no side effects — a failure must not leave a record either.
     expect(h.transactions.created).toEqual([]);
     expect(h.nonce.reserveCalls).toEqual([]);
   });
 
-  it('拒绝自带 nonce（与 build 同一纪律，避免绕过服务端分配）', async () => {
+  it('reject a caller-supplied nonce (same discipline as build, avoiding bypassing server-side allocation)', async () => {
     const h = harness();
     h.chain.allowSimulate = true;
 
@@ -83,45 +83,45 @@ describe('TransactionEngine.preflight（ADR-037 方案 B）', () => {
       h.engine.preflight({ request: { ...REQUEST, nonce: dec('5') } }),
     ).rejects.toMatchObject({ code: 'DFR_VALIDATION_FAILED' });
 
-    // 校验先于任何链调用。
+    // Validation comes before any chain call.
     expect(h.chain.pendingNonceCalls).toEqual([]);
     expect(h.chain.buildCalls).toEqual([]);
   });
 
-  it('缺排序前提读取能力 → fail-closed（不静默降级）', async () => {
+  it('missing ordering-precondition read capability → fail-closed (no silent downgrade)', async () => {
     const h = harness();
     h.chain.allowSimulate = true;
-    // `getPendingNonce` 是原型方法，`delete instance.x` 删不掉；
-    // 必须用 `Object.defineProperty` 遮蔽（否则本用例会空转通过）。
+    // `getPendingNonce` is a prototype method; `delete instance.x` cannot remove it;
+    // it must be shadowed with `Object.defineProperty` (otherwise this case would pass vacuously).
     Object.defineProperty(h.chain, 'getPendingNonce', { value: undefined, configurable: true });
 
     await expect(h.engine.preflight({ request: REQUEST })).rejects.toMatchObject({
       code: 'DFR_UNSUPPORTED_CAPABILITY',
     });
-    // 校验先于任何链调用。
+    // Validation comes before any chain call.
     expect(h.chain.buildCalls).toEqual([]);
   });
 });
 
-describe('TransactionEngine.preflight：gas 估计阶段回滚（2026-10-07 真实链抓到）', () => {
-  it('★ build 阶段回滚 → 返回 200 + success=false，**不抛错**', async () => {
+describe('TransactionEngine.preflight: revert during the gas-estimation phase (caught on a real chain, 2026-10-07)', () => {
+  it('★ build-phase revert → return 200 + success=false, **do not throw**', async () => {
     const h = harness();
     h.chain.allowSimulate = true;
-    // 真实链上，一笔注定回滚的交易在 `eth_estimateGas` 就会回滚，build 因此抛错。
+    // On a real chain, a transaction doomed to revert reverts at `eth_estimateGas`, so build throws.
     h.chain.buildRevert = 'RecomputeMismatch';
 
     const result = await h.engine.preflight({ request: REQUEST });
 
     expect(result.simulation.success).toBe(false);
     expect(result.simulation.revertReason).toBe('RecomputeMismatch');
-    // 诚实：回滚时**不**返回一个伪造的预览载荷。
+    // Honest: when it reverts, **do not** return a fabricated preview payload.
     expect(result.unsignedTransaction).toBeUndefined();
-    // 仍然零副作用。
+    // Still zero side effects.
     expect(h.transactions.created).toEqual([]);
     expect(h.nonce.reserveCalls).toEqual([]);
   });
 
-  it('非回滚类错误（Provider 不可用等）继续抛出——不降级、不猜测', async () => {
+  it('non-revert errors (Provider unavailable, etc.) keep being thrown — no downgrade, no guessing', async () => {
     const h = harness();
     h.chain.allowSimulate = true;
     h.chain.buildError = new Error('provider down');

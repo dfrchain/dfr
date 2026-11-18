@@ -1,8 +1,8 @@
 /**
- * M0 E2E：TypeScript SDK → API Gateway → DFR Core → EVM Adapter → Provider。
+ * M0 E2E: TypeScript SDK → API Gateway → DFR Core → EVM Adapter → Provider.
  *
- * 用可编程 Provider 替身驱动整条链路（评审修正 R-11），因此测试确定性、离线、可回归。
- * 真实 Sepolia 联调见 tests/integration/ethereum-sepolia.test.ts（需显式开启）。
+ * Drives the whole chain with a programmable Provider stand-in (review fix R-11), so the tests are deterministic, offline, and regression-safe.
+ * For the real Sepolia integration test, see tests/integration/ethereum-sepolia.test.ts (must be explicitly enabled).
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { AddressInfo } from 'node:net';
@@ -151,32 +151,32 @@ afterAll(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
 });
 
-describe('M0 E2E：SDK → Gateway → Core → EVM Adapter → Provider', () => {
-  it('listChains 返回 M0 启用的链', async () => {
+describe('M0 E2E: SDK → Gateway → Core → EVM Adapter → Provider', () => {
+  it('listChains returns the chains enabled in M0', async () => {
     const chains = await dfr.listChains();
     expect(chains.map((c) => c.id)).toEqual([CHAIN]);
   });
 
-  it('getChain 返回运行时链信息', async () => {
+  it('getChain returns runtime chain info', async () => {
     const info = await dfr.getChain(CHAIN);
     expect(info.chain).toBe(CHAIN);
     expect(info.height).toBe('18000000');
     expect(info.requestId).toMatch(/^req_/);
   });
 
-  it('getBalance 返回原生余额（同一份 API 无需关心 RPC）', async () => {
+  it('getBalance returns the native balance (one API, no need to care about RPC)', async () => {
     const balance = await dfr.getBalance({ chain: CHAIN, account: ADDRESS });
     expect(balance.amount).toBe('1000000000000000000');
     expect(balance.decimals).toBe(18);
   });
 
-  it('getBlock 支持 tag 语法', async () => {
+  it('getBlock supports tag syntax', async () => {
     const block = await dfr.getBlock({ chain: CHAIN, blockRef: 'tag:latest' });
     expect(block.number).toBe('18000000');
     expect(block.transactionCount).toBe(1);
   });
 
-  it('getTransaction 与 getReceipt 走同一条链路', async () => {
+  it('getTransaction and getReceipt go through the same chain', async () => {
     const tx = await dfr.getTransaction({ chain: CHAIN, txHash: TX_HASH });
     expect(tx.status).toBe('included');
 
@@ -185,8 +185,8 @@ describe('M0 E2E：SDK → Gateway → Core → EVM Adapter → Provider', () =>
   });
 });
 
-describe('E2E：网关横切关注点', () => {
-  it('缺少 API Key → 401 DFR_UNAUTHENTICATED，且响应是 RFC 9457 封套', async () => {
+describe('E2E: gateway cross-cutting concerns', () => {
+  it('missing API Key → 401 DFR_UNAUTHENTICATED, and the response is an RFC 9457 envelope', async () => {
     const response = await fetch(`${baseUrl}/v1/chains`);
     expect(response.status).toBe(401);
     const body = (await response.json()) as Record<string, unknown>;
@@ -195,7 +195,7 @@ describe('E2E：网关横切关注点', () => {
     expect(response.headers.get('x-request-id')).toBe(body['request_id']);
   });
 
-  it('外部传入合法 X-Request-Id 时沿用，非法时替换', async () => {
+  it('an externally supplied valid X-Request-Id is reused, an invalid one is replaced', async () => {
     const supplied = 'req_01J8Z6W3Q2K9M4ABCDEFGHJKMN';
     const echoed = await fetch(`${baseUrl}/v1/chains`, {
       headers: { 'x-dfr-key': `dfr_${KEY_ID}_${SECRET}`, 'x-request-id': supplied },
@@ -209,7 +209,7 @@ describe('E2E：网关横切关注点', () => {
     expect(replaced.headers.get('x-request-id')).toMatch(/^req_/);
   });
 
-  it('未知链 → 404，且错误体不含凭证', async () => {
+  it('unknown chain → 404, and the error body contains no credentials', async () => {
     const response = await fetch(`${baseUrl}/v1/chains/no-such-chain`, {
       headers: { 'x-dfr-key': `dfr_${KEY_ID}_${SECRET}` },
     });
@@ -219,7 +219,7 @@ describe('E2E：网关横切关注点', () => {
     expect(text).not.toContain(SECRET);
   });
 
-  it('非法 blockRef → 400 DFR_VALIDATION_FAILED', async () => {
+  it('invalid blockRef → 400 DFR_VALIDATION_FAILED', async () => {
     const response = await fetch(`${baseUrl}/v1/blocks/123?chain=${CHAIN}`, {
       headers: { 'x-dfr-key': `dfr_${KEY_ID}_${SECRET}` },
     });
@@ -229,7 +229,7 @@ describe('E2E：网关横切关注点', () => {
     expect(body.details?.fields).toContain('blockRef');
   });
 
-  it('SDK 把错误映射为 DfrApiError，并保留 retryable / requestId', async () => {
+  it('the SDK maps errors to DfrApiError and keeps retryable / requestId', async () => {
     const bad = new DFR({ apiKey: `dfr_${KEY_ID}_wrongwrongwrongwrongwrongwrong`, baseUrl });
     try {
       await bad.listChains();
@@ -244,7 +244,7 @@ describe('E2E：网关横切关注点', () => {
     }
   });
 
-  it('/healthz 不需要鉴权（运维探针，不属于公开 API）', async () => {
+  it('/healthz needs no authentication (ops probe, not part of the public API)', async () => {
     const response = await fetch(`${baseUrl}/healthz`);
     expect(response.status).toBe(200);
   });

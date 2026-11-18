@@ -1,7 +1,7 @@
-// `core.operation` 日志契约测试（observability-spec §4 的最后一层）。
+// `core.operation` log contract test (the last layer of observability-spec §4).
 //
-// §4 的 span 层级中，http.request / adapter.call / provider.request / store.* 都已有出口，
-// 只有 core.operation 缺失。本文件验证白名单映射与真实接线。
+// In the §4 span hierarchy, http.request / adapter.call / provider.request / store.* already have outlets;
+// only core.operation is missing. This file verifies the allowlist mapping and the real wiring.
 import { createServer } from 'node:http';
 import { describe, expect, it, vi } from 'vitest';
 import type { CoreOperationRecord } from '@dfr/core';
@@ -24,8 +24,8 @@ const RECORD: CoreOperationRecord = {
   latencyMs: 42,
 };
 
-describe('core.operation 日志（§4）', () => {
-  it('字段名符合 §3 统一命名，并标记 span=core.operation', () => {
+describe('core.operation logging (§4)', () => {
+  it('field names follow the §3 unified naming, and are tagged span=core.operation', () => {
     const fields = coreOperationLogFields(RECORD);
     expect(fields['request_id']).toBe(RECORD.requestId);
     expect(fields['trace_id']).toBe(RECORD.traceId);
@@ -39,7 +39,7 @@ describe('core.operation 日志（§4）', () => {
     expect(fields['level']).toBe('info');
   });
 
-  it('错误时记 warn，并带稳定错误码与分类', () => {
+  it('errors are recorded as warn, with a stable error code and classification', () => {
     const fields = coreOperationLogFields({
       ...RECORD,
       status: 'error',
@@ -51,23 +51,23 @@ describe('core.operation 日志（§4）', () => {
     expect(fields['error_category']).toBe('availability');
   });
 
-  it('每个记录字段都被归类（新增字段会让本测试失败）', () => {
+  it('every record field is classified (a new field fails this test)', () => {
     const allowlisted = new Set(Object.keys(CORE_OPERATION_LOG_FIELDS));
     const excluded = new Set<string>(CORE_OPERATION_LOG_EXCLUDED);
     const unclassified = Object.keys(RECORD).filter(
       (k) => !allowlisted.has(k) && !excluded.has(k),
     );
-    expect(unclassified, 'CoreOperationRecord 新增了未归类字段').toEqual([]);
+    expect(unclassified, 'CoreOperationRecord has an unclassified field').toEqual([]);
   });
 
-  it('日志出口不抛错', () => {
+  it('the log outlet does not throw', () => {
     const logger = createCoreOperationLogger(() => {
       throw new Error('stdout closed');
     });
     expect(() => logger(RECORD)).not.toThrow();
   });
 
-  it('真实 startGateway：一次链上读产生 core.operation 日志（且不含端点）', async () => {
+  it('real startGateway: one on-chain read produces a core.operation log (with no endpoint)', async () => {
     const rpc = createServer((req, res) => {
       let body = '';
       req.on('data', (c: Buffer) => {
@@ -134,10 +134,10 @@ describe('core.operation 日志（§4）', () => {
       expect(record['operation']).toBe('getInfo');
       expect(record['chain']).toBe('base-sepolia');
       expect(record['latency_ms']).toBeTypeOf('number');
-      // 与其它层同一关联字段，便于按 trace_id 重建层级。
+      // Same correlation field as the other layers, so the hierarchy can be rebuilt by trace_id.
       expect(record['request_id']).toBeDefined();
       expect(record['trace_id']).toBeDefined();
-      // 脱敏：不得出现 RPC 端点。
+      // Redaction: no RPC endpoint may appear.
       expect(JSON.stringify(record)).not.toContain('127.0.0.1');
     } finally {
       await app?.close();

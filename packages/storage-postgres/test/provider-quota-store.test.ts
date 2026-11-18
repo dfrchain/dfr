@@ -1,10 +1,10 @@
 /**
- * PostgresProviderQuotaStore 契约测试（E5）。
+ * PostgresProviderQuotaStore contract test (E5).
  *
- * 权威来源：docs/architecture/provider-spec-v0.1.md §8.1。
+ * Authoritative source: docs/architecture/provider-spec-v0.1.md §8.1.
  *
- * 关键验证不是“顺序调用不超过上限”，而是**两个独立连接并发预占**
- * 也必须只有一个成功；否则跨实例部署仍会超发。
+ * The key verification is not "sequential calls stay under the cap", but **two independent connections concurrently pre-claiming**
+ * with exactly one succeeding; otherwise cross-instance deployments would still over-issue.
  */
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -42,7 +42,7 @@ beforeAll(async () => {
   await admin.connect();
   const { rows } = await admin.query<{ db: string }>('SELECT current_database() AS db');
   if (!/_test$/u.test(rows[0]!.db)) {
-    throw new Error(`拒绝在非测试库 "${rows[0]!.db}" 上执行（库名必须以 _test 结尾）`);
+    throw new Error(`refusing to run against non-test database "${rows[0]!.db}" (database name must end with _test)`);
   }
 
   await admin.query(`DROP DATABASE IF EXISTS ${PRIVATE_DB} WITH (FORCE)`);
@@ -76,8 +76,8 @@ afterAll(async () => {
   }
 }, 60_000);
 
-describe.skipIf(!ENABLED)('PostgresProviderQuotaStore（E5）', () => {
-  it('首次消费创建计数，usage 返回真实消耗', async () => {
+describe.skipIf(!ENABLED)('PostgresProviderQuotaStore (E5)', () => {
+  it('the first consumption creates the counter, and usage returns the real consumption', async () => {
     await reset();
     const first = await storeA.consume({
       providerId: 'p1',
@@ -91,7 +91,7 @@ describe.skipIf(!ENABLED)('PostgresProviderQuotaStore（E5）', () => {
     ).toBe(1);
   });
 
-  it('达到上限后拒绝，且不会把 used 增加到 limit 以上', async () => {
+  it('refuses once the cap is reached, and never pushes used above the limit', async () => {
     await reset();
     const input = {
       providerId: 'p2',
@@ -107,7 +107,7 @@ describe.skipIf(!ENABLED)('PostgresProviderQuotaStore（E5）', () => {
     ).toBe(1);
   });
 
-  it('两个独立连接并发预占：额度 1 时恰好一个成功', async () => {
+  it('two independent connections concurrently pre-claim: with quota 1, exactly one succeeds', async () => {
     await reset();
     const input = {
       providerId: 'p3',
@@ -120,7 +120,7 @@ describe.skipIf(!ENABLED)('PostgresProviderQuotaStore（E5）', () => {
     expect([a.used, b.used].sort()).toEqual([1, 1]);
   });
 
-  it('日期维度独立：新的一天从 0 开始', async () => {
+  it('date dimensions are independent: a new day starts from 0', async () => {
     await reset();
     const base = { providerId: 'p4', chain: 'ethereum-sepolia' as never, limit: 1 };
     expect((await storeA.consume({ ...base, day: '2026-10-08' })).allowed).toBe(true);

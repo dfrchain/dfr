@@ -1,8 +1,8 @@
 /**
- * 两链 L3 对照的共享 fixture（M2-D01）。
+ * Shared fixture for the two-chain L3 comparison (M2-D01).
  *
- * 声明各链"如何构造 Adapter / 用什么 mock 应答 / 显式拒绝哪些差异"；
- * 对照测试只做**同一套**断言。
+ * Declares, per chain, "how to construct the Adapter / which mock responses to use / which differences are
+ * explicitly rejected"; the comparison test only runs the **same** assertions.
  */
 import { EvmAdapter } from '@dfr/adapter-evm';
 import { SolanaAdapter } from '@dfr/adapter-solana';
@@ -15,14 +15,14 @@ const SOLANA_CHAIN = 'solana-devnet' as ChainId;
 
 export interface ChainFixture {
   readonly chain: Chain;
-  /** 该链**显式拒绝**的 BlockRef 分支（差异由数据表达，而不是"某条断言没跑"）。 */
+  /** BlockRef branches this chain **explicitly rejects** (differences expressed as data, not as "some assertion did not run"). */
   readonly unsupportedBlockRefs: readonly BlockRef[];
   readonly invalidAccount: string;
-  /** 用该链的 mock 环境执行一次"非法账户"查询。 */
+  /** Run one "invalid account" query in this chain's mock environment. */
   getBalanceWithInvalidAccount(): Promise<unknown>;
-  /** 用该链的 mock 环境按给定 ref 查询区块。 */
+  /** Query a block by the given ref in this chain's mock environment. */
   getBlockRef(ref: BlockRef): Promise<unknown>;
-  /** 该链 Adapter 声明的能力。 */
+  /** Capabilities declared by this chain's Adapter. */
   capabilities(): AdapterCapabilities;
 }
 
@@ -74,7 +74,7 @@ export const EVM_FIXTURE: ChainFixture = build({
     eth_getBlockByNumber: () => null,
   },
   invalidAccount: '0xnot-an-address',
-  // EVM 没有 slot 概念（那是 Solana 的定位方式）。
+  // EVM has no slot concept (that is Solana's addressing mode).
   unsupportedBlockRefs: [{ kind: 'slot', slot: '1' as never }],
   create: (chain) => new EvmAdapter({ chain }) as never,
 });
@@ -98,7 +98,7 @@ export const SOLANA_FIXTURE: ChainFixture = build({
     getBlock: () => null,
   },
   invalidAccount: '0invalidSolanaAddress000000000000000000',
-  // ADR-027：Solana 用 slot 定位；number / tag / hash 一律 fail-closed。
+  // ADR-027: Solana addresses by slot; number / tag / hash are all fail-closed.
   unsupportedBlockRefs: [
     { kind: 'number', number: '1' as never },
     { kind: 'tag', tag: 'latest' },

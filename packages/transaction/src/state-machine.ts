@@ -1,34 +1,34 @@
 /**
- * 交易状态机（DFR-M1-A05）。
+ * Transaction state machine (DFR-M1-A05).
  *
- * 权威边集：docs/architecture/transaction-lifecycle.md 第 3.1 节状态转移表。
- * 本模块是**纯函数**：不接触数据库、Provider、链或时钟，只回答
- * "从这个状态收到这个事件，允许迁移到哪里"。
+ * Authoritative edge set: docs/architecture/transaction-lifecycle.md, section 3.1 state-transition table.
+ * This module is a **pure function**: it touches no database, Provider, chain, or clock; it only answers
+ * "from this state, receiving this event, where may it move".
  *
- * 设计要点：
+ * Design points:
  *
- * 1. **表驱动**：允许边集中在 `ALLOWED_TRANSITIONS`，实现不含分散的 if/switch。
- *    规范表格变化时只改表，不必追改逻辑。
- * 2. **终态优先**：终态保护在查表**之前**判断，因此终态永远得到 `TERMINAL_STATE`，
- *    不会被"恰好没这条边"的 `INVALID_TRANSITION` 掩盖。
- * 3. **原因码稳定**：`TransitionRejectionReason` 是状态机自身的词汇，
- *    不是 `DFR_*` 错误码。HTTP 层负责把它映射成对外错误。
- * 4. **`orphaned` 不是交易状态**：重组把 `included` 回退到 `pending`，
- *    重组事实由 `chain.reorg` 事件与区块观测状态（`FinalityState`）表达。
+ * 1. **Table-driven**: the allowed edges live in `ALLOWED_TRANSITIONS`; the implementation has no scattered if/switch.
+ *    When the spec table changes, only the table changes — no logic to chase.
+ * 2. **Terminal states first**: terminal-state protection is judged **before** the table lookup, so a terminal state always gets `TERMINAL_STATE`
+ *    and is never masked by an `INVALID_TRANSITION` for "this edge just happens to be missing".
+ * 3. **Stable reason codes**: `TransitionRejectionReason` is the state machine's own vocabulary,
+ *    not `DFR_*` error codes. The HTTP layer maps it to outward-facing errors.
+ * 4. **`orphaned` is not a transaction state**: a reorg rolls `included` back to `pending`,
+ *    and the reorg fact is expressed by the `chain.reorg` event and block-observation state (`FinalityState`).
  *
- * 不在本模块范围内（由调用方 / 后续任务负责）：
- *   - 迁移的前置条件中除 `rebroadcast` 旗标外的部分
- *     （是否已授权跳过模拟、`FinalityPolicy` 是否满足、`dropTimeoutMs` 是否超过）；
- *   - 持久化、并发控制、事件发布。
+ * Out of scope for this module (owned by the caller / later tasks):
+ *   - the parts of a transition's preconditions other than the `rebroadcast` flag
+ *     (whether simulation may be skipped with authorization, whether the `FinalityPolicy` is satisfied, whether `dropTimeoutMs` has passed);
+ *   - persistence, concurrency control, and event publication.
  */
 
 import type { TransactionStatus } from '@dfr/types';
 
 /**
- * 触发状态迁移的事件。
+ * An event that triggers a state transition.
  *
- * 命名刻意区分"模拟失败"与"链上执行失败"：二者目标都是 `reverted`，
- * 但来源状态完全不同（前者只能来自 `built`，后者适用于所有非终态）。
+ * The names deliberately distinguish "simulation failure" from "on-chain execution failure": both target `reverted`,
+ * but their source states are completely different (the former only from `built`, the latter for all non-terminal states).
  */
 export type TransactionEvent =
   | 'build'
@@ -38,12 +38,12 @@ export type TransactionEvent =
   | 'broadcast.accepted'
   | 'broadcast.rejected'
   /**
-   * 广播结果不确定（ADR-019）：请求已发出，但既未确认接受也未确认拒绝。
+    * Indeterminate broadcast result (ADR-019): the request was sent, but neither acceptance nor rejection was confirmed.
    *
-   * TX-02：当前 RPC 拒绝并不证明其它节点没有传播已签名哈希，
-   * 因此此类拒绝也走 `broadcast.indeterminate → unknown`，由只读链上观测解析。
-   * `broadcast.rejected → failed` 仅保留给可本地验证的不可再上链条件
-   * （当前为过期 Solana blockhash）；不得把普通 RPC 拒绝当全网事实。
+    * TX-02: a rejection from the current RPC does not prove other nodes did not propagate the signed hash,
+    * so this kind of rejection also goes through `broadcast.indeterminate → unknown`, resolved by read-only on-chain observation.
+    * `broadcast.rejected → failed` is kept only for locally verifiable conditions that can never land on-chain
+    * (currently an expired Solana blockhash); never treat an ordinary RPC rejection as network-wide fact.
    */
   | 'broadcast.indeterminate'
   /** TX-04: only an explicit dropped→broadcast retry may record this uncertain outcome. */
@@ -57,62 +57,62 @@ export type TransactionEvent =
   | 'rebroadcast'
   | 'reorg'
   /**
-   * 显式作废一笔**未广播**的交易（ADR-037）。仅 `built` / `simulated` 接受该事件；
-   * `signed` 及以上不配边，因此到达即 `TERMINAL_STATE` 或"无此边"。
+    * Explicitly void an **unbroadcast** transaction (ADR-037). Only `built` / `simulated` accept this event;
+    * `signed` and above have no edge for it, so arriving there yields `TERMINAL_STATE` or "no such edge".
    */
   | 'abandon'
   | 'execution.failed';
 
-/** 迁移被拒的稳定原因码。 */
+/** Stable reason codes for a rejected transition. */
 export type TransitionRejectionReason =
-  /** 起始状态是终态，任何事件都不能再迁移。 */
+   /** The start state is terminal; no event can move it further. */
   | 'TERMINAL_STATE'
-  /** 规范第 3.1 节没有定义这条边。 */
+   /** Section 3.1 of the spec defines no such edge. */
   | 'INVALID_TRANSITION'
-  /** `dropped → broadcast` 必须显式携带 `rebroadcast: true`，防止隐式第二次广播。 */
+   /** `dropped → broadcast` must explicitly carry `rebroadcast: true`, preventing an implicit second broadcast. */
   | 'REBROADCAST_FLAG_REQUIRED';
 
 /**
- * 终态（transaction-lifecycle.md 第 3.2 节）。
+ * Terminal states (transaction-lifecycle.md, section 3.2).
  *
- * `dropped` **不是**终态：它仍可在时限内以同一 nonce 重播。
+ * `dropped` is **not** terminal: it can still be rebroadcast within the time limit with the same nonce.
  */
 export const TERMINAL_STATUSES: readonly TransactionStatus[] = [
   'finalized',
   'reverted',
   'failed',
   'replaced',
-  // ADR-037：被显式作废；终态，没有任何出边。
+   // ADR-037: explicitly voided; terminal, with no outbound edges.
   'abandoned',
 ];
 
-/** 一条允许边。`from === null` 表示交易尚未创建。 */
+/** One allowed edge. `from === null` means the transaction has not been created yet. */
 export interface TransitionSpec {
   readonly from: TransactionStatus | null;
   readonly event: TransactionEvent;
   readonly to: TransactionStatus;
-  /** 为 true 时，调用方必须显式传 `rebroadcast: true`。 */
+   /** When true, the caller must explicitly pass `rebroadcast: true`. */
   readonly requiresRebroadcast?: boolean;
 }
 
 /**
- * 规范第 3.1 节的完整允许边集。
+ * The complete allowed edge set from spec section 3.1.
  *
- * 规范表格的 `*` 行（链上执行失败）按字面展开为全部 9 个非终态；
- * 另有 ADR-019 定义的 5 条 `unknown` 边（1 条入边 + 4 条解析出边）
- * 与 ADR-023 定义的 3 条 `dropped` 收敛边。
- * 此外 TX-04 增加一条 `broadcast + rebroadcast.indeterminate → unknown` 专用边。
- * 边集总数以 ALLOWED_TRANSITIONS 长度为准，测试锁定当前集合。
- * 终态不入表：任何 `from` 为终态的请求都在查表前被 `TERMINAL_STATE` 拦截。
+ * The spec table's `*` rows (on-chain execution failure) expand literally into all 9 non-terminal states;
+ * plus ADR-019's 5 `unknown` edges (1 inbound + 4 resolution outbound edges)
+ * and ADR-023's 3 `dropped` convergence edges.
+ * TX-04 also adds one dedicated `broadcast + rebroadcast.indeterminate → unknown` edge.
+ * The edge count is defined by the length of ALLOWED_TRANSITIONS; tests lock the current set.
+ * Terminal states are not in the table: any request whose `from` is terminal is intercepted by `TERMINAL_STATE` before the lookup.
  */
 export const ALLOWED_TRANSITIONS: readonly TransitionSpec[] = [
-  // （无）→ built
+   // (none) → built
   { from: null, event: 'build', to: 'built' },
 
   // built
   { from: 'built', event: 'simulate.succeeded', to: 'simulated' },
-  // ADR-037：显式作废（DELETE /v1/transactions/{id}）。只从 built/simulated 可达——
-  // signed 及以上一律 fail-closed，绝不让"已签名/已广播"的交易走到这里。
+   // ADR-037: explicit void (DELETE /v1/transactions/{id}). Only reachable from built/simulated —
+   // signed and above are always fail-closed; a "signed/broadcast" transaction must never reach here.
   { from: 'built', event: 'abandon', to: 'abandoned' },
   { from: 'built', event: 'simulate.failed', to: 'reverted' },
   { from: 'built', event: 'sign', to: 'signed' },
@@ -124,7 +124,7 @@ export const ALLOWED_TRANSITIONS: readonly TransitionSpec[] = [
   // signed
   { from: 'signed', event: 'broadcast.accepted', to: 'broadcast' },
   { from: 'signed', event: 'broadcast.rejected', to: 'failed' },
-  // 广播结果不确定：只进 unknown，绝不直接判 failed（ADR-019）。
+   // Indeterminate broadcast result: only into unknown, never straight to failed (ADR-019).
   { from: 'signed', event: 'broadcast.indeterminate', to: 'unknown' },
 
   // broadcast
@@ -146,22 +146,22 @@ export const ALLOWED_TRANSITIONS: readonly TransitionSpec[] = [
   // confirmed
   { from: 'confirmed', event: 'finalized', to: 'finalized' },
 
-  // dropped：既可在时限内重播（须显式 rebroadcast），也可被后续观测纠正（ADR-023）。
-  // 为什么需要后面三条收敛边：`dropped` 是**判断**（"此刻链上没有"），不是不可逆事实。
-  // 缺少它们时，一次误判会让记录永久停在 dropped——对一笔实际已确认的交易报告"已丢弃"。
+   // dropped: it can be rebroadcast within the time limit (explicit rebroadcast required), and it can also be corrected by later observations (ADR-023).
+   // Why the three convergence edges below are needed: `dropped` is a **judgment** ("not on-chain right now"), not an irreversible fact.
+   // Without them, one misjudgment would leave the record stuck in dropped forever — reporting "dropped" for a transaction that actually confirmed.
   { from: 'dropped', event: 'rebroadcast', to: 'broadcast', requiresRebroadcast: true },
   { from: 'dropped', event: 'mempool.entered', to: 'pending' },
   { from: 'dropped', event: 'included', to: 'included' },
   { from: 'dropped', event: 'replaced', to: 'replaced' },
 
-  // unknown（ADR-019）：按链上观测解析；没有 unknown → broadcast，
-  // 重播必须经 dropped → rebroadcast，避免"超时后自动第二次广播"。
+   // unknown (ADR-019): resolve by on-chain observation; there is no unknown → broadcast,
+   // so a rebroadcast must go via dropped → rebroadcast, avoiding "a second broadcast automatically after a timeout".
   { from: 'unknown', event: 'mempool.entered', to: 'pending' },
   { from: 'unknown', event: 'included', to: 'included' },
   { from: 'unknown', event: 'dropped', to: 'dropped' },
   { from: 'unknown', event: 'replaced', to: 'replaced' },
 
-  // `*` 行：链上执行失败（收据 status = 0），适用于全部非终态。
+   // `*` rows: on-chain execution failure (receipt status = 0), applying to all non-terminal states.
   { from: 'built', event: 'execution.failed', to: 'reverted' },
   { from: 'simulated', event: 'execution.failed', to: 'reverted' },
   { from: 'signed', event: 'execution.failed', to: 'reverted' },
@@ -174,19 +174,19 @@ export const ALLOWED_TRANSITIONS: readonly TransitionSpec[] = [
 ];
 
 /**
- * 全部已声明事件，从边集派生。
+ * All declared events, derived from the edge set.
  *
- * 派生而非手写：保证"有事件但没有边"或"有边但没有事件"都不可能存在。
+ * Derived, not hand-written: guaranteeing that "an event with no edge" or "an edge with no event" can never exist.
  */
 export const TRANSACTION_EVENTS: readonly TransactionEvent[] = [
   ...new Set(ALLOWED_TRANSITIONS.map((spec) => spec.event)),
 ];
 
 export interface TransitionInput {
-  /** 当前状态；`null` 表示交易尚未创建。 */
+   /** The current state; `null` means the transaction has not been created yet. */
   readonly from: TransactionStatus | null;
   readonly event: TransactionEvent;
-  /** 仅 `dropped → broadcast` 需要；必须显式为 `true`。 */
+   /** Only `dropped → broadcast` needs this; it must explicitly be `true`. */
   readonly rebroadcast?: boolean;
 }
 
@@ -198,7 +198,7 @@ export interface TransitionAllowed {
 export interface TransitionRejected {
   readonly ok: false;
   readonly reason: TransitionRejectionReason;
-  /** 回显输入，便于审计与排障。 */
+   /** Echo the input, for audit and troubleshooting. */
   readonly from: TransactionStatus | null;
   readonly event: TransactionEvent;
 }
@@ -210,12 +210,12 @@ function isTerminal(status: TransactionStatus | null): boolean {
 }
 
 /**
- * 计算一次状态迁移。
+ * Compute one state transition.
  *
- * 判定顺序（顺序本身是契约的一部分）：
- *   1. 终态保护 → `TERMINAL_STATE`
- *   2. 是否命中规范定义的边 → 否则 `INVALID_TRANSITION`
- *   3. 该边是否要求 `rebroadcast: true` → 否则 `REBROADCAST_FLAG_REQUIRED`
+ * Decision order (the order itself is part of the contract):
+ *   1. Terminal-state protection → `TERMINAL_STATE`
+ *   2. Whether a spec-defined edge is hit → otherwise `INVALID_TRANSITION`
+ *   3. Whether the edge requires `rebroadcast: true` → otherwise `REBROADCAST_FLAG_REQUIRED`
  */
 export function transition(input: TransitionInput): TransitionResult {
   const { from, event } = input;
@@ -236,7 +236,7 @@ export function transition(input: TransitionInput): TransitionResult {
   return { ok: true, status: spec.to };
 }
 
-/** 只读辅助：该边是否允许，不返回原因。 */
+/** Read-only helper: whether the edge is allowed, without returning a reason. */
 export function canTransition(input: TransitionInput): boolean {
   return transition(input).ok;
 }

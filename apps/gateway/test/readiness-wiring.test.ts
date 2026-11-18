@@ -1,8 +1,8 @@
-// composition root 就绪装配测试（DFR-M1-E02）。
+// Composition-root readiness assembly test (DFR-M1-E02).
 //
-// 单测覆盖了 Gateway 的 `/readyz` 逻辑；这里补的是**接线**：真实 `startGateway`
-// 在 M1（有事务存储）时，必须把数据库探针接进 `/readyz`，否则编排系统会认为
-// "HTTP 起了就是就绪"，而数据库其实已经不可达。
+// Unit tests cover the Gateway's `/readyz` logic; what is added here is the **wiring**: a real `startGateway`
+// in M1 (with a transaction store) must wire the database probe into `/readyz`, or the orchestrator will assume
+// "HTTP is up, so it is ready", while the database is actually unreachable.
 import { describe, expect, it, vi } from 'vitest';
 import type { TransactionStores } from '@dfr/core';
 import { hashSecret } from '../src/index.js';
@@ -26,8 +26,8 @@ const M1_ENV = {
 };
 
 function persistence(healthCheck: () => Promise<void>): GatewayPersistence {
-  // startGateway 会在监听前跑一轮 RecoveryCoordinator；这里给四个 Store 提供
-  // 最小 no-op 实现，使测试只关注就绪接线，不重复 DB 门禁已覆盖的恢复语义。
+  // startGateway runs one RecoveryCoordinator round before listening; the four Stores are given
+  // minimal no-op implementations here, so the test only focuses on readiness wiring and does not repeat the recovery semantics already covered by the DB gates.
   return {
     stores: {
       transaction: {
@@ -65,18 +65,18 @@ async function withGateway(
   }
 }
 
-describe('startGateway 就绪装配（DFR-M1-E02）', () => {
-  it('M1 启动后 /readyz 反映数据库可达（stores=ok）', async () => {
+describe('startGateway readiness assembly (DFR-M1-E02)', () => {
+  it('after M1 startup, /readyz reflects database reachability (stores=ok)', async () => {
     await withGateway(async () => undefined, async (baseUrl) => {
       const response = await fetch(`${baseUrl}/readyz`);
       expect(response.status).toBe(200);
       const body = (await response.json()) as Record<string, unknown>;
       expect(body['status']).toBe('ready');
       expect(body['stores']).toBe('ok');
-      // 就绪明细必须如实反映每条启用链的 Provider 可用性。
-      // ethereum-sepolia：两个端点已由 env 解析 → 2/2。
-      // base-sepolia：M1 下启用但本测试未提供端点 env → 0/0（配置缺口被显式暴露，
-      // 而不是被掩盖成"就绪"）。整体仍就绪，因为至少一条链有可用 Provider。
+      // Readiness details must faithfully reflect each enabled chain's Provider availability.
+      // ethereum-sepolia: two endpoints resolved from env → 2/2.
+      // base-sepolia: enabled under M1 but this test provides no endpoint env → 0/0 (the configuration gap is explicitly exposed,
+      // not papered over as "ready"). Overall it is still ready, because at least one chain has an available Provider.
       expect(body['chains']).toEqual([
         { chain: 'ethereum-sepolia', providers: 2, available: 2 },
         { chain: 'base-sepolia', providers: 0, available: 0 },
@@ -84,7 +84,7 @@ describe('startGateway 就绪装配（DFR-M1-E02）', () => {
     });
   });
 
-  it('数据库探针失败时 /readyz 503，但 /healthz 仍 200', async () => {
+  it('when the database probe fails, /readyz is 503 but /healthz stays 200', async () => {
     await withGateway(
       async () => {
         throw new Error('connect ECONNREFUSED 10.1.2.3:5432');
@@ -100,7 +100,7 @@ describe('startGateway 就绪装配（DFR-M1-E02）', () => {
     );
   });
 
-  it('数据库在运行中失效时拒绝业务路由；恢复后重新放行', async () => {
+  it('when the database fails at runtime, business routes are rejected; traffic is admitted again after recovery', async () => {
     let databaseUp = true;
     await withGateway(
       async () => {

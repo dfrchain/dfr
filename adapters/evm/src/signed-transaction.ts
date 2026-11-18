@@ -1,25 +1,25 @@
 /**
- * EVM 签名载荷解析与绑定（DFR-M1-C01）。
+ * EVM signed-payload parsing and binding (DFR-M1-C01).
  *
- * 权威来源：ADR-016 §7、docs/architecture/m1-api-contract.md 第 3 节。
+ * Authoritative sources: ADR-016 §7, docs/architecture/m1-api-contract.md Section 3.
  *
- * 广播前必须从 `signedPayload` **重新推导**而不是相信调用方声明：
- *   - chainId / nonce / to / value / data / 费用字段 / accessList：RLP 逐字段还原；
- *   - txHash：`keccak256(signedPayload)`；
- *   - from：对签名做 secp256k1 公钥恢复（`recoverTransactionAddress`）。
- * 调用方提供的 `expectedHash` **只作比较**，不是真相来源（m1-api-contract §3）。
+ * Before broadcast, derive everything from `signedPayload` **again** instead of trusting the caller:
+ *   - chainId / nonce / to / value / data / fee fields / accessList: restored field by field from RLP;
+ *   - txHash: `keccak256(signedPayload)`;
+ *   - from: secp256k1 public-key recovery over the signature (`recoverTransactionAddress`).
+ * The caller-provided `expectedHash` is **only for comparison**, not a source of truth (m1-api-contract §3).
  *
- * 设计约束（与 transaction-codec.ts 一致）：
- *   1. 只使用 Viem 纯工具（`recoverTransactionAddress`）。不出现 client / transport /
- *      account / wallet，既不持有私钥也不持有端点。
- *   2. 不使用 `parseTransaction`：它把 nonce / chainId 降级为 JS `number`，
- *      与本仓库"数值一律十进制字符串"的红线冲突（ADR-016 §2）。
- *   3. 失败一律 `EvmCodecError` + 稳定 `reason`；错误信息**不含签名原文或任何载荷
- *      片段**，只报字段名与原因。
- *   4. 返回值是脱敏投影：不含 signedPayload / signature / r / s / v，
- *      键名也不含 "payload" 或 "signed"，避免调用方顺手把签名原文写进日志或数据库。
+ * Design constraints (consistent with transaction-codec.ts):
+ *   1. Only use Viem pure utilities (`recoverTransactionAddress`). No client / transport /
+ *      account / wallet; hold neither private keys nor endpoints.
+ *   2. Do not use `parseTransaction`: it downgrades nonce / chainId to JS `number`,
+ *      which conflicts with this repo's red line "all values are decimal strings" (ADR-016 §2).
+ *   3. All failures are `EvmCodecError` + a stable `reason`; error messages contain **neither the raw signature nor any payload
+ *      fragment**, only field names and reasons.
+ *   4. The return value is a redacted projection: no signedPayload / signature / r / s / v,
+ *      and key names contain neither "payload" nor "signed", so callers do not casually write the raw signature into logs or databases.
  *
- * 边界：本模块是纯函数（签名恢复不需要网络）。不选 Provider、不广播、不写库、不决定状态。
+ * Boundary: this module is pure functions (signature recovery needs no network). No Provider selection, no broadcast, no database writes, no state decisions.
  */
 
 import { recoverTransactionAddress } from 'viem';
@@ -32,37 +32,37 @@ import type {
   EvmTransactionType,
 } from './transaction-codec.js';
 
-/** 签名载荷的脱敏投影。**刻意不含** signedPayload / 签名标量（r/s/v/yParity）。 */
+/** Redacted projection of a signed payload. **Deliberately excludes** signedPayload / signature scalars (r/s/v/yParity). */
 export interface EvmSignedTransactionBinding {
   readonly type: EvmTransactionType;
   readonly chainId: DecimalUint;
   readonly from: AccountRef;
   readonly nonce: DecimalUint;
-  /** null 表示合约创建（`to` 为空）。 */
+  /** null means contract creation (`to` is empty). */
   readonly to: AccountRef | null;
   readonly value: DecimalUint;
-  /** 调用数据（`0x` 表示原生转账）。 */
+  /** Call data (`0x` means a native transfer). */
   readonly data: string;
   readonly gas: DecimalUint;
   readonly accessList: readonly EvmAccessListEntry[];
-  /** 由载荷重算的交易哈希。 */
+  /** Transaction hash recomputed from the payload. */
   readonly txHash: string;
 }
 
-/** 绑定比较的真值：全部来自交易记录，不来自签名请求。 */
+/** Ground truth for the binding comparison: all from the transaction record, never from the signature request. */
 export interface EvmSignedBindingExpectation {
   readonly chain: ChainId;
-  /** Registry 中该链的 externalChainId（十进制字符串）。 */
+  /** The chain's externalChainId in the Registry (decimal string). */
   readonly expectedChainId: DecimalUint;
-  /** 记录里的发送方（unsigned 载荷不含 from，唯一来源是记录）。 */
+  /** The sender from the record (an unsigned payload has no from; the record is the only source). */
   readonly from: AccountRef;
-  /** 记录里保存的**未签名**载荷：字段级比较的真值。 */
+  /** The **unsigned** payload saved in the record: ground truth for field-level comparison. */
   readonly unsignedPayload: string;
-  /** 调用方声明的哈希；只作比较。 */
+  /** Caller-declared hash; only for comparison. */
   readonly expectedHash?: string;
 }
 
-/** 逐项比较的标量字段顺序（`field` 报告第一个不一致的字段）。 */
+/** Order of scalar fields compared item by item (`field` reports the first mismatching field). */
 const COMPARED_FIELDS = [
   'type',
   'chainId',
@@ -83,26 +83,26 @@ function scalarOf(tx: EvmDecodedTransaction, field: ComparedField): string | nul
   return value === undefined ? null : String(value);
 }
 
-/** viem 对序列化载荷的联合类型；本模块只做字符串到该类型的收窄。 */
+/** Viem's union type for serialized payloads; this module only narrows strings to that type. */
 type SerializedTransaction = Parameters<
   typeof recoverTransactionAddress
 >[0]['serializedTransaction'];
 
-/** 解码 + 签名校验 + 发送方恢复；parse 与 bind 共用同一实现，避免两套判定漂移。 */
+/** Decode + signature verification + sender recovery; parse and bind share one implementation so the two decisions cannot drift. */
 async function decodeSigned(
   signedPayload: string,
 ): Promise<{ readonly decoded: EvmDecodedTransaction; readonly from: string }> {
-  // decodeTransactionPayload 已完成 hex / RLP / 字段数 / 交易类型的严格校验，
-  // 并把数值还原为十进制字符串（全程不经 JS number）。
+  // decodeTransactionPayload has already strictly validated hex / RLP / field count / transaction type,
+  // and restored values to decimal strings (never via JS number).
   const decoded = decodeTransactionPayload(signedPayload);
 
   if (!decoded.signed) {
-    throw new EvmCodecError('not_signed', '载荷不含签名，不能作为广播输入');
+    throw new EvmCodecError('not_signed', 'payload has no signature and cannot be used as broadcast input');
   }
   if (decoded.chainId === null) {
     throw new EvmCodecError(
       'chain_id_unknown',
-      '无法从载荷推导 chainId（pre-EIP-155 签名），拒绝广播',
+      'cannot derive chainId from the payload (pre-EIP-155 signature); refusing to broadcast',
       'chainId',
     );
   }
@@ -110,12 +110,12 @@ async function decodeSigned(
   let recovered: string;
   try {
     recovered = await recoverTransactionAddress({
-      // 载荷形状已由 decodeTransactionPayload 严格校验（前缀 + RLP 字段数）。
+      // The payload shape has been strictly validated by decodeTransactionPayload (prefix + RLP field count).
       serializedTransaction: signedPayload as SerializedTransaction,
     });
   } catch {
-    // 不转发底层异常：它的 message 可能包含签名原文。
-    throw new EvmCodecError('invalid_signature', '无法从签名恢复发送方地址', 'from');
+    // Do not forward the underlying exception: its message may contain the raw signature.
+    throw new EvmCodecError('invalid_signature', 'cannot recover sender address from signature', 'from');
   }
 
   return { decoded, from: recovered.toLowerCase() };
@@ -142,9 +142,9 @@ function toBinding(
 }
 
 /**
- * 解析已签名载荷，重新推导全部广播前必须核对的事实。
+ * Parse a signed payload, re-deriving every fact that must be checked before broadcast.
  *
- * 未签名、chainId 不可推导（pre-EIP-155）、签名无法恢复一律 fail-closed。
+ * Unsigned payloads, underivable chainId (pre-EIP-155), and unrecoverable signatures all fail closed.
  */
 export async function parseSignedTransaction(
   chain: ChainId,
@@ -155,28 +155,28 @@ export async function parseSignedTransaction(
 }
 
 /**
- * 校验签名载荷与保存的未签名交易逐项一致，并返回脱敏投影。
+ * Verify the signed payload matches the saved unsigned transaction item by item, and return a redacted projection.
  *
- * 比较真值是**记录里的 unsigned payload**，不是调用方在请求里声明的字段：
- * 客户端"换参数但复用同一 transactionId"不能通过（m1-api-contract §3）。
+ * The comparison ground truth is the **unsigned payload in the record**, not fields the caller declares in the request:
+ * A client that "changes parameters but reuses the same transactionId" cannot pass (m1-api-contract §3).
  */
 export async function bindSignedTransaction(
   signedPayload: string,
   expectation: EvmSignedBindingExpectation,
 ): Promise<EvmSignedTransactionBinding> {
-  // 记录里的发送方来自我们自己的库；不合法说明记录被污染，按期望值非法 fail-closed。
-  // 这里刻意不抛 DFR_* 错误：本模块是纯函数，错误构造点归属 Adapter 层（ADR-009）。
+  // The sender in the record comes from our own store; an invalid one means the record was tampered with, so fail closed as an invalid expectation.
+  // Deliberately no DFR_* error is thrown here: this module is pure functions, and error construction belongs to the Adapter layer (ADR-009).
   if (!isEvmAddress(expectation.from.address)) {
     throw new EvmCodecError(
       'invalid_expectation',
-      '记录中的发送方不是合法的 EVM 地址',
+      'sender in the record is not a valid EVM address',
       'from',
     );
   }
   if (expectation.from.chain !== expectation.chain) {
     throw new EvmCodecError(
       'invalid_expectation',
-      '记录中的发送方 chain 与请求 chain 不一致',
+      'sender chain in the record does not match the requested chain',
       'from',
     );
   }
@@ -187,14 +187,14 @@ export async function bindSignedTransaction(
   if (chainId !== expectation.expectedChainId) {
     throw new EvmCodecError(
       'chain_id_mismatch',
-      '签名载荷的 chainId 与目标链不一致',
+      'signed payload chainId does not match the target chain',
       'chainId',
     );
   }
   if (from !== expectation.from.address.toLowerCase()) {
     throw new EvmCodecError(
       'sender_mismatch',
-      '签名载荷恢复出的发送方与交易记录不一致',
+      'sender recovered from the signed payload does not match the transaction record',
       'from',
     );
   }
@@ -203,7 +203,7 @@ export async function bindSignedTransaction(
   if (unsigned.signed) {
     throw new EvmCodecError(
       'invalid_expectation',
-      '记录里的 unsigned payload 实际已带签名，拒绝作为比较真值',
+      'the recorded unsigned payload is actually signed; refusing it as comparison ground truth',
       'unsignedPayload',
     );
   }
@@ -212,7 +212,7 @@ export async function bindSignedTransaction(
     if (scalarOf(unsigned, field) !== scalarOf(decoded, field)) {
       throw new EvmCodecError(
         'unsigned_payload_mismatch',
-        '签名载荷与保存的未签名交易不一致',
+        'signed payload does not match the saved unsigned transaction',
         field,
       );
     }
@@ -220,7 +220,7 @@ export async function bindSignedTransaction(
   if (JSON.stringify(unsigned.accessList) !== JSON.stringify(decoded.accessList)) {
     throw new EvmCodecError(
       'unsigned_payload_mismatch',
-      '签名载荷与保存的未签名交易的 accessList 不一致',
+      'signed payload accessList does not match the saved unsigned transaction',
       'accessList',
     );
   }
@@ -231,7 +231,7 @@ export async function bindSignedTransaction(
   ) {
     throw new EvmCodecError(
       'expected_hash_mismatch',
-      '调用方声明的 expectedHash 与由载荷重算的交易哈希不一致',
+      'caller-declared expectedHash does not match the transaction hash recomputed from the payload',
       'expectedHash',
     );
   }

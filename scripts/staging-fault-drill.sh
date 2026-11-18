@@ -1,15 +1,20 @@
 #!/usr/bin/env bash
-# 隔离 staging 故障演练：真实停掉数据库，验证 Gateway 的行为。
+# Isolated staging fault drill: actually stop the database and verify the
+# Gateway's behavior.
 #
-# 覆盖（与 docs/runbooks/staging-drill.md §3 对应）：
-#   1. 正常：/healthz 200、/readyz 200、业务 200、无 Key 401
-#   2. 停库：/healthz 仍 200、/readyz 503、业务 503、依赖拒绝指标递增
-#   3. 恢复：/readyz 自动回到 200、业务重新放行
+# Coverage (matches docs/runbooks/staging-drill.md §3):
+#   1. Normal: /healthz 200, /readyz 200, business 200, no key 401
+#   2. Database stopped: /healthz still 200, /readyz 503, business 503,
+#      dependency-rejection metric increasing
+#   3. Recovery: /readyz returns to 200 automatically, business allowed again
 #
-# 红线：
-#   - 只使用专用容器名 / 端口 / 卷，不触碰共享 M4 容器；
-#   - 密码与 API Key 运行时随机生成，只进环境变量，绝不打印；
-#   - 不广播、不签名、不访问真实资金；RPC 端点用不可达本地地址。
+# Red lines:
+#   - Only dedicated container names / ports / volumes are used; the shared
+#     M4 containers are never touched;
+#   - Passwords and API keys are generated randomly at runtime, go only into
+#     environment variables, and are never printed;
+#   - No broadcast, no signing, no access to real funds; RPC endpoints use
+#     unreachable local addresses.
 set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
@@ -59,7 +64,7 @@ wait_http() {
     if [ "${code}" = "${expected}" ]; then printf '  ok %s -> %s\n' "${label}" "${expected}"; return 0; fi
     sleep 1
   done
-  fail "${label} 未在超时内达到 ${expected}（最后状态 ${code:-000}）"
+  fail "${label} did not reach ${expected} within the timeout (last status ${code:-000})"
 }
 
 request_code() {
@@ -73,21 +78,21 @@ request_code() {
 
 expect_code() {
   local actual="$1" expected="$2" label="$3"
-  [ "${actual}" = "${expected}" ] || fail "${label} 期望 ${expected}，实际 ${actual}"
+  [ "${actual}" = "${expected}" ] || fail "${label} expected ${expected}, got ${actual}"
   printf '  ok %s -> %s\n' "${label}" "${expected}"
 }
 
 MIGRATION_DSN="postgres://dfr_migrator:${DFR_DRILL_MIGRATOR_PASSWORD}@127.0.0.1:${DB_PORT}/${DB_NAME}"
 RUNTIME_DSN="postgres://dfr_runtime:${DFR_DRILL_RUNTIME_PASSWORD}@127.0.0.1:${DB_PORT}/${DB_NAME}"
 
-step '0. 启动隔离 Postgres'
+step '0. Start isolated Postgres'
 docker compose -f "${COMPOSE_FILE}" -p "${PROJECT}" up -d --wait >/dev/null
 
-step '1. 应用迁移'
+step '1. Apply migrations'
 DFR_TRANSACTION_MIGRATION_DATABASE_URL="${MIGRATION_DSN}" \
   pnpm --filter @dfr/storage-postgres migrate >/dev/null
 
-step '2. 启动 Gateway（写路径 + M4）'
+step '2. Start Gateway (write path + M4)'
 DFR_GATEWAY_PORT="${GATEWAY_PORT}" \
 DFR_M1_ALLOW_WRITE='true' \
 DFR_DEPLOY_MILESTONE='M4' \
@@ -108,28 +113,28 @@ BASE_URL="http://127.0.0.1:${GATEWAY_PORT}"
 wait_http "${BASE_URL}/healthz" 200 '/healthz'
 wait_http "${BASE_URL}/readyz" 200 '/readyz'
 
-step '3. 正常路径'
-expect_code "$(request_code "${BASE_URL}/v1/chains" GET auth)" 200 '业务请求（带 Key）'
-expect_code "$(request_code "${BASE_URL}/v1/chains" GET)" 401 '业务请求（无 Key）'
+step '3. Normal path'
+expect_code "$(request_code "${BASE_URL}/v1/chains" GET auth)" 200 'business request (with key)'
+expect_code "$(request_code "${BASE_URL}/v1/chains" GET)" 401 'business request (no key)'
 
-step '4. 停库：进程存活、依赖未就绪、业务被拒'
+step '4. Stop the database: process alive, dependency not ready, business rejected'
 docker stop dfr-staging-drill-postgres >/dev/null
-wait_http "${BASE_URL}/readyz" 503 '/readyz（停库后）'
-expect_code "$(request_code "${BASE_URL}/healthz" GET)" 200 '/healthz（停库后）'
-expect_code "$(request_code "${BASE_URL}/v1/chains" GET auth)" 503 '业务请求（停库后）'
+wait_http "${BASE_URL}/readyz" 503 '/readyz (after stopping the database)'
+expect_code "$(request_code "${BASE_URL}/healthz" GET)" 200 '/healthz (after stopping the database)'
+expect_code "$(request_code "${BASE_URL}/v1/chains" GET auth)" 503 'business request (after stopping the database)'
 
 METRICS=$(curl -s --max-time 3 -H "@${API_KEY_HEADER_FILE}" "${BASE_URL}/metrics" 2>/dev/null || true)
-grep -q 'dfr_gateway_dependency_rejected_total' <<<"${METRICS}" || fail '依赖拒绝指标缺失'
-printf '  ok 依赖拒绝指标已导出\n'
+grep -q 'dfr_gateway_dependency_rejected_total' <<<"${METRICS}" || fail 'dependency-rejection metric missing'
+printf '  ok dependency-rejection metric is exported\n'
 
-step '5. 恢复数据库：自动恢复放行'
+step '5. Restore the database: automatically recovers and allows traffic'
 docker start dfr-staging-drill-postgres >/dev/null
 for _ in $(seq 1 30); do
   if docker exec dfr-staging-drill-postgres pg_isready -U dfr_bootstrap -d "${DB_NAME}" >/dev/null 2>&1; then break; fi
   sleep 1
 done
-wait_http "${BASE_URL}/readyz" 200 '/readyz（恢复后）'
-expect_code "$(request_code "${BASE_URL}/v1/chains" GET auth)" 200 '业务请求（恢复后）'
+wait_http "${BASE_URL}/readyz" 200 '/readyz (after recovery)'
+expect_code "$(request_code "${BASE_URL}/v1/chains" GET auth)" 200 'business request (after recovery)'
 
 step 'PASS'
-printf '隔离 staging 故障演练通过：停库拒绝 -> 恢复放行；未广播、未触碰共享容器。\n'
+printf 'Isolated staging fault drill passed: database-stop rejection -> recovery allows traffic; nothing broadcast, shared containers untouched.\n'

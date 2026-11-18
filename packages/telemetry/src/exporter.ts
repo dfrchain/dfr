@@ -1,29 +1,29 @@
 /**
- * Span 导出（M5 生产加固 E6）。
+ * Span export (M5 production hardening E6).
  *
- * 两个实现，语义刻意不同：
- * - `InMemorySpanExporter`：测试与本地诊断用；
- * - `JsonlSpanExporter`：把 OTLP/JSON 行写到一个 sink（默认 stdout），
- *   便于被 filebeat / fluent-bit / collector 采集。
+ * Two implementations, deliberately different in semantics:
+ * - `InMemorySpanExporter`: for tests and local diagnostics;
+ * - `JsonlSpanExporter`: writes OTLP/JSON lines to a sink (default stdout),
+ *   so filebeat / fluent-bit / collector can pick them up.
  *
- * 为什么不直接调远程 OTLP endpoint：`pnpm verify` 必须离线；而且把网络调用
- * 放进请求路径会把"观测后端抖动"变成"业务失败"。导出是**尽力而为**：
- * `export()` 永不抛错（与各层日志出口同一约定）。
+ * Why not call a remote OTLP endpoint directly: `pnpm verify` must work offline; and putting network calls
+ * in the request path would turn "observability backend jitter" into "business failure". Export is **best-effort**:
+ * `export()` never throws (same convention as each layer's log outlet).
  *
- * 格式：OTLP/JSON 的 `resourceSpans → scopeSpans → spans` 形状。
- * 只填我们真正拥有的字段，不伪造 SDK 元数据。
+ * Format: the OTLP/JSON `resourceSpans → scopeSpans → spans` shape.
+ * Only fill fields we actually have; do not fabricate SDK metadata.
  */
 
 import type { SpanRecord } from './span.js';
 
 export interface SpanExporter {
-  /** 导出（尽力而为，**不得抛错**）。 */
+  /** Export (best-effort, **must not throw**). */
   export(spans: readonly SpanRecord[]): void;
-  /** 关闭/刷盘（可选）。 */
+  /** Close/flush (optional). */
   shutdown?(): void;
 }
 
-/** 内存导出器：测试断言用。按导出顺序保留原始记录。 */
+/** In-memory exporter: for test assertions. Keeps the original records in export order. */
 export class InMemorySpanExporter implements SpanExporter {
   private readonly spans: SpanRecord[] = [];
 
@@ -31,7 +31,7 @@ export class InMemorySpanExporter implements SpanExporter {
     this.spans.push(...spans);
   }
 
-  /** 已导出的 span 快照（副本，避免调用方改动内部状态）。 */
+  /** Snapshot of exported spans (a copy, so callers cannot mutate internal state). */
   get exported(): readonly SpanRecord[] {
     return [...this.spans];
   }
@@ -42,10 +42,10 @@ export class InMemorySpanExporter implements SpanExporter {
 }
 
 /**
- * JSONL 导出器。
+ * JSONL exporter.
  *
- * `sink` 默认 `process.stdout.write`；调用方负责不在这里写敏感内容——
- * span 属性已经过各层白名单，本模块不再二次过滤（重复过滤会掩盖白名单的漏洞）。
+ * `sink` defaults to `process.stdout.write`; the caller is responsible for not writing sensitive content here —
+ * span attributes have already passed each layer's allowlist, and this module does not filter a second time (double filtering would hide allowlist holes).
  */
 export class JsonlSpanExporter implements SpanExporter {
   readonly #sink: (line: string) => void;
@@ -76,19 +76,19 @@ export class JsonlSpanExporter implements SpanExporter {
     try {
       this.#sink(`${JSON.stringify(payload)}\n`);
     } catch {
-      // 观测失败不影响业务（与各层日志出口同一约定）。
+      // Observation failures do not affect business (same convention as each layer's log outlet).
     }
   }
 }
 
-/** `SpanRecord` → OTLP span。未设置的字段**不出现**，不用空值占位。 */
+/** `SpanRecord` → OTLP span. Unset fields are **absent**, not filled with empty values. */
 export function toOtlpSpan(span: SpanRecord): Record<string, unknown> {
   return {
     traceId: span.traceId,
     spanId: span.spanId,
     ...(span.parentSpanId !== undefined ? { parentSpanId: span.parentSpanId } : {}),
     name: span.name,
-    kind: 1, // SPAN_KIND_INTERNAL：这些都是进程内调用，不是 RPC 客户端/服务端语义。
+    kind: 1, // SPAN_KIND_INTERNAL: these are all in-process calls, not RPC client/server semantics.
     startTimeUnixNano: span.startTimeUnixNano,
     endTimeUnixNano: span.endTimeUnixNano,
     attributes: Object.entries(span.attributes).map(([key, value]) => ({
@@ -96,7 +96,7 @@ export function toOtlpSpan(span: SpanRecord): Record<string, unknown> {
       value: otlpValue(value),
     })),
     status: {
-      // OTLP: 0=UNSET, 1=OK, 2=ERROR。失败时带 errorCode 作为描述。
+      // OTLP: 0=UNSET, 1=OK, 2=ERROR. On failure, carry errorCode as the description.
       code: span.status === 'ok' ? 1 : 2,
       ...(span.errorCode !== undefined ? { message: span.errorCode } : {}),
     },
@@ -106,6 +106,6 @@ export function toOtlpSpan(span: SpanRecord): Record<string, unknown> {
 function otlpValue(value: string | number | boolean): Record<string, unknown> {
   if (typeof value === 'string') return { stringValue: value };
   if (typeof value === 'boolean') return { boolValue: value };
-  // 整数用 intValue（十进制字符串，OTLP 规定 int64 用字符串编码）。
+  // Integers use intValue (decimal strings; OTLP specifies int64 encoded as strings).
   return Number.isInteger(value) ? { intValue: String(value) } : { doubleValue: value };
 }

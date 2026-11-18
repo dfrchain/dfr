@@ -1,32 +1,32 @@
 /**
- * Gateway HTTP 指标（observability-spec 第 5.1 节）。
+ * Gateway HTTP metrics (observability-spec section 5.1).
  *
- * 为什么必须有：§5.6 把 `dfr_gateway_requests_total{status_code}`（API 成功率）与
- * `dfr_gateway_request_duration_seconds`（API 延迟）列为**需求第 14 章的最低指标**。
- * 在本模块之前这两项完全没有实现——平台最基础的可用性信号无法度量。
+ * Why they must exist: §5.6 lists `dfr_gateway_requests_total{status_code}` (API success rate) and
+ * `dfr_gateway_request_duration_seconds` (API latency) as the **minimum metrics of requirements chapter 14**.
+ * Before this module, neither existed at all — the platform's most basic availability signals could not be measured.
  *
- * 标签全部取自**有界枚举**，这是本模块最重要的设计约束：
- * - `route` 用路由 handler id（`listChains` / `buildTransaction` / …）或 `unmatched`，
- *   **绝不使用原始 path**——`/v1/transactions/0x…/confirm` 会把交易哈希变成标签（基数灾难）；
- * - `method` 只有 GET/POST；`status_code` 是我们自己能返回的有限集合；
- * - `chain` 来自注册表（有界）或 `none`；`reason_code` / `route_class` / `outcome` 都是小枚举。
+ * All labels come from **bounded enums**; this is the module's most important design constraint:
+ * - `route` uses the route handler id (`listChains` / `buildTransaction` / …) or `unmatched`,
+ *   **never the raw path** — `/v1/transactions/0x…/confirm` would turn transaction hashes into labels (a cardinality disaster);
+ * - `method` is only GET/POST; `status_code` is the finite set we can return ourselves;
+ * - `chain` comes from the registry (bounded) or is `none`; `reason_code` / `route_class` / `outcome` are all small enums.
  *
- * 渲染与基数兜底由 `@dfr/metrics` 的 `MetricRegistry` 提供（与交易指标同一实现）。
+ * Rendering and the cardinality fallback are provided by `@dfr/metrics`' `MetricRegistry` (the same implementation as the transaction metrics).
  */
 import { MetricRegistry, type MetricRegistryOptions } from '@dfr/metrics';
 
-/** 认证失败原因（与 `verifyApiKey` 的判别联合一致）。 */
+/** Authentication failure reason (matching the `verifyApiKey` discriminated union). */
 export type AuthFailureReason = 'missing' | 'malformed' | 'mismatch';
 export type GatewayRouteClass = 'read' | 'write' | 'stream';
-/** 幂等结果：命中重放，或同键不同体的冲突。 */
+/** Idempotency outcome: a replay hit, or a same-key-different-body conflict. */
 export type IdempotencyOutcome = 'replayed' | 'conflict';
 
 export interface RecordRequestInput {
-  /** 路由 handler id；未匹配到路由（含鉴权前失败）时为 `unmatched`。 */
+  /** Route handler id; `unmatched` when no route matched (including failures before authentication). */
   readonly route: string;
   readonly method: string;
   readonly statusCode: number;
-  /** 涉及的链；无关或未知时为 `none`。 */
+  /** The chain involved; `none` when irrelevant or unknown. */
   readonly chain?: string;
   readonly durationSeconds: number;
 }
@@ -41,7 +41,7 @@ const DEPENDENCY_REJECTED = 'dfr_gateway_dependency_rejected_total';
 
 export class GatewayMetrics {
   private readonly registry: MetricRegistry;
-  /** 在途请求计数（gauge 需要先算出总量再写入，注册表本身不做增减）。 */
+  /** In-flight request count (a gauge needs the total computed before writing; the registry itself does no increment/decrement). */
   private readonly inflight = new Map<GatewayRouteClass, number>();
 
   constructor(options: MetricRegistryOptions = {}) {
@@ -89,7 +89,7 @@ export class GatewayMetrics {
     this.registry.increment(IDEMPOTENCY_HITS, { outcome });
   }
 
-  /** 进入/离开一次请求；内部维护计数并写入 gauge。 */
+  /** Enter/leave one request; maintains the count internally and writes it to the gauge. */
   changeInflight(routeClass: GatewayRouteClass, delta: 1 | -1): void {
     const next = Math.max(0, (this.inflight.get(routeClass) ?? 0) + delta);
     this.inflight.set(routeClass, next);

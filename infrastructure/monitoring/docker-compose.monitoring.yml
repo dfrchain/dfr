@@ -1,18 +1,20 @@
-# DFR M1 监控样例：Prometheus（抓取 + 告警规则）+ Grafana（自动加载看板）
+# DFR M1 monitoring sample: Prometheus (scrape + alert rules) + Grafana (auto-loaded dashboards)
 #
-# **不是生产部署文件**：单机样例，用于"把已有的指标真正看见"。
-# 生产环境应接入既有 Prometheus/Grafana 或托管服务，本文件提供可复制的配置形状。
+# **Not a production deployment file**: a single-host sample, for "actually
+# seeing the metrics that already exist". Production should connect to an
+# existing Prometheus/Grafana or a managed service; this file provides a
+# copyable configuration shape.
 #
-# 前置：
-#   1. Gateway 正在运行且 /metrics 可用（例如 docker-compose.m1.yml 起的实例，
-#      默认映射到宿主机 18787）；
-#   2. 导出 `DFR_METRICS_API_KEY`（形如 dfr_<8位 keyId>_<secret>），
-#      **不要**写进任何文件或提交。
+# Prerequisites:
+#   1. The Gateway is running and /metrics is available (e.g. the instance
+#      started by docker-compose.m1.yml, mapped to host 18787 by default);
+#   2. Export `DFR_METRICS_API_KEY` (shaped like dfr_<8-char keyId>_<secret>),
+#      and **never** write it into any file or commit it.
 #
-# 用法：
+# Usage:
 #   export DFR_METRICS_API_KEY="dfr_XXXXXXXX_<secret>"
 #   docker compose -f infrastructure/monitoring/docker-compose.monitoring.yml up -d
-#   open http://127.0.0.1:3000        # Grafana，默认 admin/admin（首次登录会要求改）
+#   open http://127.0.0.1:3000        # Grafana, default admin/admin (first login asks for a change)
 #   open http://127.0.0.1:9090        # Prometheus
 #   docker compose -f infrastructure/monitoring/docker-compose.monitoring.yml down
 name: dfr-monitoring
@@ -21,14 +23,14 @@ services:
   prometheus:
     image: prom/prometheus:v3.1.0
     restart: unless-stopped
-    # 运行时生成 scrape 配置（含 x-dfr-key），仓库里不存凭证。
+    # Generate the scrape config at runtime (includes x-dfr-key); no credentials are stored in the repository.
     entrypoint: ['/bin/sh', '/etc/prometheus/entrypoint.sh']
     environment:
-      DFR_METRICS_API_KEY: ${DFR_METRICS_API_KEY:?请先导出 DFR_METRICS_API_KEY（形如 dfr_<keyId>_<secret>）}
-      # 默认抓取宿主机上 m1 样例 Gateway 的映射端口；改成服务名需加入同一网络。
+      DFR_METRICS_API_KEY: ${DFR_METRICS_API_KEY:?export DFR_METRICS_API_KEY first (format dfr_<keyId>_<secret>)}
+      # By default, scrape the m1 sample Gateway's mapped port on the host; to use a service name instead, join the same network.
       DFR_METRICS_TARGET: ${DFR_METRICS_TARGET:-host.docker.internal:18787}
     extra_hosts:
-      # Linux 上 host.docker.internal 需要显式声明（macOS/Windows 自带）。
+      # On Linux, host.docker.internal needs an explicit declaration (macOS/Windows have it built in).
       - 'host.docker.internal:host-gateway'
     ports:
       - '127.0.0.1:9090:9090'
@@ -52,10 +54,11 @@ services:
       GF_ANALYTICS_REPORTING_ENABLED: 'false'
       GF_ANALYTICS_CHECK_FOR_UPDATES: 'false'
     volumes:
-      # 只挂载用到的两个子目录，而不是整个 /etc/grafana/provisioning：
-      # bind mount 会整体覆盖目录，遮蔽镜像自带的 plugins/alerting/notifiers/
-      # access-control，Grafana 每次启动都会打一条 level=error
-      # （"Failed to read ... no such file or directory"），把真实错误淹没。
+      # Mount only the two subdirectories in use, not the whole
+      # /etc/grafana/provisioning: a bind mount covers the entire directory,
+      # shadowing the image's built-in plugins/alerting/notifiers/
+      # access-control, so Grafana logs a level=error on every startup
+      # ("Failed to read ... no such file or directory") that drowns out real errors.
       - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
       - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro

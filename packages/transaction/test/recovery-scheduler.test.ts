@@ -1,9 +1,9 @@
 /**
- * 恢复巡检调度器契约测试（DFR-M1-D03 运行时补充）。
+ * Recovery sweep scheduler contract test (DFR-M1-D03 runtime supplement).
  *
- * 生命周期语义（幂等启动、单飞、失败隔离、stop）已由
- * `reorg-scheduler.test.ts` 通过共用原语 `PeriodicSweep` 覆盖；
- * 本文件只断言"恢复"任务特有的行为，避免重复测试同一实现。
+ * Lifecycle semantics (idempotent start, single-flight, failure isolation, stop) are already covered
+ * by `reorg-scheduler.test.ts` through the shared `PeriodicSweep` primitive;
+ * this file only asserts the behaviors specific to the "recovery" task, avoiding testing the same implementation twice.
  */
 import { describe, expect, it, vi } from 'vitest';
 import { RecoveryScheduler } from '../src/recovery-scheduler.js';
@@ -24,8 +24,8 @@ function fakeTimer() {
   };
 }
 
-describe('RecoveryScheduler（DFR-M1-D03 运行时补充）', () => {
-  it('默认间隔是 10 分钟（比重组巡检的 5 分钟宽松）', () => {
+describe('RecoveryScheduler (DFR-M1-D03 runtime supplement)', () => {
+  it('the default interval is 10 minutes (more relaxed than the 5 minutes of the reorg sweep)', () => {
     const intervals: number[] = [];
     const timer = fakeTimer();
     const scheduler = new RecoveryScheduler({
@@ -41,7 +41,7 @@ describe('RecoveryScheduler（DFR-M1-D03 运行时补充）', () => {
     scheduler.stop();
   });
 
-  it('把配置的批次上限传给 RecoveryCoordinator.run', async () => {
+  it('passes the configured batch cap to RecoveryCoordinator.run', async () => {
     const timer = fakeTimer();
     const calls: number[] = [];
     const scheduler = new RecoveryScheduler({
@@ -61,7 +61,7 @@ describe('RecoveryScheduler（DFR-M1-D03 运行时补充）', () => {
     scheduler.stop();
   });
 
-  it('单轮失败被隔离并上报（与重组巡检同一原语语义）', async () => {
+  it('a single round failure is isolated and reported (same primitive semantics as the reorg sweep)', async () => {
     const timer = fakeTimer();
     const errors: unknown[] = [];
     const recover = vi
@@ -86,14 +86,14 @@ describe('RecoveryScheduler（DFR-M1-D03 运行时补充）', () => {
     scheduler.stop();
   });
 
-  it('与 ReorgScheduler 共用同一个原语：参数错误信息带各自任务名', () => {
+  it('shares the same primitive as ReorgScheduler: parameter error messages carry the name of each task', async () => {
     const base = {
       recover: async () => 0,
       setInterval: fakeTimer().setInterval as never,
       clearInterval: fakeTimer().clearInterval as never,
     };
     expect(() => new RecoveryScheduler({ ...base, intervalMs: 0 })).toThrow(/recovery scheduler/u);
-    // 直接构造原语时同理；这是"只有一个实现"的可观测证据。
+    // Same when constructing the primitive directly; this is the observable evidence of "only one implementation".
     expect(
       () =>
         new PeriodicSweep({

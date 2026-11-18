@@ -1,13 +1,13 @@
 /**
- * 交易状态机契约测试（DFR-M1-A05）。
+ * Transaction state machine contract test (DFR-M1-A05).
  *
- * 权威边集：docs/architecture/transaction-lifecycle.md 第 3.1 节状态转移表。
+ * Authoritative edge set: docs/architecture/transaction-lifecycle.md, section 3.1 state-transition table.
  *
- * 本测试的目的不是"给实现补测试"，而是把规范表格逐行变成可回归断言：
- *   - 每一条允许边都有断言；
- *   - 终态保护、非法边、重复建单都有负对照；
- *   - 状态集合与 `@dfr/types` 的 `TransactionStatus` 在编译期与运行期双向绑定，
- *     使"类型加了状态但状态机没跟上"这类漂移立刻失败。
+ * The purpose of this test is not "adding tests to the implementation", but turning each row of the spec table into a regression assertion:
+ *   - every allowed edge has an assertion;
+ *   - terminal-state protection, illegal edges, and duplicate order creation all have negative controls;
+ *   - the state set and `@dfr/types`' `TransactionStatus` are bound both at compile time and at runtime,
+ *     so a drift like "a type added a state but the state machine did not follow" fails immediately.
  */
 import { describe, expect, it } from 'vitest';
 import type { TransactionStatus } from '@dfr/types';
@@ -34,39 +34,39 @@ const ALL_STATUSES = [
   'dropped',
   'replaced',
   'unknown',
-  // ADR-037：被显式作废的未广播交易（终态）。
+  // ADR-037: an explicitly voided unbroadcast transaction (terminal state).
   'abandoned',
 ] as const satisfies readonly TransactionStatus[];
 
 /**
- * 编译期穷尽性守卫。
+ * Compile-time exhaustiveness guard.
  *
- * `Record<TransactionStatus, ...>` 要求覆盖每一个状态：若 `TransactionStatus`
- * 新增取值而这里没补，`pnpm typecheck` 会直接报错，而不是让状态机静默漏掉新状态。
+ * `Record<TransactionStatus, ...>` requires covering every state: if `TransactionStatus`
+ * gains a new value and this is not updated, `pnpm typecheck` fails directly, instead of letting the state machine silently miss the new state.
  */
 const COVERAGE_REASON: Record<TransactionStatus, string> = {
-  built: 'allowed：simulate.succeeded / simulate.failed / sign / abandon（ADR-037）',
-  simulated: 'allowed：sign / abandon（ADR-037）',
-  signed: 'allowed：broadcast.accepted / broadcast.rejected',
-  broadcast: 'allowed：mempool.entered / rebroadcast.indeterminate（TX-04）',
-  pending: 'allowed：included / dropped / replaced',
-  included: 'allowed：confirmed / reorg',
-  confirmed: 'allowed：finalized',
-  finalized: 'terminal：拒绝全部事件',
-  failed: 'terminal：拒绝全部事件',
-  reverted: 'terminal：拒绝全部事件',
-  replaced: 'terminal：拒绝全部事件',
-  dropped: 'allowed：rebroadcast（须显式 rebroadcast=true）',
-  unknown: 'allowed：mempool.entered / included / dropped / replaced（ADR-019）',
-  abandoned: 'terminal：拒绝全部事件（ADR-037，只从 built/simulated 可达）',
+  built: 'allowed: simulate.succeeded / simulate.failed / sign / abandon (ADR-037)',
+  simulated: 'allowed: sign / abandon (ADR-037)',
+  signed: 'allowed: broadcast.accepted / broadcast.rejected',
+  broadcast: 'allowed: mempool.entered / rebroadcast.indeterminate (TX-04)',
+  pending: 'allowed: included / dropped / replaced',
+  included: 'allowed: confirmed / reorg',
+  confirmed: 'allowed: finalized',
+  finalized: 'terminal: rejects all events',
+  failed: 'terminal: rejects all events',
+  reverted: 'terminal: rejects all events',
+  replaced: 'terminal: rejects all events',
+  dropped: 'allowed: rebroadcast (requires explicit rebroadcast=true)',
+  unknown: 'allowed: mempool.entered / included / dropped / replaced (ADR-019)',
+  abandoned: 'terminal: rejects all events (ADR-037, only reachable from built/simulated)',
 };
 
 function ok(result: TransitionResult): result is Extract<TransitionResult, { ok: true }> {
   return result.ok;
 }
 
-describe('状态集合与类型契约', () => {
-  it('ALLOWED_TRANSITIONS 覆盖的状态集合与 TransactionStatus 完全一致', () => {
+describe('State set and type contract', () => {
+  it('the state set covered by ALLOWED_TRANSITIONS matches TransactionStatus exactly', () => {
     const referenced = new Set<string>(TERMINAL_STATUSES);
     for (const spec of ALLOWED_TRANSITIONS) {
       if (spec.from !== null) referenced.add(spec.from);
@@ -75,11 +75,11 @@ describe('状态集合与类型契约', () => {
     expect([...referenced].sort()).toEqual([...ALL_STATUSES].sort());
   });
 
-  it('编译期穷尽性守卫覆盖每个状态（缺失会由 typecheck 拦截）', () => {
+  it('the compile-time exhaustiveness guard covers every state (a missing one is caught by typecheck)', () => {
     expect(Object.keys(COVERAGE_REASON).sort()).toEqual([...ALL_STATUSES].sort());
   });
 
-  it('每个状态都有明确归类：终态或有出边（无遗留缺口）', () => {
+  it('every state has a clear classification: terminal or with outbound edges (no leftover gaps)', () => {
     for (const status of ALL_STATUSES) {
       const hasOutgoing = ALLOWED_TRANSITIONS.some((s) => s.from === status);
       const isTerminal = TERMINAL_STATUSES.includes(status);
@@ -90,9 +90,9 @@ describe('状态集合与类型契约', () => {
     }
   });
 
-  it('unknown 的入边与解析出边由 ADR-019 定义（DFR-M1-C03b 关闭 TODO-006）', () => {
+  it('the unknown inbound and resolution outbound edges are defined by ADR-019 (DFR-M1-C03b closes TODO-006)', () => {
     const intoUnknown = ALLOWED_TRANSITIONS.filter((s) => s.to === 'unknown');
-    // 首次发送和显式重播各一条进入 unknown 的事件；不允许其他状态绕过。
+    // One event into unknown for the first send and one for an explicit rebroadcast; no other state may bypass them.
     expect(intoUnknown).toEqual([
       { from: 'signed', event: 'broadcast.indeterminate', to: 'unknown' },
       { from: 'broadcast', event: 'rebroadcast.indeterminate', to: 'unknown' },
@@ -104,51 +104,51 @@ describe('状态集合与类型契约', () => {
     );
   });
 
-  it('unknown 不是终态：必须能被恢复扫描接手（m1-storage-model 第 6 节）', () => {
+  it('unknown is not terminal: it must be claimable by the recovery scan (m1-storage-model section 6)', () => {
     expect([...TERMINAL_STATUSES]).not.toContain('unknown');
   });
 
-  it('不存在 unknown → broadcast 的边：重播只能经 dropped → rebroadcast（防自动二次广播）', () => {
+  it('there is no unknown → broadcast edge: a rebroadcast can only go via dropped → rebroadcast (guarding against an automatic second broadcast)', () => {
     const direct = ALLOWED_TRANSITIONS.filter(
       (s) => s.from === 'unknown' && s.to === 'broadcast',
     );
-    expect(direct, 'unknown 不得直接回到 broadcast').toEqual([]);
-    // 唯一的重播入口：dropped --rebroadcast--> broadcast，且必须显式带标记。
+    expect(direct, 'unknown must not return directly to broadcast').toEqual([]);
+    // The only rebroadcast entry: dropped --rebroadcast--> broadcast, with the explicit flag required.
     const rebroadcast = ALLOWED_TRANSITIONS.filter((s) => s.event === 'rebroadcast');
     expect(rebroadcast).toEqual([
       { from: 'dropped', event: 'rebroadcast', to: 'broadcast', requiresRebroadcast: true },
     ]);
   });
 
-  it('状态机中不存在 orphaned 交易状态（DFR-M1-A05 决议）', () => {
+  it('no orphaned transaction state exists in the state machine (DFR-M1-A05 decision)', () => {
     expect([...ALL_STATUSES]).not.toContain('orphaned');
     const targets = ALLOWED_TRANSITIONS.map((s) => s.to);
     expect(targets).not.toContain('orphaned');
   });
 });
 
-describe('允许边（逐行对应 transaction-lifecycle.md 第 3.1 节）', () => {
+describe('Allowed edges (one row per transaction-lifecycle.md section 3.1)', () => {
   for (const spec of ALLOWED_TRANSITIONS) {
-    const label = `${spec.from ?? '（无）'} --${spec.event}--> ${spec.to}`;
-    it(`允许：${label}`, () => {
+    const label = `${spec.from ?? '(none)'} --${spec.event}--> ${spec.to}`;
+    it(`allowed: ${label}`, () => {
       const result = transition({
         from: spec.from,
         event: spec.event,
-        // 需要用 rebroadcast 旗标的边，测试里显式给出，旗标缺失由专门的负对照覆盖。
+        // For edges needing the rebroadcast flag, the test supplies it explicitly; a missing flag is covered by a dedicated negative control.
         ...(spec.requiresRebroadcast ? { rebroadcast: true } : {}),
       });
-      expect(ok(result), `${label} 应被允许，实际被拒：${JSON.stringify(result)}`).toBe(true);
+      expect(ok(result), `${label} should be allowed, but was rejected: ${JSON.stringify(result)}`).toBe(true);
       if (ok(result)) expect(result.status).toBe(spec.to);
     });
   }
 
-  it('边集与规范表格一致：16 行 = 15 条具名边 + `*` 行展开为 9 个非终态', () => {
-    // 规范表格原有 16 行（15 条具名 + `*`）；ADR-019 新增 5 条具名边
-    // （`signed → unknown` 与 4 条 unknown 解析出边），故具名边共 20 条。
-    // `*` 按字面适用于全部 9 个非终态，展开为 9 条。
-    // 合计 20 + 9 = 29 条。终态不入表（由终态保护拦截）。
-    // ADR-023 新增 3 条 dropped 收敛边（→ pending / included / replaced）。
-    // ADR-037 新增 2 条 abandon 边（built/simulated → abandoned），合计 34 条。
+  it('the edge set matches the spec table: 16 rows = 15 named edges + the `*` row expanding to 9 non-terminal states', () => {
+    // The spec table originally had 16 rows (15 named + `*`); ADR-019 added 5 named edges
+    // (`signed → unknown` and 4 unknown resolution outbound edges), so there are 20 named edges in total.
+    // `*` literally applies to all 9 non-terminal states, expanding to 9 edges.
+    // Total 20 + 9 = 29 edges. Terminal states are not in the table (intercepted by terminal-state protection).
+    // ADR-023 added 3 dropped convergence edges (→ pending / included / replaced).
+    // ADR-037 added 2 abandon edges (built/simulated → abandoned), 34 in total.
     expect(ALLOWED_TRANSITIONS).toHaveLength(35);
 
     const nonTerminal = ALL_STATUSES.filter((s) => !TERMINAL_STATUSES.includes(s));
@@ -158,26 +158,26 @@ describe('允许边（逐行对应 transaction-lifecycle.md 第 3.1 节）', () 
   });
 });
 
-describe('终态保护', () => {
-  it('终态集合与规范第 3.2 节一致（dropped 不是终态）', () => {
+describe('Terminal-state protection', () => {
+  it('the terminal set matches spec section 3.2 (dropped is not terminal)', () => {
     expect([...TERMINAL_STATUSES].sort()).toEqual(
-      // ADR-037 新增终态 abandoned。
+      // ADR-037 added the terminal state abandoned.
       ['abandoned', 'failed', 'finalized', 'replaced', 'reverted'].sort(),
     );
     expect(TERMINAL_STATUSES).not.toContain('dropped');
   });
 
   for (const status of ['finalized', 'failed', 'reverted', 'replaced', 'abandoned'] as const) {
-    it(`终态 ${status} 拒绝全部 ${TRANSACTION_EVENTS.length} 个事件`, () => {
+    it(`terminal state ${status} rejects all ${TRANSACTION_EVENTS.length} events`, () => {
       for (const event of TRANSACTION_EVENTS) {
         const result = transition({ from: status, event, rebroadcast: true });
-        expect(ok(result), `${status} + ${event} 不应被允许`).toBe(false);
+      expect(ok(result), `${status} + ${event} should not be allowed`).toBe(false);
         if (!ok(result)) expect(result.reason).toBe('TERMINAL_STATE');
       }
     });
   }
 
-  it('终态不会被 reorg 普通路径覆盖', () => {
+  it('a terminal state is not overwritten by the ordinary reorg path', () => {
     for (const status of ['finalized', 'reverted'] as const) {
       const result = transition({ from: status, event: 'reorg' });
       expect(ok(result)).toBe(false);
@@ -186,26 +186,26 @@ describe('终态保护', () => {
   });
 });
 
-describe('建单边界', () => {
-  it('无状态 + build 是唯一可用的入口', () => {
+describe('Order-creation boundaries', () => {
+  it('no state + build is the only available entry', () => {
     const result = transition({ from: null, event: 'build' });
     expect(ok(result)).toBe(true);
     if (ok(result)) expect(result.status).toBe('built');
   });
 
-  it('无状态时除 build 外全部被拒（INVALID_TRANSITION）', () => {
+  it('all except build are rejected with no state (INVALID_TRANSITION)', () => {
     for (const event of TRANSACTION_EVENTS) {
       if (event === 'build') continue;
       const result = transition({ from: null, event });
-      expect(ok(result), `null + ${event} 不应被允许`).toBe(false);
+      expect(ok(result), `null + ${event} should not be allowed`).toBe(false);
       if (!ok(result)) expect(result.reason).toBe('INVALID_TRANSITION');
     }
   });
 
-  it('已有状态时不能再 build（禁止重复建单）', () => {
+  it('with an existing state, build cannot run again (no duplicate order creation)', () => {
     for (const status of ALL_STATUSES) {
       const result = transition({ from: status, event: 'build' });
-      expect(ok(result), `${status} + build 不应被允许`).toBe(false);
+      expect(ok(result), `${status} + build should not be allowed`).toBe(false);
       expect(ok(result) ? undefined : result.reason).toBe(
         TERMINAL_STATUSES.includes(status) ? 'TERMINAL_STATE' : 'INVALID_TRANSITION',
       );
@@ -213,72 +213,72 @@ describe('建单边界', () => {
   });
 });
 
-describe('禁止边（非终态的非法事件）', () => {
-  it('signed 不能直接跳到 included（必须经过 broadcast → pending）', () => {
+describe('Forbidden edges (illegal events on non-terminal states)', () => {
+  it('signed cannot jump straight to included (must go through broadcast → pending)', () => {
     const result = transition({ from: 'signed', event: 'included' });
     expect(ok(result)).toBe(false);
     if (!ok(result)) expect(result.reason).toBe('INVALID_TRANSITION');
   });
 
-  it('pending 不能直接 finalized（禁止跳级，避免谎报最终性）', () => {
+  it('pending cannot jump to finalized (no skipping levels, avoiding false finality claims)', () => {
     const result = transition({ from: 'pending', event: 'finalized' });
     expect(ok(result)).toBe(false);
     if (!ok(result)) expect(result.reason).toBe('INVALID_TRANSITION');
   });
 
-  it('confirmed 不能被普通 dropped 覆盖（只允许 finalized）', () => {
+  it('confirmed cannot be overwritten by an ordinary dropped (only finalized is allowed)', () => {
     const result = transition({ from: 'confirmed', event: 'dropped' });
     expect(ok(result)).toBe(false);
     if (!ok(result)) expect(result.reason).toBe('INVALID_TRANSITION');
   });
 
-  it('built 不能直接 broadcast.accepted（必须先 sign）', () => {
+  it('built cannot take broadcast.accepted directly (must sign first)', () => {
     const result = transition({ from: 'built', event: 'broadcast.accepted' });
     expect(ok(result)).toBe(false);
     if (!ok(result)) expect(result.reason).toBe('INVALID_TRANSITION');
   });
 
-  it('reverted 不能被 simulate 成功覆盖（模拟失败是终点）', () => {
+  it('reverted cannot be overwritten by a successful simulate (a simulation failure is the end)', () => {
     const result = transition({ from: 'reverted', event: 'simulate.succeeded' });
     expect(ok(result)).toBe(false);
     if (!ok(result)) expect(result.reason).toBe('TERMINAL_STATE');
   });
 });
 
-describe('dropped → broadcast 重播边', () => {
-  it('缺少 rebroadcast 旗标时被拒（防止隐式第二次广播）', () => {
+describe('dropped → broadcast rebroadcast edge', () => {
+  it('rejected without the rebroadcast flag (guarding against an implicit second broadcast)', () => {
     const result = transition({ from: 'dropped', event: 'rebroadcast' });
     expect(ok(result)).toBe(false);
     if (!ok(result)) expect(result.reason).toBe('REBROADCAST_FLAG_REQUIRED');
   });
 
-  it('显式 rebroadcast=false 同样被拒', () => {
+  it('an explicit rebroadcast=false is equally rejected', () => {
     const result = transition({ from: 'dropped', event: 'rebroadcast', rebroadcast: false });
     expect(ok(result)).toBe(false);
     if (!ok(result)) expect(result.reason).toBe('REBROADCAST_FLAG_REQUIRED');
   });
 
-  it('显式 rebroadcast=true 放行并回到 broadcast', () => {
+  it('an explicit rebroadcast=true passes and returns to broadcast', () => {
     const result = transition({ from: 'dropped', event: 'rebroadcast', rebroadcast: true });
     expect(ok(result)).toBe(true);
     if (ok(result)) expect(result.status).toBe('broadcast');
   });
 
-  it('dropped 不接受普通 broadcast.accepted（避免把重播伪装成首次广播）', () => {
+  it('dropped does not accept an ordinary broadcast.accepted (avoid disguising a rebroadcast as a first broadcast)', () => {
     const result = transition({ from: 'dropped', event: 'broadcast.accepted' });
     expect(ok(result)).toBe(false);
     if (!ok(result)) expect(result.reason).toBe('INVALID_TRANSITION');
   });
 });
 
-describe('重组回退', () => {
-  it('included + reorg 回退到 pending', () => {
+describe('Reorg rollback', () => {
+  it('included + reorg rolls back to pending', () => {
     const result = transition({ from: 'included', event: 'reorg' });
     expect(ok(result)).toBe(true);
     if (ok(result)) expect(result.status).toBe('pending');
   });
 
-  it('回退后仍可按既有边继续推进（pending → included）', () => {
+  it('after rollback, it can still advance along existing edges (pending → included)', () => {
     const afterReorg = transition({ from: 'included', event: 'reorg' });
     expect(ok(afterReorg)).toBe(true);
     if (!ok(afterReorg)) return;
@@ -287,7 +287,7 @@ describe('重组回退', () => {
     if (ok(reIncluded)) expect(reIncluded.status).toBe('included');
   });
 
-  it('回退后超过时限仍可收敛到 dropped', () => {
+  it('after rollback, it can still converge to dropped once the time limit passes', () => {
     const afterReorg = transition({ from: 'included', event: 'reorg' });
     expect(ok(afterReorg)).toBe(true);
     if (!ok(afterReorg)) return;
@@ -296,28 +296,28 @@ describe('重组回退', () => {
     if (ok(dropped)) expect(dropped.status).toBe('dropped');
   });
 
-  it('未见过的 (状态, 事件) 组合一律 INVALID_TRANSITION，且不回显领域错误码', () => {
+  it('an unseen (state, event) combination is always INVALID_TRANSITION, without echoing a domain error code', () => {
     const result = transition({ from: 'pending', event: 'reorg' });
     expect(ok(result)).toBe(false);
     if (!ok(result)) {
       expect(result.reason).toBe('INVALID_TRANSITION');
-      // 原因码是稳定的状态机词汇，不是 HTTP/DFR 错误码。
+      // Reason codes are the state machine's stable vocabulary, not HTTP/DFR error codes.
       expect(result.reason.startsWith('DFR_')).toBe(false);
     }
   });
 });
 
-describe('execution.failed 的 `*` 边', () => {
-  it('对每个非终态都适用（规范第 3.1 节 `*` 行）', () => {
+describe('The execution.failed `*` edge', () => {
+  it('applies to every non-terminal state (spec section 3.1, `*` row)', () => {
     for (const status of ALL_STATUSES) {
       if (TERMINAL_STATUSES.includes(status)) continue;
       const result = transition({ from: status, event: 'execution.failed' });
-      expect(ok(result), `${status} + execution.failed 应被允许`).toBe(true);
+      expect(ok(result), `${status} + execution.failed should be allowed`).toBe(true);
       if (ok(result)) expect(result.status).toBe('reverted');
     }
   });
 
-  it('对终态不适用', () => {
+  it('does not apply to terminal states', () => {
     for (const status of TERMINAL_STATUSES) {
       const result = transition({ from: status, event: 'execution.failed' });
       expect(ok(result)).toBe(false);
@@ -326,21 +326,21 @@ describe('execution.failed 的 `*` 边', () => {
   });
 });
 
-describe('纯函数性质', () => {
-  it('相同输入产生相同结果（无隐藏状态）', () => {
+describe('Pure-function properties', () => {
+  it('the same input produces the same result (no hidden state)', () => {
     const a = transition({ from: 'pending', event: 'included' });
     const b = transition({ from: 'pending', event: 'included' });
     expect(a).toEqual(b);
   });
 
-  it('不修改入参对象', () => {
+  it('does not mutate the input object', () => {
     const input = { from: 'dropped' as TransactionStatus, event: 'rebroadcast' as TransactionEvent };
     const snapshot = { ...input };
     transition(input);
     expect(input).toEqual(snapshot);
   });
 
-  it('拒绝结果携带原始 from/event 以便审计', () => {
+  it('a rejected result carries the original from/event for audit', () => {
     const result = transition({ from: 'pending', event: 'finalized' });
     expect(ok(result)).toBe(false);
     if (!ok(result)) {
@@ -366,20 +366,20 @@ describe('TX-04: failed explicit retry records indeterminate without enabling au
   });
 });
 
-describe('dropped 收敛边（ADR-023）', () => {
-  // 为什么必须有这三条边：`dropped` 是**判断**不是事实。误判后若交易实际上链，
-  // 缺少收敛边会让记录永久停在 dropped——对已确认的交易报告"已丢弃"。
+describe('dropped convergence edges (ADR-023)', () => {
+  // Why these three edges must exist: `dropped` is a **judgment**, not a fact. If the transaction actually lands on-chain after a misjudgment,
+  // missing convergence edges would leave the record stuck in dropped forever — reporting "dropped" for a confirmed transaction.
   it.each([
     ['mempool.entered', 'pending'],
     ['included', 'included'],
     ['replaced', 'replaced'],
   ] as const)('dropped + %s → %s', (event, to) => {
     const result = transition({ from: 'dropped', event });
-    expect(ok(result), `dropped + ${event} 应被允许：${JSON.stringify(result)}`).toBe(true);
+    expect(ok(result), `dropped + ${event} should be allowed: ${JSON.stringify(result)}`).toBe(true);
     if (ok(result)) expect(result.status).toBe(to);
   });
 
-  it('dropped → broadcast 仍必须显式 rebroadcast: true（不得因新增边而放松）', () => {
+  it('dropped → broadcast still requires an explicit rebroadcast: true (must not be relaxed by the new edges)', () => {
     const without = transition({ from: 'dropped', event: 'rebroadcast' });
     expect(ok(without)).toBe(false);
     if (!ok(without)) expect(without.reason).toBe('REBROADCAST_FLAG_REQUIRED');
@@ -389,7 +389,7 @@ describe('dropped 收敛边（ADR-023）', () => {
     if (ok(withFlag)) expect(withFlag.status).toBe('broadcast');
   });
 
-  it('dropped 仍不是终态，且不得出现 dropped → signed/failed 之类的新边', () => {
+  it('dropped is still not terminal, and no new edges like dropped → signed/failed may appear', () => {
     expect(TERMINAL_STATUSES).not.toContain('dropped');
     expect(ok(transition({ from: 'dropped', event: 'broadcast.accepted' }))).toBe(false);
     expect(ok(transition({ from: 'dropped', event: 'broadcast.rejected' }))).toBe(false);

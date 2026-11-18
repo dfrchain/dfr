@@ -4,15 +4,16 @@
 > currently supports the Base Sepolia, Arbitrum Sepolia, and Ethereum Sepolia
 > testnets, and Solana devnet.
 >
-> DFR 是多链开发者接入层，目前支持 Base Sepolia、Arbitrum Sepolia、
-> Ethereum Sepolia 测试网与 Solana devnet。
+> DFR is a multi-chain developer access layer, currently supporting the
+> Base Sepolia, Arbitrum Sepolia, and Ethereum Sepolia testnets, and
+> Solana devnet.
 
 This guide is assembled from the repository's own documentation
 (`docs/api/README.md`, the root `README.md`, and `AGENTS.md`). Commands below
 are taken from those documents and from `package.json`; **none of them were
 run to verify this staging snapshot** (no build or test run was performed
 while preparing it) — treat every command as not yet tested here
-（未实测）until you run it yourself.
+(not yet verified in practice) until you run it yourself.
 
 ## Prerequisites
 

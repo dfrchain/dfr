@@ -1,26 +1,26 @@
 /**
- * 广播结果分类与 `unknown` 解析（DFR-M1-C03b，ADR-019）。
+ * Broadcast result classification and `unknown` resolution (DFR-M1-C03b, ADR-019).
  *
- * 本模块是**纯函数**：不接触 Store、链、Provider 或时钟，只回答两个问题：
+ * This module is a **pure function**: it touches no Store, chain, Provider, or clock; it only answers two questions:
  *
- *   1. 这次广播失败是"可证明不可自愈的拒绝"，还是"结果不确定"？
- *   2. 一次链上观测能把 `unknown` 解析成哪个状态（或仍无法解析）？
+ *   1. Is this broadcast failure a "provably non-self-healing rejection", or "outcome indeterminate"?
+ *   2. Which state (or still unresolvable) can one on-chain observation resolve `unknown` into?
  *
- * 为什么必须是纯函数：TransactionEngine 在广播超时时用第 1 问落 `unknown`，
- * M1-D03 的启动恢复扫描在进程重启后用第 2 问继续解析。两处共用同一实现，
- * 否则会出现"同一笔交易在请求路径与恢复路径得到不同结论"的分裂。
+ * Why it must be a pure function: the TransactionEngine uses question 1 to land on `unknown` on broadcast timeout,
+ * and the M1-D03 startup recovery scan uses question 2 to keep resolving after a process restart. Both share one implementation,
+ * otherwise the same transaction could reach different conclusions on the request path vs. the recovery path.
  *
- * 边界：不构造对外错误（错误只在其归属层构造一次，ADR-009），只返回分类枚举。
+ * Boundary: it constructs no outward-facing errors (each error is constructed exactly once, in the layer it belongs to, ADR-009); it only returns a classification enum.
  */
 import { isDfrError } from '@dfr/errors';
 import type { BlockRef } from '@dfr/types';
 import type { TransactionEvent } from './state-machine.js';
 
 /**
- * 广播失败的两种归属（ADR-019 第 3 节）。
+ * The two attributions of a broadcast failure (ADR-019, section 3).
  *
- * - `rejected`：节点**明确拒绝**且不可自愈 → `signed + broadcast.rejected → failed`（终态）。
- * - `indeterminate`：无法判定是否已进入链/mempool → `signed + broadcast.indeterminate → unknown`。
+ * - `rejected`: the node **explicitly rejected** it and it cannot self-heal -> `signed + broadcast.rejected -> failed` (terminal state).
+ * - `indeterminate`: cannot tell whether it reached the chain/mempool -> `signed + broadcast.indeterminate -> unknown`.
  */
 export type BroadcastFailureClass = 'rejected' | 'indeterminate';
 
@@ -46,43 +46,43 @@ const REJECTED_CODES: ReadonlySet<string> = new Set([
   'DFR_BLOCKHASH_EXPIRED',
 ]);
 
-/** 分类一次广播失败。非 `DfrError` 一律按不确定处理（不猜测）。 */
+/** Classify one broadcast failure. Anything that is not a `DfrError` is treated as indeterminate (never guess). */
 export function classifyBroadcastFailure(error: unknown): BroadcastFailureClass {
   if (!isDfrError(error)) return 'indeterminate';
   return REJECTED_CODES.has(error.code) ? 'rejected' : 'indeterminate';
 }
 
 /**
- * 链上观测（由 composition root 用 Adapter 的能力实现）。
+ * An on-chain observation (implemented by the composition root using an Adapter capability).
  *
- * 刻意是"观测"而不是"结论"：Adapter 只报告它**看到**了什么，
- * 由本模块（纯函数）决定对应哪个状态事件，避免 Adapter 侵入状态语义。
+ * Deliberately an "observation", not a "conclusion": the Adapter only reports what it **saw**,
+ * and this module (a pure function) decides which state event that maps to, so the Adapter never intrudes into state semantics.
  */
 export type ChainBroadcastObservation =
-  /** 按 expectedHash 查到交易且已有区块引用。 */
+   /** Found the transaction by expectedHash and it already has a block reference. */
   | {
       readonly kind: 'included';
       readonly txHash: string;
       readonly blockRef?: BlockRef;
       readonly canonicalBlockHash?: string;
     }
-  /** 按 expectedHash 查到交易但尚未上链（在我们查询的端点看来在 mempool）。 */
+   /** Found the transaction by expectedHash but it is not on-chain yet (in the mempool, as far as the endpoint we queried can see). */
   | { readonly kind: 'pending'; readonly txHash: string }
-  /** 该 nonce 已被另一笔交易消耗，且按 expectedHash 查不到本人交易。 */
+   /** This nonce has already been consumed by another transaction, and our own transaction cannot be found by expectedHash. */
   | { readonly kind: 'replaced'; readonly nonce: string; readonly byTxHash?: string }
   /**
-   * 按 expectedHash 查不到，且该 nonce 仍未被占用。
+    * Not found by expectedHash, and the nonce is still unoccupied.
    *
-   * **不等于 `dropped`**：mempool 传播是异步的，其它端点可能仍持有这笔交易。
-   * 因此本模块把它解析为 `null`（保持 `unknown`）；只有 M1-D03 在
-   * `dropTimeoutMs` 窗口之后才允许据此判 `dropped`。
+    * **Not the same as `dropped`**: mempool propagation is asynchronous; other endpoints may still hold this transaction.
+    * This module therefore resolves it to `null` (stays `unknown`); only M1-D03, after the
+    * `dropTimeoutMs` window, may use this to judge it `dropped`.
    */
   | { readonly kind: 'absent' };
 
 /**
- * 把一次观测解析为 `unknown` 的状态出边事件。
+ * Resolve one observation into an outbound event from the `unknown` state.
  *
- * 返回 `null` 表示"仍无法解析"，调用方保持 `unknown`（不是失败，也不是丢弃）。
+ * Returning `null` means "still unresolvable"; the caller stays `unknown` (neither a failure nor a drop).
  */
 export function resolveUnknownOutcome(
   observation: ChainBroadcastObservation,

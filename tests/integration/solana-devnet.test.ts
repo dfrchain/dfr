@@ -1,11 +1,11 @@
 /**
- * Solana devnet 真实只读联调（M2-A03）。
+ * Solana devnet real read-only integration test (M2-A03).
  *
- * 默认跳过：CI 与本地默认运行不依赖公网 RPC。
- * 显式开启：
+ * Skipped by default: CI and default local runs do not depend on public RPC.
+ * Enable explicitly:
  *   DFR_RUN_SOLANA=1 pnpm vitest run tests/integration/solana-devnet.test.ts
  *
- * 全程只读：getVersion / getSlot / getLatestBlockhash / getAccountInfo / getBlock。
+ * Read-only throughout: getVersion / getSlot / getLatestBlockhash / getAccountInfo / getBlock.
  */
 import { describe, expect, it } from 'vitest';
 import { DfrCore } from '@dfr/core';
@@ -28,14 +28,14 @@ function makeCore(): DfrCore {
   });
   return new DfrCore({
     registry,
-    // M2 里程碑会加载全部 <=M2 的链（含 EVM 链），因此两个 Adapter 都要注册。
+    // The M2 milestone loads all chains <= M2 (including EVM chains), so both Adapters must be registered.
     adapters: [
       { id: 'evm', version: '0.1.0', create: (chain) => new EvmAdapter({ chain }) },
       { id: 'solana', version: '0.1.0', create: (chain) => new SolanaAdapter({ chain }) },
     ],
     milestone: 'M2',
-    // M1+ 要求完整的交易 Store；本测试只驱动只读路径，用替身即可
-    // （生产路径必须用 @dfr/storage-postgres，见 ADR-014）。
+    // M1+ requires a complete transaction Store; this test only drives the read-only path, so a stand-in is enough
+    // (the production path must use @dfr/storage-postgres, see ADR-014).
     transactionStores: createInMemoryTransactionStores(),
   });
 }
@@ -45,20 +45,20 @@ const ctx = {
   signal: new AbortController().signal,
 };
 
-describe.skipIf(!ENABLED)('Solana devnet 真实只读联调（M2-A03）', () => {
-  it('Core 在 M2 里程碑下加载 solana-devnet', () => {
+describe.skipIf(!ENABLED)('Solana devnet real read-only integration test (M2-A03)', () => {
+  it('Core loads solana-devnet under the M2 milestone', () => {
     expect(makeCore().listChains().map((c) => c.id)).toContain('solana-devnet');
   });
 
-  it('getChainInfo 返回真实 slot 与 solana-core 版本', async () => {
+  it('getChainInfo returns the real slot and solana-core version', async () => {
     const info = await makeCore().getChainInfo(DEVNET, ctx);
     expect(info.family).toBe('solana');
     expect(BigInt(info.slot ?? '0')).toBeGreaterThan(100_000_000n);
-    expect(info.height, '不得伪装 EVM 高度').toBeUndefined();
+    expect(info.height, 'must not fake an EVM height').toBeUndefined();
     expect(typeof info.nodeVersion).toBe('string');
   }, 30_000);
 
-  it('getBalance 返回 Wrapped SOL 账户的 lamports（十进制字符串）', async () => {
+  it('getBalance returns the lamports of a Wrapped SOL account (decimal string)', async () => {
     const balance = await makeCore().getBalance(
       { chain: DEVNET, account: { chain: DEVNET, address: WRAPPED_SOL } },
       ctx,
@@ -68,7 +68,7 @@ describe.skipIf(!ENABLED)('Solana devnet 真实只读联调（M2-A03）', () => 
     expect(/^\d+$/u.test(String(balance.amount))).toBe(true);
   }, 30_000);
 
-  it('getBlock 用真实 slot 读取区块（slot / blockhash 一致）', async () => {
+  it('getBlock reads a block with a real slot (slot / blockhash consistent)', async () => {
     const core = makeCore();
     const info = await core.getChainInfo(DEVNET, ctx);
     const slot = (BigInt(info.slot!) - 32n).toString(10);
@@ -76,12 +76,12 @@ describe.skipIf(!ENABLED)('Solana devnet 真实只读联调（M2-A03）', () => 
     expect(block).not.toBeNull();
     expect(block!.slot).toBe(slot);
     expect(typeof block!.hash).toBe('string');
-    expect(block!.number, 'Solana 区块不得带 EVM number').toBeUndefined();
+    expect(block!.number, 'a Solana block must not carry an EVM number').toBeUndefined();
   }, 30_000);
 
-  it('getTransaction 用真实签名查询（M2-B04）', async () => {
+  it('getTransaction queries with a real signature (M2-B04)', async () => {
     const core = makeCore();
-    // 取 Wrapped SOL 账户的最近一笔真实签名，再按签名查询。
+    // Take the most recent real signature of the Wrapped SOL account, then query by signature.
     const sig = await fetch('https://api.devnet.solana.com', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -99,11 +99,11 @@ describe.skipIf(!ENABLED)('Solana devnet 真实只读联调（M2-A03）', () => 
     expect(tx!.chain).toBe('solana-devnet');
     expect(['included', 'failed']).toContain(tx!.status);
     if (tx!.blockRef !== undefined) expect(tx!.blockRef.kind).toBe('slot');
-    expect(tx!.nonce, 'Solana 交易不得带 EVM nonce').toBeUndefined();
+    expect(tx!.nonce, 'a Solana transaction must not carry an EVM nonce').toBeUndefined();
     expect(tx!.fee).toBeDefined();
   }, 30_000);
 
-  it('number 定位被显式拒绝（fail-closed，不是静默降级）', async () => {
+  it('number-based lookup is explicitly rejected (fail-closed, not a silent downgrade)', async () => {
     await expect(
       makeCore().getBlock(DEVNET, { kind: 'number', number: '1' as never }, ctx),
     ).rejects.toMatchObject({ code: 'DFR_UNSUPPORTED_CAPABILITY' });

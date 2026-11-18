@@ -1,9 +1,9 @@
-// Core / Adapter / Provider 三层指标契约测试（observability-spec §5.2/§5.3/§5.4）。
+// Core / Adapter / Provider three-layer metrics contract test (observability-spec §5.2/§5.3/§5.4).
 //
-// 重点不是"能不能渲染"，而是三条容易做错的纪律：
-//   1. 标签全部有界（chain / provider_id / method_class / error_code …）；
-//   2. **不伪造未实现的指标**（provider 成本、未配置的配额）；
-//   3. 读写分类正确（只有 broadcast 是写）。
+// The point is not "can it render", but three disciplines that are easy to get wrong:
+//   1. all labels are bounded (chain / provider_id / method_class / error_code …);
+//   2. **do not fabricate unimplemented metrics** (provider cost, unconfigured quotas);
+//   3. read/write classification is correct (only broadcast is a write).
 import { createServer } from 'node:http';
 import { describe, expect, it, vi } from 'vitest';
 import { hashSecret } from '../src/index.js';
@@ -46,8 +46,8 @@ const PROVIDER_RECORD: ProviderCallRecord = {
   failover: false,
 };
 
-describe('CoreMetrics（§5.2）', () => {
-  it('操作计数 / 耗时 / 错误分类', () => {
+describe('CoreMetrics (§5.2)', () => {
+  it('operation counts / durations / error classification', () => {
     const m = new CoreMetrics();
     m.recordOperation(CORE_RECORD);
     m.recordOperation({
@@ -68,11 +68,11 @@ describe('CoreMetrics（§5.2）', () => {
     expect(out).toContain(
       'dfr_core_errors_total{error_code="DFR_CHAIN_UNAVAILABLE",category="availability"} 1',
     );
-    // 成功不产生 error 计数。
+    // Success produces no error count.
     expect(out).not.toContain('error_code="none",category');
   });
 
-  it('capability 不支持单独计数（正常为 0）', () => {
+  it('unsupported capabilities are counted separately (normally 0)', () => {
     const m = new CoreMetrics();
     m.recordCapabilityUnsupported({ chain: 'base-sepolia', capability: 'transaction.broadcast' });
     expect(m.renderPrometheus()).toContain(
@@ -81,8 +81,8 @@ describe('CoreMetrics（§5.2）', () => {
   });
 });
 
-describe('AdapterMetrics（§5.3）', () => {
-  it('调用计数带 adapter / version / method_class，错误单独计数', () => {
+describe('AdapterMetrics (§5.3)', () => {
+  it('call counts carry adapter / version / method_class, with errors counted separately', () => {
     const m = new AdapterMetrics();
     m.recordCall(ADAPTER_RECORD);
     m.recordCall({
@@ -105,7 +105,7 @@ describe('AdapterMetrics（§5.3）', () => {
     );
   });
 
-  it('registry 不一致计数器（spec §8：应为 0）', () => {
+  it('registry inconsistency counter (spec §8: should be 0)', () => {
     const m = new AdapterMetrics();
     m.recordRegistryMismatch('ethereum-sepolia');
     expect(m.renderPrometheus()).toContain(
@@ -114,8 +114,8 @@ describe('AdapterMetrics（§5.3）', () => {
   });
 });
 
-describe('ProviderMetrics（§5.4）', () => {
-  it('请求计数 / 耗时 / 重试按方法类别计数', () => {
+describe('ProviderMetrics (§5.4)', () => {
+  it('request counts / durations / retries counted by method class', () => {
     const m = new ProviderMetrics();
     m.recordCall(PROVIDER_RECORD);
     m.recordCall({ ...PROVIDER_RECORD, status: 'error', errorCode: 'DFR_PROVIDER_TIMEOUT', retryCount: 2 });
@@ -124,13 +124,13 @@ describe('ProviderMetrics（§5.4）', () => {
       'dfr_provider_requests_total{provider_id="ethereum-sepolia-primary",chain="ethereum-sepolia",method_class="read",status="success",error_code="none"} 1',
     );
     expect(out).toContain('dfr_provider_request_duration_seconds_count{provider_id="ethereum-sepolia-primary",chain="ethereum-sepolia"} 2');
-    // retry_count = 2 → 重试计数加 2（不是加 1）。
+    // retry_count = 2 → the retry count increases by 2 (not by 1).
     expect(out).toContain(
       'dfr_provider_retries_total{provider_id="ethereum-sepolia-primary",chain="ethereum-sepolia",reason="read"} 2',
     );
   });
 
-  it('gauge：可用率 / 错误率 / 评分 / 熔断状态（0/1 三序列）', () => {
+  it('gauges: availability / error rate / score / circuit-breaker state (three 0/1 series)', () => {
     const m = new ProviderMetrics();
     const snapshot: ProviderObservabilitySnapshot = {
       providerId: 'ethereum-sepolia-primary',
@@ -151,13 +151,13 @@ describe('ProviderMetrics（§5.4）', () => {
     expect(out).toContain('dfr_provider_availability_ratio{provider_id="ethereum-sepolia-primary",chain="ethereum-sepolia"} 0.75');
     expect(out).toContain('dfr_provider_error_ratio{provider_id="ethereum-sepolia-primary",chain="ethereum-sepolia"} 0.25');
     expect(out).toContain('dfr_provider_score{provider_id="ethereum-sepolia-primary",chain="ethereum-sepolia"} 73');
-    // 熔断状态用 state 标签的三条 0/1 序列，便于 SUM/告警。
+    // Circuit-breaker state uses three 0/1 series with a state label, for SUM/alerting.
     expect(out).toContain('dfr_provider_circuit_state{provider_id="ethereum-sepolia-primary",chain="ethereum-sepolia",state="open"} 1');
     expect(out).toContain('dfr_provider_circuit_state{provider_id="ethereum-sepolia-primary",chain="ethereum-sepolia",state="closed"} 0');
     expect(out).toContain('dfr_provider_circuit_state{provider_id="ethereum-sepolia-primary",chain="ethereum-sepolia",state="half-open"} 0');
   });
 
-  it('健康窗口无样本时可用率为 1（新注册 Provider 不得被判成"完全不可用"）', () => {
+  it('availability is 1 when the health window has no samples (a newly registered Provider must not be judged "fully unavailable")', () => {
     const m = new ProviderMetrics();
     m.refreshGauges({
       'ethereum-sepolia': [
@@ -177,7 +177,7 @@ describe('ProviderMetrics（§5.4）', () => {
     expect(m.renderPrometheus()).toContain('dfr_provider_availability_ratio{provider_id="fresh",chain="ethereum-sepolia"} 1');
   });
 
-  it('未配置 quota 时不暴露 quota_used_ratio（不伪造 0 或 1）', () => {
+  it('quota_used_ratio is not exposed when no quota is configured (no fabricated 0 or 1)', () => {
     const m = new ProviderMetrics();
     m.refreshGauges({
       'ethereum-sepolia': [
@@ -207,19 +207,19 @@ describe('ProviderMetrics（§5.4）', () => {
     expect(m.renderPrometheus()).toContain('dfr_provider_quota_used_ratio{provider_id="no-quota",chain="ethereum-sepolia"} 0.4');
   });
 
-  it('不暴露未实现的 provider 成本指标（伪造恒为 0 比不暴露更危险）', () => {
+  it('unimplemented provider cost metrics are not exposed (a fabricated constant 0 is more dangerous than not exposing)', () => {
     const m = new ProviderMetrics();
     m.recordCall(PROVIDER_RECORD);
-    // spec §5.4 列了 `dfr_provider_cost_usd_total`，但 M1 没有成本核算子系统；
-    // descriptor 里的 priceUsd 是单价、不是累计费用。宁可不暴露。
+    // spec §5.4 lists `dfr_provider_cost_usd_total`, but M1 has no cost-accounting subsystem;
+    // the descriptor's priceUsd is a unit price, not a cumulative cost. Better not to expose it.
     expect(m.renderPrometheus()).not.toContain('cost_usd');
   });
 });
 
-describe('三层指标标签纪律', () => {
-  it('高基数形态的值（地址 / 哈希 / URL）不会原样进入标签', () => {
+describe('three-layer metrics label discipline', () => {
+  it('high-cardinality values (addresses / hashes / URLs) never enter labels as-is', () => {
     const m = new AdapterMetrics();
-    // 模拟"把地址当 chain 传"的最坏情况。
+    // Simulate the worst case of "passing an address as chain".
     m.recordCall({
       ...ADAPTER_RECORD,
       chain: `0x${'ab'.repeat(32)}` as never,
@@ -230,9 +230,9 @@ describe('三层指标标签纪律', () => {
   });
 });
 
-describe('三层指标的端到端接线（真实 startGateway + 真实 RPC）', () => {
-  it('一次链上读同时产生 Core / Adapter / Provider 三族指标', async () => {
-    // 本地最小 JSON-RPC：让请求真的穿过 Core → Adapter → Provider。
+describe('three-layer metrics end-to-end wiring (real startGateway + real RPC)', () => {
+  it('one on-chain read produces all three Core / Adapter / Provider metric families', async () => {
+    // A local minimal JSON-RPC: let the request really pass through Core → Adapter → Provider.
     const rpc = createServer((req, res) => {
       let body = '';
       req.on('data', (c: Buffer) => {
@@ -300,15 +300,15 @@ describe('三层指标的端到端接线（真实 startGateway + 真实 RPC）',
       // §5.3 Adapter
       expect(text).toContain('dfr_adapter_calls_total{adapter="evm",adapter_version="0.1.0"');
       expect(text).toContain('dfr_adapter_call_duration_seconds_count');
-      // §5.4 Provider（含 gauge，启动时已刷过一次）
+      // §5.4 Provider (with gauges, refreshed once at startup)
       expect(text).toContain('dfr_provider_requests_total');
       expect(text).toContain('dfr_provider_score{provider_id="base-sepolia-primary"');
       expect(text).toContain('dfr_provider_circuit_state{provider_id="base-sepolia-primary"');
-      // base-sepolia 未配置 quota → 不暴露该指标。
+      // base-sepolia has no quota configured → that metric is not exposed.
       expect(text).not.toContain('dfr_provider_quota_used_ratio');
-      // 未实现的成本指标不得出现。
+      // Unimplemented cost metrics must not appear.
       expect(text).not.toContain('cost_usd');
-      // 不得泄漏 RPC 端点。
+      // RPC endpoints must not leak.
       expect(text).not.toContain('127.0.0.1');
     } finally {
       await app?.close();

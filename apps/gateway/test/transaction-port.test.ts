@@ -1,11 +1,11 @@
 /**
- * M1 写路径端口装配测试（DFR-M1-B07）。
+ * M1 write-path port assembly test (DFR-M1-B07).
  *
- * 这里不mock：真实的 `DfrCore` + `EvmAdapter` + 可编程 Provider 替身走完整
- * Adapter → Provider 传输链，验证 composition root 装配出来的端口确实：
- *   1. 用 `eth_getTransactionCount(from,'pending')` 读 nonce 并转十进制字符串；
- *   2. 把引擎分配的 nonce 原样交给 Adapter build（不重新查 nonce）；
- *   3. simulate 使用记录里的 `from`（B03 载荷路径不含发送方，必须由这里补上）。
+ * No mocks here: a real `DfrCore` + `EvmAdapter` + programmable Provider stand-in walks the full
+ * Adapter → Provider transport chain, verifying the port assembled by the composition root really:
+ *   1. reads the nonce with `eth_getTransactionCount(from,'pending')` and converts it to a decimal string;
+ *   2. hands the engine-allocated nonce to Adapter build as-is (without re-reading the nonce);
+ *   3. simulate uses the record's `from` (the B03 payload path carries no sender, so it must be supplied here).
  */
 import { describe, expect, it } from 'vitest';
 import { DfrCore } from '@dfr/core';
@@ -114,7 +114,7 @@ function harness(): { port: ReturnType<typeof createCoreTransactionChainPort>; c
     milestone: 'M1',
     fetchImpl,
     transactionStores: {
-      // 本文件只测端口，不触碰 Store；任一被调用都说明装配越界。
+      // This file only tests the port and never touches the Store; any call to one means the assembly overreached.
       transaction: {} as never,
       idempotency: {} as never,
       nonce: {} as never,
@@ -124,8 +124,8 @@ function harness(): { port: ReturnType<typeof createCoreTransactionChainPort>; c
   return { port: createCoreTransactionChainPort(core), calls };
 }
 
-describe('createCoreTransactionChainPort（DFR-M1-B07 装配）', () => {
-  it('getPendingNonce 读 eth_getTransactionCount(from,"pending") 并返回十进制字符串', async () => {
+describe('createCoreTransactionChainPort (DFR-M1-B07 assembly)', () => {
+  it('getPendingNonce reads eth_getTransactionCount(from,"pending") and returns a decimal string', async () => {
     const { port, calls } = harness();
     const nonce = await port.getPendingNonce!({
       chain: CHAIN,
@@ -140,7 +140,7 @@ describe('createCoreTransactionChainPort（DFR-M1-B07 装配）', () => {
     expect(call?.params).toEqual([FROM.address, 'pending']);
   });
 
-  it('build 把引擎分配的 nonce 原样交给 Adapter（不再查链上 nonce）', async () => {
+  it('build hands the engine-allocated nonce to the Adapter as-is (no longer reading the on-chain nonce)', async () => {
     const { port, calls } = harness();
     const unsigned = await port.build({
       request: {
@@ -157,12 +157,12 @@ describe('createCoreTransactionChainPort（DFR-M1-B07 装配）', () => {
     expect(unsigned.chain).toBe(CHAIN);
     expect(unsigned.meta.requiresNonce).toBe('42');
     expect(unsigned.meta.chainIdForSigning).toBe('11155111');
-    // 显式 nonce 路径不得再读 nonce，否则租约与载荷可能不一致。
+    // The explicit-nonce path must not read the nonce again, or the lease and payload could disagree.
     expect(calls.filter((c) => c.method === 'eth_getTransactionCount')).toHaveLength(0);
     expect(calls.filter((c) => c.method === 'eth_estimateGas')).toHaveLength(1);
   });
 
-  it('simulate 使用记录里的 from（载荷本身不含发送方）', async () => {
+  it('simulate uses the record's from (the payload itself carries no sender)', async () => {
     const { port, calls } = harness();
     const unsigned = await port.build({
       request: {
@@ -219,8 +219,8 @@ describe('createCoreTransactionChainPort（DFR-M1-B07 装配）', () => {
     expect(calls.some(c => c.method === 'eth_sendRawTransaction')).toBe(false);
   });
 
-  it('broadcast 把记录真值（from + unsigned 载荷）随 options 传给 Core（M1-C03a）', async () => {
-    // 这里用替身 Core：本用例只验证 composition root 的搬运，不重复 Adapter 的链语义测试。
+  it('broadcast passes the record's true values (from + unsigned payload) to Core with options (M1-C03a)', async () => {
+    // A stand-in Core is used here: this case only verifies the composition root's carrying, not repeating the Adapter's chain-semantics tests.
     const captured: { chainId?: string; options?: Record<string, unknown> } = {};
     const stubCore = {
       async broadcastTransaction(
@@ -256,13 +256,13 @@ describe('createCoreTransactionChainPort（DFR-M1-B07 装配）', () => {
     });
 
     expect(captured.chainId).toBe(CHAIN);
-    // 记录真值必须原样到达 Adapter 层；客户端回传的 unsigned 不能替代它。
+    // The record's true values must reach the Adapter layer as-is; the unsigned echoed back by the client cannot substitute for them.
     expect(captured.options?.['expectedFrom']).toEqual(FROM);
     expect(captured.options?.['expectedUnsignedPayload']).toBe('0x02aa');
     expect(captured.options?.['rebroadcast']).toBe(true);
   });
 
-  it('confirm 经 Adapter 单次观测并由 Registry unverified 策略 fail-closed', async () => {
+  it('confirm observes once via the Adapter and fails closed under the Registry unverified policy', async () => {
     const { port, calls } = harness();
     const result = await port.confirm!({
       chain: CHAIN,
@@ -279,7 +279,7 @@ describe('createCoreTransactionChainPort（DFR-M1-B07 装配）', () => {
     expect(calls.some((call) => call.method === 'eth_sendRawTransaction')).toBe(false);
   });
 
-  it('非 EVM 链族 fail-closed（不静默降级成别家 Adapter）', async () => {
+  it('non-EVM chain families fail closed (never silently degrade to another family's Adapter)', async () => {
     const { port } = harness();
     await expect(
       port.getPendingNonce!({

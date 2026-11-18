@@ -1,8 +1,9 @@
-# 隔离 staging 故障演练（不触碰任何共享 M4 容器）。
+# Isolated staging fault drill (touches no shared M4 container).
 #
-# 专用容器名、端口、卷，避免与 docker-compose.test.yml / docker-compose.m1.yml 冲突。
-# 口令由 scripts/staging-fault-drill.sh 在运行时生成，仅通过环境变量注入，
-# 不写入仓库、不回显。
+# Dedicated container names, ports, and volumes, to avoid clashing with
+# docker-compose.test.yml / docker-compose.m1.yml. Passwords are generated at
+# runtime by scripts/staging-fault-drill.sh, injected only via environment
+# variables, never written to the repository or echoed.
 name: dfr-staging-fault-drill
 
 services:
@@ -30,4 +31,3 @@ services:
 
 volumes:
   dfr-staging-drill-data:
-

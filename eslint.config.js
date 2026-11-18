@@ -1,5 +1,5 @@
-// DFR ESLint 配置（flat config，ESLint 9+）
-// 见 docs/adr/ADR-001-monorepo.md
+// DFR ESLint config (flat config, ESLint 9+)
+// See docs/adr/ADR-001-monorepo.md
 import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
 
@@ -22,14 +22,14 @@ export default tseslint.config(
       sourceType: 'module',
     },
     rules: {
-      // 类型契约包大量使用 type-only 导出，此规则与 verbatimModuleSyntax 冲突时以 tsconfig 为准
+      // The type-contract packages make heavy use of type-only exports; when this rule conflicts with verbatimModuleSyntax, tsconfig wins
       '@typescript-eslint/consistent-type-imports': 'error',
       '@typescript-eslint/no-explicit-any': 'error',
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
     },
   },
   {
-    // 配置文件自身使用 ESM + 无类型信息
+    // The config files themselves use ESM + no type information
     files: ['*.config.js', '*.config.ts'],
     rules: {
       '@typescript-eslint/no-require-imports': 'off',

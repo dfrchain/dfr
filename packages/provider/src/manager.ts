@@ -1,13 +1,13 @@
 /**
- * Provider Manager / Router（DFR-007，见 provider-spec 第 8 章）。
+ * Provider Manager / Router (DFR-007, see provider-spec chapter 8).
  *
- * 对外只暴露 `acquire(requirements)`；Adapter 拿到句柄后调用 `request()`，
- * 候选过滤、评分、加权选择、失败切换与重试都发生在 Manager 内部。
+ * Externally, only `acquire(requirements)` is exposed; after the Adapter gets a handle it calls `request()`,
+ * and candidate filtering, scoring, weighted selection, failover, and retries all happen inside the Manager.
  *
- * 关键约束：
- * - 更换 RPC Provider 不需要修改 Adapter；
- * - 全部 Provider 不可用 → DFR_CHAIN_UNAVAILABLE（fail-closed，不返回过期缓存）；
- * - 广播类（non-idempotent-write）绝不自动重试。
+ * Key constraints:
+ * - switching RPC Providers must not require Adapter changes;
+ * - All Providers unavailable -> DFR_CHAIN_UNAVAILABLE (fail-closed, no stale cache returned);
+ * - broadcast (non-idempotent-write) is never auto-retried.
  */
 import { randomBytes } from 'node:crypto';
 import { createDfrError, isDfrError, newRequestId } from '@dfr/errors';
@@ -32,7 +32,7 @@ import {
   type TransportContext,
 } from './transport.js';
 
-/** 每次 Provider 调用产出的观测记录（provider-spec 第 9 章字段）。 */
+/** The observation record produced by each Provider call (provider-spec chapter 9 fields). */
 export interface ProviderCallRecord {
   requestId: RequestId;
   traceId?: string | undefined;
@@ -53,18 +53,18 @@ export interface ProviderCallRecord {
 }
 
 /**
- * 单个 Provider 的观测快照（observability-spec §5.4 的 gauge 数据源）。
+ * A single Provider's observation snapshot (the observability-spec §5.4 gauge data source).
  *
- * `quotaUsedRatio` 为可选：未配置 `quota.requestsPerDay` 时**不提供**该值，
- * 而不是伪造 0 或 1——见 `observabilitySnapshot()` 的说明。
+ * `quotaUsedRatio` is optional: when `quota.requestsPerDay` is not configured, the value is **not provided**,
+ * instead of fabricating 0 or 1 — see the `observabilitySnapshot()` note.
  */
 export interface ProviderObservabilitySnapshot {
   readonly providerId: string;
   readonly network: string;
   readonly health: Provider['healthSnapshot'] extends (now: number) => infer H ? H : never;
-  /** 读路径熔断器状态；写路径另有独立熔断器（spec 第 7 章）。 */
+  /** Read-path circuit-breaker state; the write path has its own separate breaker (spec chapter 7). */
   readonly circuitState: string;
-  /** 与选路时**同一个**评分公式算出的分数，保证口径一致。 */
+  /** The score computed with the **same** scoring formula as at routing time, keeping the wording consistent. */
   readonly score: number;
   readonly quotaUsedRatio?: number;
 }
@@ -79,15 +79,15 @@ export interface ProviderManagerOptions {
   random?: () => number;
   sleep?: (ms: number) => Promise<void>;
   onCall?: (record: ProviderCallRecord) => void;
-  /** safe-read 重试预算上限，默认 3（spec 第 6 章）。 */
+  /** The safe-read retry budget cap, default 3 (spec chapter 6). */
   maxSafeReadRetries?: number;
-  /** idempotent-write 是否允许同 Provider 重试一次；默认 false（需显式授权）。 */
+  /** Whether idempotent-write may retry once on the same Provider; default false (explicit authorization required). */
   allowIdempotentWriteRetry?: boolean;
   /**
-   * E5：跨进程 Provider 日配额 Store。
+   * E5: the cross-process Provider daily-quota Store.
    *
-   * 未提供时沿用进程内计数（向后兼容；单实例部署准确）。提供时，
-   * 每次真实调用前必须原子预占额度，存储故障即 fail-closed。
+   * Without one, in-process counting continues (backward compatible; accurate for single-instance deployments). With one,
+   * every real call must atomically reserve quota first; a storage failure fails closed.
    */
   quotaStore?: ProviderQuotaStore;
 }
@@ -107,9 +107,9 @@ export class ProviderManager implements ProviderRouter {
   private readonly providers: readonly Provider[];
   private readonly circuits = new Map<string, CircuitBreaker>();
   private readonly sticky = new Map<string, string>();
-  /** 健康探针单飞集合。 */
+  /** The health-probe single-flight set. */
   private readonly probing = new Set<string>();
-  /** 每 Provider 的当日调用计数（配额比例用）；按自然日自动滚动。 */
+  /** Each Provider's call count for the current day (for the quota ratio); rolls automatically by calendar day. */
   private readonly dailyCalls = new Map<string, { readonly day: string; count: number }>();
   private healthTimer: NodeJS.Timeout | undefined;
   private readonly now: () => number;
@@ -138,30 +138,30 @@ export class ProviderManager implements ProviderRouter {
       });
   }
 
-  /** 该链当前配置的 Provider 数量（M0 验收要求 EVM 至少 2 个）。 */
+  /** The number of Providers currently configured for the chain (M0 acceptance requires at least 2 for EVM). */
   get providerCount(): number {
     return this.providers.length;
   }
 
-  /** 按约束选择 Provider，返回只能发起调用的句柄（Adapter 看不到端点与凭证）。 */
+  /** Select a Provider by constraints, returning a handle that can only initiate calls (the Adapter never sees endpoints or credentials). */
   async acquire(requirements: ProviderRequirements = {}): Promise<ProviderHandle> {
     const chosen = this.pickCandidate(requirements);
     if (chosen === null) {
-      // 与 `request()` 的兜底一致：先区分"为什么没有候选"。
-      // 全部熔断已有专门的 `DFR_PROVIDER_CIRCUIT_OPEN`；配额耗尽此前会退化成
-      // "没有满足条件的可用 Provider"，让运维误以为是上游故障。
+      // Consistent with the `request()` fallback: first distinguish "why there is no candidate".
+      // All breakers open already has its own `DFR_PROVIDER_CIRCUIT_OPEN`; quota exhaustion used to degrade into
+      // "no available Provider meets the conditions", misleading ops into thinking it was an upstream failure.
       const quotaBlocked = this.quotaExhaustedCount(requirements);
       if (quotaBlocked > 0 && quotaBlocked === this.providerCount) {
         throw createDfrError('DFR_QUOTA_EXCEEDED', {
           requestId: newRequestId(),
-          message: `链 ${this.chain} 的全部 Provider 当日配额已用尽`,
+          message: `All Providers for chain ${this.chain} have exhausted their daily quota`
           chain: this.chain,
           details: { quotaKind: 'provider_daily', blockedProviders: quotaBlocked },
         });
       }
       throw createDfrError('DFR_CHAIN_UNAVAILABLE', {
         requestId: newRequestId(),
-        message: `链 ${this.chain} 没有满足条件的可用 Provider`,
+        message: `No available Provider for chain ${this.chain} meets the conditions`
         chain: this.chain,
       });
     }
@@ -171,7 +171,7 @@ export class ProviderManager implements ProviderRouter {
     return new ManagedProviderHandle(this, chosen.descriptor.id, requirements);
   }
 
-  /** 句柄的 request 入口：候选切换 + 重试 + 熔断 + 指标都在这里收敛。 */
+  /** The handle's request entry: candidate switching + retries + circuit breaker + metrics all converge here. */
   async execute<T>(
     call: TransportCall,
     ctx: TransportContext,
@@ -196,15 +196,15 @@ export class ProviderManager implements ProviderRouter {
 
       const { provider, descriptor } = candidate;
       tried.add(descriptor.id);
-      // 配额按"发出的调用"计数（成功与失败都算），因为上游配额通常也按请求计。
-      // E5：注入持久 Store 时，预占必须在真正请求前原子完成；拒绝或 Store 故障
-      // 都不能继续调用上游。未注入时保留原有进程内行为。
+      // Quota counts "calls issued" (successes and failures both count), because upstream quotas usually count requests too.
+      // E5: with a persistent Store injected, the reservation must atomically complete before the real request; a rejection or Store failure
+      // must not continue to the upstream. Without an injection, keep the original in-process behavior.
       const quotaDecision = await this.reserveDailyCall(descriptor);
       if (!quotaDecision.allowed) {
         if (this.hasUntried(requirements, methodClass, tried)) continue;
         throw createDfrError('DFR_QUOTA_EXCEEDED', {
           requestId: ctx.requestId as RequestId,
-          message: `链 ${this.chain} 的全部 Provider 当日配额已用尽`,
+          message: `All Providers for chain ${this.chain} have exhausted their daily quota`
           chain: this.chain,
           details: { quotaKind: 'provider_daily' },
         });
@@ -257,25 +257,25 @@ export class ProviderManager implements ProviderRouter {
 
     if (isDfrError(lastError)) throw lastError;
 
-    // 配额耗尽必须在“没有候选”之前判定：否则 acquire 已返回句柄，
-    // 但 execute 找不到候选时会误报 DFR_CHAIN_UNAVAILABLE，让运维把额度问题
-    // 当成上游故障。与 acquire() 使用同一判据，保持错误码一致。
+    // Quota exhaustion must be judged before "no candidate": otherwise acquire has already returned a handle,
+    // but execute would misreport DFR_CHAIN_UNAVAILABLE when it finds no candidate, making ops treat a quota problem
+    // as an upstream failure. Use the same criterion as acquire(), keeping the error codes consistent.
     const quotaBlocked = this.quotaExhaustedCount(requirements);
     if (quotaBlocked > 0 && quotaBlocked === this.providerCount) {
       throw createDfrError('DFR_QUOTA_EXCEEDED', {
         requestId: ctx.requestId as RequestId,
-        message: `链 ${this.chain} 的全部 Provider 当日配额已用尽`,
+        message: `All Providers for chain ${this.chain} have exhausted their daily quota`
         chain: this.chain,
         details: { quotaKind: 'provider_daily', blockedProviders: quotaBlocked },
       });
     }
 
-    // 区分"熔断打开"与"没有可用 Provider"：两者都 fail-closed，但错误码不同，
-    // 便于调用方与运维判断是"上游挂了"还是"我们主动熔断了"（error-spec 4.5）。
+    // Distinguish "breaker open" from "no available Provider": both fail closed, but with different error codes,
+    // so callers and ops can tell "the upstream is down" from "we opened the breaker ourselves" (error-spec 4.5).
     if (this.openCircuitCount(methodClass) > 0) {
       throw createDfrError('DFR_PROVIDER_CIRCUIT_OPEN', {
         requestId: ctx.requestId as RequestId,
-        message: `链 ${this.chain} 的 Provider 处于熔断状态`,
+        message: `Providers for chain ${this.chain} are in circuit-breaker state`
         chain: this.chain,
         details: { methodClass, openProviders: this.openCircuitCount(methodClass) },
       });
@@ -283,7 +283,7 @@ export class ProviderManager implements ProviderRouter {
 
     throw createDfrError('DFR_CHAIN_UNAVAILABLE', {
       requestId: ctx.requestId as RequestId,
-      message: `链 ${this.chain} 的全部 Provider 均不可用`,
+      message: `All Providers for chain ${this.chain} are unavailable`
       chain: this.chain,
       cause: lastError,
     });
@@ -295,7 +295,7 @@ export class ProviderManager implements ProviderRouter {
     ).length;
   }
 
-  /* ---------------- 候选选择 ---------------- */
+  /* ---------------- Candidate selection ---------------- */
 
   private eligibleCandidates(
     requirements: ProviderRequirements,
@@ -314,11 +314,11 @@ export class ProviderManager implements ProviderRouter {
       const circuit = this.circuitFor(descriptor.id, methodClass);
       if (!circuit.allow(now)) continue;
 
-      // provider-spec §8 第 1 步明确要求：**配额耗尽 → 剔除**。
-      // 这是规范已写、实现缺失的补齐，不是新增特性：
-      // `requestsPerDay: 500000` 此前只喂 gauge 与评分，DFR 照样会发出第 500001 次调用，
-      // 把上游的额度打爆（并可能触发对方的封禁）。
-      // 只约束**显式配置了** requestsPerDay 的 Provider：未配置 = 不限额（与此前行为一致）。
+      // provider-spec §8 step 1 explicitly requires: **quota exhausted → exclude**.
+      // This fills a gap the spec already wrote but the implementation lacked; it is not a new feature:
+      // with `requestsPerDay: 500000`, DFR would still issue the 500001st call, having only fed the gauge and the score before,
+      // blowing up the upstream quota (and possibly triggering a ban from them).
+      // Only Providers with requestsPerDay **explicitly configured** are constrained: unconfigured = unlimited (same behavior as before).
       if (this.dailyQuotaExhausted(descriptor)) continue;
 
       const health = provider.healthSnapshot(now);
@@ -384,7 +384,7 @@ export class ProviderManager implements ProviderRouter {
     );
   }
 
-  /** 前 2 个候选做加权随机（spec 第 8 章第 3 步）。 */
+  /** Weighted random among the top 2 candidates (spec chapter 8 step 3). */
   private weightedTop2(candidates: readonly Candidate[]): Candidate {
     const pool = candidates.slice(0, 2);
     const first = pool[0] as Candidate;
@@ -441,23 +441,23 @@ export class ProviderManager implements ProviderRouter {
     });
   }
 
-  /* ---------------- 运维观测 ---------------- */
+  /* ---------------- Ops observation ---------------- */
 
-  /** 健康快照（供巡检脚本或指标导出使用）。 */
+  /** Health snapshot (for patrol scripts or metrics export). */
   healthSnapshot(): { providerId: string; health: ReturnType<Provider['healthSnapshot']> }[] {
     const now = this.now();
     return this.providers.map((p) => ({ providerId: p.id, health: p.healthSnapshot(now) }));
   }
 
   /**
-   * 观测快照（observability-spec §5.4 的 gauge 数据源）。
+   * Observation snapshot (the observability-spec §5.4 gauge data source).
    *
-   * 为什么需要单独一个方法：`healthSnapshot()` 只给健康窗口，而 §5.4 还要求
-   * 熔断状态、评分与配额余量。这些是**派生值**（评分由健康窗口 + descriptor 算出），
-   * 与其让调用方自己拼装、导致评分口径与路由时不一致，不如在 Manager 内一次算好——
-   * 保证"指标里看到的评分"就是"选路时用的评分"。
+   * Why a separate method is needed: `healthSnapshot()` only gives the health window, while §5.4 also requires
+   * breaker state, scores, and quota headroom. These are **derived values** (the score is computed from the health window + descriptor),
+   * and rather than letting callers assemble them and risk a score wording inconsistent with routing time, the Manager computes them once —
+   * guaranteeing "the score seen in metrics" is "the score used at routing time".
    *
-   * 只读，不触发任何网络调用。
+   * Read-only; it triggers no network calls.
    */
   observabilitySnapshot(): ProviderObservabilitySnapshot[] {
     const now = this.now();
@@ -477,18 +477,18 @@ export class ProviderManager implements ProviderRouter {
         health,
         circuitState: this.circuitFor(provider.id, 'read').current,
         score: scored.score,
-        // 配额是可选的：未配置时**不**提供该值（不伪造 0/1）。
+        // Quota is optional: when unconfigured, the value is **not** provided (no fabricated 0/1).
         ...(quotaUsedRatio !== undefined ? { quotaUsedRatio } : {}),
       };
     });
   }
 
   /**
-   * 异步观测快照（E5）：与同步版本同口径，但 quotaUsedRatio 从持久 Store 读取。
+   * Async observation snapshot (E5): same wording as the sync version, but quotaUsedRatio is read from the persistent Store.
    *
-   * 为什么不能只改 `observabilitySnapshot()`：ProviderMetrics 的刷新路径是异步定时器，
-   * 但同步方法被 Core/测试直接调用，改成 async 会破坏现有公开签名。新增方法保持兼容，
-   * 生产指标路径使用它，避免多实例 / 重启后本地 Map 低报配额用量。
+   * Why `observabilitySnapshot()` alone cannot just be changed: the ProviderMetrics refresh path is an async timer,
+   * but the sync method is called directly by Core/tests, and making it async would break the existing public signature. The new method keeps compatibility;
+   * the production metrics path uses it to avoid under-reporting quota usage after multi-instance / restart, when the local Map is low.
    */
   async observabilitySnapshotAsync(): Promise<ProviderObservabilitySnapshot[]> {
     const snapshots = this.observabilitySnapshot();
@@ -507,7 +507,7 @@ export class ProviderManager implements ProviderRouter {
     );
   }
 
-  /** 当日配额使用比例；无 quota 配置时返回 undefined（调用方跳过该 gauge）。 */
+  /** The daily quota usage ratio; undefined when no quota is configured (callers skip that gauge). */
   private quotaUsedRatio(providerId: string, descriptor: ProviderDescriptor): number | undefined {
     const quota = descriptor.quota;
     if (quota === undefined || quota.requestsPerDay === undefined || quota.requestsPerDay <= 0) {
@@ -516,7 +516,7 @@ export class ProviderManager implements ProviderRouter {
     return Math.min(1, this.dailyCallCount(providerId) / quota.requestsPerDay);
   }
 
-  /** 记录一次真实调用（用于进程内配额比例）。按 UTC 自然日滚动，跨日自动归零。 */
+  /** Record one real call (for the in-process quota ratio). Rolls by UTC calendar day, auto-zeroing across days. */
   private recordDailyCall(providerId: string): void {
     const day = new Date(this.now()).toISOString().slice(0, 10);
     const current = this.dailyCalls.get(providerId);
@@ -535,10 +535,10 @@ export class ProviderManager implements ProviderRouter {
   }
 
   /**
-   * 预占一次日配额。
+   * Reserve one daily quota unit.
    *
-   * - 未接 Store：进程内自增（旧行为）；
-   * - 接 Store：委托原子 `consume`；Store 抛错时向上传播，让调用路径 fail-closed。
+   * - Without a Store: in-process increment (the old behavior);
+   * - with a Store: delegate to an atomic `consume`; a Store error propagates upward, failing the call path closed.
    */
   private async reserveDailyCall(descriptor: ProviderDescriptor): Promise<{ allowed: boolean; used: number }> {
     const limit = descriptor.quota?.requestsPerDay;
@@ -554,20 +554,20 @@ export class ProviderManager implements ProviderRouter {
       day,
       limit,
     });
-    // 即使 Store 拒绝，也用返回的 used 更新本地视图，供 gauge 与后续诊断使用。
+    // Even when the Store refuses, update the local view with the returned used count, for gauges and later diagnosis.
     this.dailyCalls.set(descriptor.id, { day, count: result.used });
     return result;
   }
 
   /**
-   * 该 Provider 的当日配额是否已用尽（provider-spec §8 第 1 步的过滤条件）。
+   * Whether this Provider's daily quota is exhausted (the provider-spec §8 step 1 filter condition).
    *
-   * 语义边界（刻意如此）：
-   * - **未配置** `requestsPerDay` 或值 ≤ 0 ⇒ 不限额，返回 false。
-   *   这是向后兼容：既有部署没有配额配置，行为必须与从前完全一致。
-   * - 只有**计数达到**上限才算耗尽。计数在每次真实调用前自增（`recordDailyCall`），
-   *   因此上限 N 表示"当日最多发出 N 次调用"，与上游通常的计费口径一致。
-   * - 判定用 `>=`：达到上限即剔除，避免"第 N+1 次"这一点差。
+   * Semantic boundaries (deliberate):
+   * - **Unconfigured** `requestsPerDay` or a value ≤ 0 ⇒ unlimited, return false.
+   *   This is backward compatibility: existing deployments have no quota configuration, and behavior must stay exactly as before.
+   * - Only a count that **reaches** the cap counts as exhausted. The count increments before every real call (`recordDailyCall`),
+   *   so a cap of N means "at most N calls issued per day", consistent with the usual upstream billing wording.
+   * - The check uses `>=`: reaching the cap excludes the Provider, avoiding a "the N+1th call" off-by-one.
    */
   private dailyQuotaExhausted(descriptor: ProviderDescriptor): boolean {
     const limit = descriptor.quota?.requestsPerDay;
@@ -576,10 +576,10 @@ export class ProviderManager implements ProviderRouter {
   }
 
   /**
-   * 因当日配额耗尽而被剔除的 Provider 数量（`acquire` 的兜底诊断用）。
+   * The number of Providers excluded for daily quota exhaustion (for the `acquire` fallback diagnosis).
    *
-   * 与 `eligibleCandidates` 的过滤条件保持同一判据，避免"过滤说没了、
-   * 诊断说没耗尽"这种自相矛盾。这里只按配额判断，不看熔断/能力。
+   * Keeps the same criterion as the `eligibleCandidates` filter, avoiding a self-contradiction like "the filter says gone,
+   * but the diagnosis says not exhausted". Only quota is judged here, not breakers/capabilities.
    */
   private quotaExhaustedCount(requirements: ProviderRequirements): number {
     return this.providers.filter((provider) => {
@@ -598,16 +598,16 @@ export class ProviderManager implements ProviderRouter {
   }
 
   /**
-   * 单次低权重探针（spec 第 5 章）。
+   * A single low-weight probe (spec chapter 5).
    *
-   * 健康数据由 `provider.request()` 内部自动记录，这里只负责发起调用。
-   * 注意：探测**不走** ProviderManager 的重试与熔断路径，避免健康检查本身被熔断放大。
+   * Health data is recorded automatically inside `provider.request()`; this only initiates the call.
+   * Note: probing **does not** go through the ProviderManager retry and breaker paths, so health checks themselves are not amplified by breakers.
    */
   /**
-   * 单次低权重探针。
+   * A single low-weight probe.
    *
-   * `timeoutMs` 可覆盖默认 5s：就绪探针（/readyz）需要比周期健康巡检更短的超时，
-   * 否则一个慢端点在就绪路径上会产生秒级延迟。
+   * `timeoutMs` may override the default 5s: readiness probes (/readyz) need a shorter timeout than the periodic health patrol,
+   * or a slow endpoint would cause seconds of latency on the readiness path.
    */
   async probe(providerId: string, timeoutMs = 5000): Promise<boolean> {
     const provider = this.providers.find((p) => p.id === providerId);
@@ -630,18 +630,18 @@ export class ProviderManager implements ProviderRouter {
   }
 
   /**
-   * 启动周期性健康检查。
+   * Start the periodic health check.
    *
-   * 节奏由 HealthTracker 的探针间隔决定（healthy 60s / degraded 15s / unhealthy 5s 退避），
-   * 因此这里的 tick 只是"检查有没有到期的探针"，不产生高频请求。
-   * 每个 Provider 单飞，避免探测风暴（spec 第 5 章）。
+   * The rhythm is set by the HealthTracker's probe interval (healthy 60s / degraded 15s / unhealthy 5s backoff),
+   * so the tick here only "checks whether any probe is due" and produces no high-frequency requests.
+   * Each Provider is single-flight, avoiding probe storms (spec chapter 5).
    */
   startHealthChecks(tickMs = 1000): void {
     if (this.healthTimer !== undefined) return;
     this.healthTimer = setInterval(() => {
       void this.sweepHealth();
     }, tickMs);
-    // 不要因为健康检查定时器阻止进程退出。
+    // Do not let the health-check timer keep the process alive.
     this.healthTimer.unref?.();
   }
 
@@ -651,7 +651,7 @@ export class ProviderManager implements ProviderRouter {
     this.healthTimer = undefined;
   }
 
-  /** 立即巡检一轮；测试可直接调用而不启动定时器。 */
+  /** Run one patrol round immediately; tests can call it directly without starting the timer. */
   async sweepHealth(): Promise<void> {
     const now = this.now();
     for (const provider of this.providers) {
@@ -667,7 +667,7 @@ export class ProviderManager implements ProviderRouter {
   }
 }
 
-/** 句柄把调用委托给 Manager，因此失败切换对 Adapter 透明。 */
+/** The handle delegates calls to the Manager, so failover is transparent to the Adapter. */
 class ManagedProviderHandle implements ProviderHandle {
   readonly id: ProviderId;
   readonly chain: ChainId;

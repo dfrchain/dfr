@@ -1,6 +1,6 @@
-# Grafana 数据源：uid 必须与看板 JSON 里引用的 uid 一致（`dfr-prom`），
-# 否则看板加载后所有 panel 都是 "Datasource not found"。
-# `tests/contract/monitoring-config.test.ts` 会校验这一致性。
+# Grafana datasource: the uid must match the uid referenced in the dashboard JSON (`dfr-prom`),
+# otherwise every panel loads as "Datasource not found".
+# `tests/contract/monitoring-config.test.ts` verifies this consistency.
 apiVersion: 1
 
 datasources:

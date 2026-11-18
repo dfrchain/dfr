@@ -1,5 +1,5 @@
 /**
- * `POST /v1/contracts/read`（ADR-035）与 `GET /v1/accounts/{address}`（ADR-036）端点测试。
+ * `POST /v1/contracts/read` (ADR-035) and `GET /v1/accounts/{address}` (ADR-036) endpoint tests.
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import type { AddressInfo } from 'node:net';
@@ -67,8 +67,8 @@ async function base(server: Server): Promise<string> {
   return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 }
 
-describe('POST /v1/contracts/read（ADR-035）', () => {
-  it('abi+method：编码调用并解码返回', async () => {
+describe('POST /v1/contracts/read (ADR-035)', () => {
+  it('abi+method: encode the call and decode the return', async () => {
     const url = await base(makeServer());
     const res = await fetch(`${url}/v1/contracts/read?chain=${CHAIN}`, {
       method: 'POST', headers: { 'x-dfr-key': KEY, 'content-type': 'application/json' },
@@ -76,11 +76,11 @@ describe('POST /v1/contracts/read（ADR-035）', () => {
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { result: { data: string; decoded: unknown } };
-    // bigint 经 JSON 会报错？不——viem 解码返回 bigint，HTTP 序列化需注意。此处断言 data 即可。
+    // Does bigint break over JSON? No — viem decoding returns bigint, which needs care in HTTP serialization. Asserting data here is enough.
     expect(body.result.data).toBe(`0x${'0'.repeat(62)}2a`);
   });
 
-  it('缺 contract → 400', async () => {
+  it('missing contract → 400', async () => {
     const url = await base(makeServer());
     const res = await fetch(`${url}/v1/contracts/read?chain=${CHAIN}`, {
       method: 'POST', headers: { 'x-dfr-key': KEY, 'content-type': 'application/json' },
@@ -89,7 +89,7 @@ describe('POST /v1/contracts/read（ADR-035）', () => {
     expect(res.status).toBe(400);
   });
 
-  it('未声明能力的链 → 422', async () => {
+  it('a chain that does not declare the capability → 422', async () => {
     const url = await base(makeServer());
     const res = await fetch(`${url}/v1/contracts/read?chain=ethereum-sepolia`, {
       method: 'POST', headers: { 'x-dfr-key': KEY, 'content-type': 'application/json' },
@@ -100,8 +100,8 @@ describe('POST /v1/contracts/read（ADR-035）', () => {
   });
 });
 
-describe('GET /v1/accounts/{address}（ADR-036）', () => {
-  it('返回合约判定', async () => {
+describe('GET /v1/accounts/{address} (ADR-036)', () => {
+  it('returns the contract determination', async () => {
     const url = await base(makeServer());
     const res = await fetch(`${url}/v1/accounts/${ADDRESS}?chain=${CHAIN}`, { headers: { 'x-dfr-key': KEY } });
     expect(res.status).toBe(200);
@@ -110,13 +110,13 @@ describe('GET /v1/accounts/{address}（ADR-036）', () => {
     expect(body.account.exists).toBe(true);
   });
 
-  it('未声明能力的链 → 422', async () => {
+  it('a chain that does not declare the capability → 422', async () => {
     const url = await base(makeServer());
     const res = await fetch(`${url}/v1/accounts/${ADDRESS}?chain=ethereum-sepolia`, { headers: { 'x-dfr-key': KEY } });
     expect(res.status).toBe(422);
   });
 
-  it('未鉴权 → 401', async () => {
+  it('unauthenticated → 401', async () => {
     const url = await base(makeServer());
     const res = await fetch(`${url}/v1/accounts/${ADDRESS}?chain=${CHAIN}`);
     expect(res.status).toBe(401);

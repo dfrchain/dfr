@@ -1,11 +1,11 @@
 /**
- * Solana codec 对真实链上数据的校验（DFR-M3-A02，离线 ground truth）。
+ * Solana codec verification against real on-chain data (DFR-M3-A02, offline ground truth).
  *
- * 为什么需要：手算向量只能证明"我能编码出我以为的样子"。这里用**真实 devnet
- * finalized 区块**的原始交易字节，把我们的 decoder 与**链节点的** `encoding: json`
- * 解析逐字段对照——两套独立实现一致，才说明 wire format 理解正确。
+ * Why it is needed: hand-computed vectors only prove "I can encode what I think it looks like". Here, **real devnet
+ * finalized block** raw transaction bytes put our decoder side by side with the **chain node's** `encoding: json`
+ * parse, field by field — only when two independent implementations agree is the wire format understood correctly.
  *
- * 数据是公开链上数据；离线运行（不联网、不需要凭证）。
+ * The data is public on-chain data; runs offline (no network, no credentials needed).
  */
 import { describe, expect, it } from 'vitest';
 import { SolanaCodecError, decodeTransactionPayload } from '@dfr/adapter-solana';
@@ -13,8 +13,8 @@ import { SOLANA_DEVNET_FIXTURES } from './support/devnet-fixtures.js';
 
 const STATIC = SOLANA_DEVNET_FIXTURES.filter((f) => f.numAddressTableLookups === 0);
 
-describe('Solana codec vs 真实 devnet 区块（M3-A02）', () => {
-  it('样本覆盖 legacy、v0（含带 ALT lookup 的 v0）', () => {
+describe('Solana codec vs real devnet blocks (M3-A02)', () => {
+  it('samples cover legacy, v0 (including v0 with ALT lookup)', () => {
     const legacy = SOLANA_DEVNET_FIXTURES.filter((f) => f.version === 'legacy').length;
     const v0 = SOLANA_DEVNET_FIXTURES.filter((f) => f.version === 'v0').length;
     expect(legacy).toBeGreaterThanOrEqual(1);
@@ -23,7 +23,7 @@ describe('Solana codec vs 真实 devnet 区块（M3-A02）', () => {
   });
 
   for (const fixture of STATIC) {
-    it(`${fixture.version}：账户表 / header / blockhash / 指令数 与链节点解析一致`, () => {
+    it(`${fixture.version}: account table / header / blockhash / instruction count match the chain-node parse`, () => {
       const decoded = decodeTransactionPayload(fixture.blockPayloadBase64);
 
       expect(decoded.version).toBe(fixture.version);
@@ -37,7 +37,7 @@ describe('Solana codec vs 真实 devnet 区块（M3-A02）', () => {
   }
 
   for (const fixture of STATIC) {
-    it(`${fixture.version}：每个 programId / 账户下标都落在账户表内`, () => {
+    it(`${fixture.version}: every programId / account index falls inside the account table`, () => {
       const decoded = decodeTransactionPayload(fixture.blockPayloadBase64);
       for (const instruction of decoded.instructions) {
         expect(instruction.programId).toBe(decoded.accountKeys[instruction.programIdIndex]);
@@ -49,7 +49,7 @@ describe('Solana codec vs 真实 devnet 区块（M3-A02）', () => {
     });
   }
 
-  it('带 ALT lookup 的 v0 → 显式 fail-closed（需要链上账户表解析，本卡不做）', () => {
+  it('v0 with ALT lookup → explicit fail-closed (needs on-chain account-table resolution; this card does not do it)', () => {
     const withLookup = SOLANA_DEVNET_FIXTURES.find((f) => f.numAddressTableLookups > 0)!;
     let caught: unknown;
     try {

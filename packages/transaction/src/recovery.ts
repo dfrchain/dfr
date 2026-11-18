@@ -9,29 +9,29 @@ import type {
   TransactionStore,
 } from './stores.js';
 
-/** ADR-023：判 dropped 后仍继续观测、允许纠正的默认宽限窗。 */
+/** ADR-023: the default grace window after judging dropped, during which observation continues and correction is still allowed. */
 const DEFAULT_DROPPED_GRACE_MS = 6 * 60 * 60_000;
 
-/** ADR-037 方案 C 的默认作废窗口（30 分钟）。 */
+/** The default void window for ADR-037 option C (30 minutes). */
 export const DEFAULT_ABANDON_BUILT_AFTER_MS = 30 * 60_000;
 
-/** `reconcileStrandedSigned` 的结构性结论（ADR-040）。 */
+/** The structural conclusions of `reconcileStrandedSigned` (ADR-040). */
 export type StrandedSignedReconcileOutcome =
-  /** CAS 已落库：记录进入 `unknown`，并已做一次尽力而为的只读观测。 */
+   /** CAS persisted: the record entered `unknown`, with one best-effort read-only observation made. */
   | 'transitioned'
-  /** 记录不存在。 */
+   /** The record does not exist. */
   | 'not_found'
-  /** 记录存在但不在 `signed`（已推进或已终态）：通道不做任何事。 */
+   /** The record exists but is not in `signed` (already advanced or terminal): the channel does nothing. */
   | 'not_signed'
-  /** 带 nonce 的 EVM 记录：归 `recoverStaleSigned` 巡检所有，本通道拒绝代劳。 */
+   /** An EVM record with a nonce: owned by the `recoverStaleSigned` sweep; this channel refuses to do it on its behalf. */
   | 'not_applicable'
-  /** 缺 `expectedHash` 或 `sequencingRef`：不可验证的记录绝不转换（TX-02 同口径）。 */
+   /** Missing `expectedHash` or `sequencingRef`: an unverifiable record is never converted (same rule as TX-02). */
   | 'unverifiable'
-  /** `updatedAt` 仍在陈旧窗口内：可能有正常在途流程，拒绝迁移。 */
+   /** `updatedAt` is still inside the staleness window: a normal in-flight flow may exist; refuse to migrate. */
   | 'not_stale'
-  /** `expectedHash` 的 tracker 租约被其他 owner 持有：并发恢复/观测进行中。 */
+   /** The tracker lease for `expectedHash` is held by another owner: concurrent recovery/observation is in progress. */
   | 'lease_held'
-  /** 租约内复查或 CAS 发现记录已被并发推进：运维应重新对账。 */
+   /** A recheck inside the lease, or the CAS, found the record already advanced by a concurrent writer: ops should reconcile again. */
   | 'conflict';
 
 type StrandedSignedClass =
@@ -42,10 +42,10 @@ type StrandedSignedClass =
   | 'not_stale';
 
 /**
- * `reconcileStrandedSigned` 的资格分类（纯函数，迁移前后各跑一次）。
+ * The eligibility classification for `reconcileStrandedSigned` (a pure function, run once before and once after the migration).
  *
- * 顺序即口径：先状态、再领域（EVM 归巡检）、再可验证性、最后陈旧——
- * 保证"新鲜"不会掩盖"根本不归本通道管"，反之亦然。
+ * The order is the rule: state first, then domain (EVM belongs to the sweep), then verifiability, then staleness —
+ * guaranteeing "fresh" never hides "not this channel's job at all", and vice versa.
  */
 function classifyStrandedSigned(
   record: TransactionRecord,
@@ -67,45 +67,45 @@ export interface RecoveryDeps {
   readonly idempotency: IdempotencyStore;
   readonly nonce: NonceStore;
   /**
-   * M3-A01/C03：Solana blockhash 排序租约；可选。
+    * M3-A01/C03: Solana blockhash ordering lease; optional.
    *
-   * 只在装配了它的部署里回收过期 `reserved` 租约（进程在 reserve 后崩溃）。
-   * 未装配时跳过——EVM-only 部署不需要它。
+    * Only reclaims expired `reserved` leases in deployments where it is wired up (the process crashed after reserve).
+    * Skipped when not wired up — an EVM-only deployment does not need it.
    */
   readonly sequencing?: SequencingStore;
   readonly trackerLeases: TrackerLeaseStore;
   readonly resolveUnknown: (transactionId: TransactionId) => Promise<void>;
-  /** 每个 Gateway 进程的一次性 token；不得复用已失效 worker 的所有权。 */
+   /** A one-time token per Gateway process; never reuse ownership from an expired worker. */
   readonly ownerToken: () => string;
   readonly leaseTtlMs?: number;
   /**
-   * `dropped` 记录继续被观测、允许纠正的宽限窗（ADR-023）。默认 6 小时。
+    * The grace window during which `dropped` records keep being observed and may be corrected (ADR-023). Defaults to 6 hours.
    *
-   * 为什么有界：`dropped` 是**判断**，误判需要可纠正；但若永久观测，扫描集合会重新
-   * 只增不减、每轮白跑 RPC（这正是 TODO-011 要修的问题）。窗口外的残余风险显式接受。
+    * Why bounded: `dropped` is a **judgment**, and a wrong judgment must stay correctable; but permanent observation would let the scan set
+    * only grow and never shrink, running RPCs for nothing every round (exactly the problem TODO-011 fixes). Residual risk outside the window is explicitly accepted.
    */
   readonly droppedGraceMs?: number;
-  /** 判定窗口用的时钟；默认 `Date.now`。 */
+   /** The clock for the decision window; defaults to `Date.now`. */
   readonly clock?: () => number;
   /**
-   * `built` / `simulated` 记录在多久**没有推进**之后被自动作废（ADR-037 方案 C）。
+    * After how long without **advancing** are `built` / `simulated` records auto-voided (ADR-037, option C).
    *
-   * 为什么需要：方案 A 的显式 `abandon` 只在**调用方记得**时有效；进程崩溃、
-   * 网络中断、调用方忘记清理都会留下永久空洞。本巡检是兜底。
+    * Why it is needed: option A's explicit `abandon` only works when the **caller remembers**; process crashes,
+    * network interruptions, and callers forgetting to clean up all leave permanent gaps. This sweep is the safety net.
    *
-   * 默认 30 分钟：明显长于正常 build→签名→广播的人工在环耗时（分钟级），
-   * 又短于"卡住一整天"的运维感知阈值。`undefined` 表示**关闭**本巡检
-   * （EVM-only 之外或测试场景可显式关掉）。
+    * Defaults to 30 minutes: clearly longer than the normal human-in-the-loop build→sign→broadcast time (minutes),
+    * yet shorter than the "stuck for a whole day" threshold ops would notice. `undefined` means **disable** this sweep
+    * (explicitly switchable off for non-EVM-only or test scenarios).
    */
   readonly abandonBuiltAfterMs?: number;
 }
 
 /**
- * 启动恢复：严格分页、每批有限；只解析 unknown，绝不广播。
+ * Startup recovery: strict paging, bounded batches; only resolves unknown, never broadcasts.
  *
- * `unknown` 的链上解析可能由多个重启中的进程同时触发。以记录中的
- * expectedHash/txHash 为租约键，只有当前 owner 才能调用解析端口；有效租约被其他
- * owner 持有时立即跳过。回调结束后释放租约，因此这里不是后台跟踪器，也不遗留续租。
+ * `unknown` on-chain resolution may be triggered concurrently by several restarting processes. Using the record's
+ * expectedHash/txHash as the lease key, only the current owner may call the resolution port; a valid lease held by another
+ * owner is skipped immediately. The lease is released when the callback ends, so this is not a background tracker and leaves no renewal behind.
  */
 export class RecoveryCoordinator {
   constructor(private readonly deps: RecoveryDeps) {}
@@ -116,10 +116,10 @@ export class RecoveryCoordinator {
     }
     let afterTransactionId: TransactionId | undefined;
     let recovered = 0;
-    // 三者都是本轮有限清理；任何剩余记录会留给下一次启动/巡检，绝不无界扫描。
+     // All three are bounded cleanup for this round; any remaining records are left for the next startup/sweep, never scanned without bound.
     await this.deps.idempotency.pruneExpired({ limit: input.limit });
     await this.deps.nonce.releaseExpiredOrphaned({ limit: input.limit });
-    // Solana：回收租约 TTL 已过、仍为 `reserved` 的 blockhash 租约（consumed 永不回收）。
+     // Solana: reclaim blockhash leases whose TTL has passed and are still `reserved` (consumed ones are never reclaimed).
     await this.deps.sequencing?.releaseExpiredOrphaned({ limit: input.limit });
     for (;;) {
       const records = await this.deps.transactions.listRecoverable({
@@ -223,29 +223,29 @@ export class RecoveryCoordinator {
   }
 
   /**
-   * 运维通道：人工对账后，把一笔**滞留在 `signed` 的 Solana 交易**送入既有
-   * `unknown` 对账状态（issue #22 门禁 4 残留项，ADR-040）。
+    * Ops channel: after manual reconciliation, move a **Solana transaction stranded in `signed`** into the existing
+    * `unknown` reconciliation state (leftover item from issue #22, gate 4, ADR-040).
    *
-   * 为什么单独存在、而不并入 `recoverStaleSigned`：
-   *   - `recoverStaleSigned` 是**定时巡检**，且刻意 EVM-only（见其内注释）。
-   *     Solana 的 blockhash 按区块高度过期而非时间，"陈旧"只说明进程大概率
-   *     已死，不说明载荷是否曾传播；让巡检自动迁移 Solana 的 `signed` 记录
-   *     等于替运维做"放弃这笔已签名交易"的决定。本通道因此**只接受人工
-   *     点名**（单个 `transactionId`），不进任何调度器，也没有批量入口。
-   *   - 调用前置（人工对账，见 gate-4 对账程序）：运维先以只读方式按签名
-   *     查链上状态，确认未上链或 blockhash 已过期后才调用。本方法不复判
-   *     链上事实，只执行带门限的持久化迁移。
+    * Why it exists separately instead of being folded into `recoverStaleSigned`:
+    *   - `recoverStaleSigned` is a **scheduled sweep**, deliberately EVM-only (see its inline comment).
+    *     Solana blockhashes expire by block height, not by time; "stale" only suggests the process most likely
+    *     died — it says nothing about whether the payload ever propagated; letting the sweep auto-migrate Solana `signed` records
+    *     would be deciding "abandon this signed transaction" on ops' behalf. This channel therefore **only accepts a human naming it**
+    *     (a single `transactionId`), enters no scheduler, and has no batch entry point.
+    *   - Call prerequisites (manual reconciliation, see the gate-4 reconciliation procedure): ops first queries the on-chain state read-only by signature,
+    *     and only calls this after confirming it is not on-chain or the blockhash has expired. This method does not re-judge
+    *     on-chain facts; it only performs the threshold-gated persistent migration.
    *
-   * 安全性（与 TX-02 同源）：
-   *   - 目标状态只有 `unknown`（既有边 `signed + broadcast.indeterminate`，
-   *     与 EVM 巡检同一条边、同一 reason）：之后由既有只读观测/调用方
-   *     confirm 解析，本方法不判 `dropped` / `failed`；
-   *   - 签名载荷从未落库，本方法没有任何广播入口，也不存在重播路径；
-   *   - 陈旧门限（≥ 60 s，与巡检同下限）排除"签名流程其实还活着"；
-   *     tracker 租约（按 expectedHash）+ 租约内复查 + CAS 排除并发推进。
+    * Safety (same origin as TX-02):
+    *   - the target state is only `unknown` (the existing edge `signed + broadcast.indeterminate`,
+    *     the same edge and reason as the EVM sweep): afterwards the existing read-only observation / caller
+    *     confirm resolves it; this method does not judge `dropped` / `failed`;
+    *   - the signed payload was never persisted; this method has no broadcast entry point and no replay path;
+    *   - the staleness threshold (≥ 60 s, same lower bound as the sweep) rules out "the signing flow is actually still alive";
+    *     tracker lease (by expectedHash) + in-lease recheck + CAS rule out concurrent advancement.
    *
-   * 结构性拒绝用判别联合返回（运维需要逐项看到结论），不抛错；
-   * 存储等基础设施错误照常抛出，不伪装成业务结论。
+    * Structural rejections are returned as a discriminated union (ops needs to see each conclusion item by item), not thrown;
+    * infrastructure errors such as storage errors are still thrown, not disguised as business conclusions.
    */
   async reconcileStrandedSigned(input: {
     readonly transactionId: TransactionId;
@@ -263,7 +263,7 @@ export class RecoveryCoordinator {
     const classified = classifyStrandedSigned(record, staleBeforeMs);
     if (classified !== 'eligible') return classified;
 
-    // classify 已保证 expectedHash 非空（'unverifiable' 已在上方返回）。
+     // classify has already guaranteed expectedHash is non-empty ('unverifiable' already returned above).
     const hash = record.expectedHash as string;
     const ownerToken = this.deps.ownerToken();
     const acquired = await this.deps.trackerLeases.acquire({
@@ -274,8 +274,8 @@ export class RecoveryCoordinator {
     try {
       const fresh = await this.deps.transactions.get(input.transactionId);
       if (fresh === null) return 'not_found';
-      // 租约内复查：分类变化或身份（expectedHash）变化都按冲突收手——
-      // 并发签名/广播可能刚推进了这笔记录，运维应重新对账而不是重试到底。
+       // In-lease recheck: if the classification or the identity (expectedHash) changed, back off as a conflict —
+       // a concurrent sign/broadcast may have just advanced this record; ops should reconcile again rather than retry to the end.
       if (classifyStrandedSigned(fresh, staleBeforeMs) !== 'eligible' ||
           fresh.expectedHash !== hash) {
         return 'conflict';
@@ -289,8 +289,8 @@ export class RecoveryCoordinator {
         requestId: newRequestId(),
       });
       if (transitioned.kind !== 'applied') return 'conflict';
-      // 与巡检同口径：观测失败不撤销已落库的 unknown 迁移，
-      // 常规恢复轮次会继续处理。观测本身只读，绝不广播。
+       // Same rule as the sweep: an observation failure does not undo the persisted unknown migration,
+       // and the normal recovery rounds keep handling it. The observation itself is read-only and never broadcasts.
       try { await this.deps.resolveUnknown(fresh.transactionId); } catch { /* retry later */ }
       return 'transitioned';
     } finally {
@@ -299,26 +299,26 @@ export class RecoveryCoordinator {
   }
 
   /**
-   * 自动作废**长期没有推进**的 `built` / `simulated` 记录（ADR-037 方案 C）。
+    * Auto-void `built` / `simulated` records that have **not advanced for a long time** (ADR-037, option C).
    *
-   * 与方案 A 的关系：A 是调用方**显式**作废（正确动作），C 是**兜底**——
-   * 进程崩溃/网络中断/调用方忘记时的自愈。两者走同一套语义（释放租约 + 转 `abandoned`）。
+    * Relationship to option A: A is the caller's **explicit** void (the correct action); C is the **safety net** —
+    * self-healing after a process crash / network interruption / caller forgetting. Both share the same semantics (release the lease + move to `abandoned`).
    *
-   * 严格边界（缺一不可）：
-   *   - 只扫 `built` / `simulated`（`signed` 及以上**永不**被本方法触碰——
-   *     那会回收已签名交易的 nonce，破坏资金安全）；
-   *   - 只处理 `updatedAt` 早于窗口的记录（窗口内可能有正常的在途流程）；
-   *   - 有界分页（`limit` 复用调用方的批次上限），不会无界扫描。
+    * Strict boundaries (all required):
+    *   - only `built` / `simulated` (`signed` and above are **never** touched by this method —
+    *     that would reclaim a signed transaction's nonce and break funds safety);
+    *   - only records whose `updatedAt` predates the window (a normal in-flight flow may exist inside the window);
+    *   - bounded paging (`limit` reuses the caller's batch cap), never an unbounded scan.
    *
-   * 返回本轮实际作废的记录数。**失败不抛出**：单条失败留下给下一轮，不因一条坏记录
-   * 拖垮整轮巡检（与 `run` 的收尾口径一致）。
+    * Returns the number of records actually voided this round. **Failures are not thrown**: a single failure is left for the next round, and one bad record never
+    * drags down the whole sweep (same closing rule as `run`).
    */
   async abandonStaleUnbroadcast(input: {
     readonly limit: number;
     readonly now?: number;
   }): Promise<number> {
     const afterMs = this.deps.abandonBuiltAfterMs;
-    // 未配置 = 关闭（显式，而不是静默用某个默认值）。
+     // Unconfigured = disabled (explicit, not silently using some default).
     if (afterMs === undefined) return 0;
     // Invalid or extremely short windows may abandon transactions while a
     // legitimate user is still signing. Config 0 is converted to undefined
@@ -340,7 +340,7 @@ export class RecoveryCoordinator {
       const records = await this.deps.transactions.listRecoverable({
         limit: input.limit,
         statuses: ['built', 'simulated'],
-        // 只取**早于**窗口的记录。把它做进查询（而不是取回后过滤）才能让游标推进。
+         // Only fetch records **earlier than** the window. Putting it in the query (instead of filtering after fetch) lets the cursor advance.
         updatedBefore,
         ...(afterTransactionId !== undefined ? { afterTransactionId } : {}),
       });
@@ -387,7 +387,7 @@ export class RecoveryCoordinator {
             // the periodic orphan-lease sweep will retry lease cleanup.
           }
         } catch {
-          // 单条失败（例如并发下 CAS 冲突）不拖垮整轮；下一轮再处理。
+           // A single failure (e.g. a CAS conflict under concurrency) does not drag down the whole round; the next round handles it.
         }
       }
 
@@ -398,12 +398,12 @@ export class RecoveryCoordinator {
   }
 
   /**
-   * 观测宽限窗内的 `dropped` 记录并尝试纠正（ADR-023）。
+    * Observe `dropped` records inside the observation grace window and try to correct them (ADR-023).
    *
-   * 与 `unknown` 分开一次扫描，因为两者集合不同、且 `dropped` 需要 `updatedAfter` 时间下界：
-   * 把时间条件放进查询（而不是取回后过滤）才能让分页游标正常推进。
+    * Scanned separately from `unknown` because the sets differ and `dropped` needs an `updatedAfter` lower time bound:
+    * putting the time condition in the query (instead of filtering after fetch) lets the paging cursor advance normally.
    *
-   * 返回本轮实际发生收敛（状态被纠正）的记录数。
+    * Returns the number of records actually converged (had their state corrected) this round.
    */
   async reconcileDropped(input: { limit: number }): Promise<number> {
     if (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 500) {
@@ -424,9 +424,9 @@ export class RecoveryCoordinator {
       });
       if (records.length === 0) return corrected;
       for (const record of records) {
-        // 只有观测能把 dropped 改成别的状态；`resolveUnknown` 内部对 dropped 只做收敛。
-        // 计数必须是"状态真的被纠正"，而不是"发生过一次观测"——否则 absent 也会被算成收敛，
-        // 指标会虚高且无法反映真实纠正量。
+         // Only an observation can move dropped to another state; `resolveUnknown` only does convergence on dropped.
+         // The count must be "states genuinely corrected", not "an observation happened" — otherwise absent would also count as convergence,
+         // and the metrics would inflate and stop reflecting the true correction volume.
         try {
           const observed = await this.resolveUnknownWithLease(record);
           if (!observed) continue;
@@ -445,7 +445,7 @@ export class RecoveryCoordinator {
 
   private async resolveUnknownWithLease(record: TransactionRecord): Promise<boolean> {
     const txHash = record.expectedHash ?? record.txHash;
-    // 未记录可验证 hash 的 unknown 不可安全地交给 tracker；保留原状态等待人工排查。
+     // An unknown without a verifiable recorded hash cannot be safely handed to the tracker; keep the original state and wait for manual investigation.
     if (txHash === undefined || txHash === '') return false;
 
     const ownerToken = this.deps.ownerToken();
@@ -461,7 +461,7 @@ export class RecoveryCoordinator {
       await this.deps.resolveUnknown(record.transactionId);
       return true;
     } finally {
-      // 若租约已丢失，Store 会返回 lost；无论如何不得以旧 owner 继续写状态。
+       // If the lease is already lost, the Store returns lost; in any case, never keep writing state as the old owner.
       await this.deps.trackerLeases.release({ chain: record.chain, txHash, ownerToken });
     }
   }

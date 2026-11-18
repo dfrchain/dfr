@@ -1,8 +1,8 @@
 /**
- * EVM Adapter 契约测试（DFR-008 / M0 验收）。
+ * EVM Adapter contract test (DFR-008 / M0 acceptance).
  *
- * 用 mock Provider 离线运行，不需要任何 RPC 端点或凭证。
- * 断言覆盖 adapter-spec 第 9 章 L1 清单。
+ * Runs offline against a mock Provider; no RPC endpoint or credentials needed.
+ * Assertions cover the adapter-spec Chapter 9 L1 checklist.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -40,7 +40,7 @@ const BLOCK_LATEST = {
   baseFeePerGas: '0x3b9aca00',
 };
 const BLOCK_FINALIZED = { ...BLOCK_LATEST, number: '0x112a000', hash: `0x${'33'.repeat(32)}` };
-/** 0x112a000 的十进制形式，用于按高度查询已最终化区块。 */
+/** The decimal form of 0x112a000, for querying finalized blocks by height. */
 const FINALIZED_HEIGHT = '17997824';
 
 const handlers = {
@@ -85,20 +85,21 @@ defineAdapterContract({
   handlers,
   registryCapabilities: chain.capabilities,
   invalidAccount: '0xnot-an-address',
-  // EVM 没有 slot 概念（Solana 才有）。
+  // EVM has no slot concept (only Solana does).
   unsupportedBlockRefs: [{ kind: 'slot', slot: '1' as never }],
-  // 契约测试必须用一个 Adapter 确实**未实现**的能力，否则这条"未声明能力不得静默降级"
-  // 的负对照会空转。ADR-035 起 contract.read 已实现；`event.subscribe` 仍是**部署级**
-  // 能力（ADR-025，由 Core 事件总线提供，Adapter 不实现）——用它做负对照。
+  // The contract test must use a capability the Adapter genuinely has **not** implemented, or this negative
+  // control for "undeclared capabilities must not silently downgrade" would spin idle. Since ADR-035 contract.read
+  // is implemented; `event.subscribe` is still a **deployment-level** capability (ADR-025, provided by Core's
+  // event bus, not implemented by the Adapter) — use it as the negative control.
   unsupportedCall: async (adapter, ctx) =>
     (adapter as unknown as { subscribe(a: AdapterContext, b: unknown): AsyncIterable<unknown> })
       .subscribe(ctx, {})[Symbol.asyncIterator]().next(),
 });
 
-describe('EVM Adapter 只读路径（M0：getInfo / getBalance / getBlock / getTransaction）', () => {
+describe('EVM Adapter read-only path (M0: getInfo / getBalance / getBlock / getTransaction)', () => {
   const adapter = new EvmAdapter({ chain });
 
-  it('getInfo 返回十进制高度并校验 chainId', async () => {
+  it('getInfo returns a decimal height and validates chainId', async () => {
     const ctx = makeContext(chain, handlers);
     const info = await adapter.getInfo(ctx);
     expect(info.family).toBe('evm');
@@ -108,7 +109,7 @@ describe('EVM Adapter 只读路径（M0：getInfo / getBalance / getBlock / getT
     expect(info.nodeVersion).toBe('geth/v1.14.0-stable/linux-amd64/go1.21');
   });
 
-  it('同一次 getInfo 复用同一个 Provider 句柄（chainId 校验才有意义）', async () => {
+  it('the same getInfo call reuses one Provider handle (that is what makes the chainId check meaningful)', async () => {
     const router = createMockProviderRouter({ chain: chain.id, handlers });
     const ctx: AdapterContext = {
       chain: chain.id,
@@ -119,16 +120,16 @@ describe('EVM Adapter 只读路径（M0：getInfo / getBalance / getBlock / getT
     };
     await adapter.getInfo(ctx);
     // eth_chainId / eth_blockNumber / eth_getBlockByNumber / web3_clientVersion
-    // 必须落在同一个端点上，否则 chainId 校验无法说明这一份数据的来源。
+    // must land on the same endpoint, or the chainId check says nothing about where this data came from.
     expect((router as unknown as { acquired: number }).acquired).toBe(1);
   });
 
-  it('chainId 不一致 → DFR_CHAIN_MISMATCH（fail-closed）', async () => {
+  it('chainId mismatch → DFR_CHAIN_MISMATCH (fail-closed)', async () => {
     const ctx = makeContext(chain, { ...handlers, eth_chainId: () => '0x1' });
     await expect(adapter.getInfo(ctx)).rejects.toMatchObject({ code: 'DFR_CHAIN_MISMATCH' });
   });
 
-  it('getBalance 返回原生资产与最小单位十进制字符串', async () => {
+  it('getBalance returns the native asset with a smallest-unit decimal string', async () => {
     const ctx = makeContext(chain, handlers);
     const balance = await adapter.getBalance(ctx, { account: { chain: SEPOLIA, address: ADDRESS } });
     expect(balance.amount).toBe('1000000000000000000');
@@ -136,7 +137,7 @@ describe('EVM Adapter 只读路径（M0：getInfo / getBalance / getBlock / getT
     expect(balance.asset).toEqual({ kind: 'native', chain: SEPOLIA });
   });
 
-  it('代币余额在 M0 返回 DFR_UNSUPPORTED_CAPABILITY，不伪装成功', async () => {
+  it('token balances return DFR_UNSUPPORTED_CAPABILITY in M0, not faked success', async () => {
     const ctx = makeContext(chain, handlers);
     await expect(
       adapter.getBalance(ctx, {
@@ -146,7 +147,7 @@ describe('EVM Adapter 只读路径（M0：getInfo / getBalance / getBlock / getT
     ).rejects.toMatchObject({ code: 'DFR_UNSUPPORTED_CAPABILITY' });
   });
 
-  it('getBlock 支持 tag:latest / tag:finalized / number，并返回 finality', async () => {
+  it('getBlock supports tag:latest / tag:finalized / number, and returns finality', async () => {
     const ctx = makeContext(chain, handlers);
     const latest = await adapter.getBlock(ctx, { kind: 'tag', tag: 'latest' });
     expect(latest?.number).toBe('18000000');
@@ -160,17 +161,17 @@ describe('EVM Adapter 只读路径（M0：getInfo / getBalance / getBlock / getT
     expect(byNumber?.hash).toBe(BLOCK_FINALIZED.hash);
     expect(byNumber?.finality).toBe('finalized');
 
-    // 高于 finalized 高度的区块只能是 included，不能提前宣称 finalized。
+    // A block above the finalized height can only be included; it must not be claimed finalized early.
     const notYet = await adapter.getBlock(ctx, { kind: 'number', number: '18000000' as never });
     expect(notYet?.finality).toBe('included');
   });
 
-  it('getBlock 对不存在的区块返回 null（与"链不可用"区分）', async () => {
+  it('getBlock returns null for a nonexistent block (distinguished from "chain unavailable")', async () => {
     const ctx = makeContext(chain, { ...handlers, eth_getBlockByNumber: () => null });
     expect(await adapter.getBlock(ctx, { kind: 'number', number: '1' as never })).toBeNull();
   });
 
-  it('getTransaction 返回归一化交易，数值字段是十进制字符串', async () => {
+  it('getTransaction returns a normalized transaction, with numeric fields as decimal strings', async () => {
     const ctx = makeContext(chain, handlers);
     const tx = await adapter.getTransaction(ctx, { kind: 'hash', hash: TX_HASH });
     expect(tx?.status).toBe('included');
@@ -180,12 +181,12 @@ describe('EVM Adapter 只读路径（M0：getInfo / getBalance / getBlock / getT
     expect(tx?.blockRef).toEqual({ kind: 'number', number: '18000000' });
   });
 
-  it('getTransaction 对不存在的交易返回 null', async () => {
+  it('getTransaction returns null for a nonexistent transaction', async () => {
     const ctx = makeContext(chain, { ...handlers, eth_getTransactionByHash: () => null });
     expect(await adapter.getTransaction(ctx, { kind: 'hash', hash: TX_HASH })).toBeNull();
   });
 
-  it('getReceipt 返回成功标志与实际费用（含计价资产）', async () => {
+  it('getReceipt returns the success flag and actual fee (including the pricing asset)', async () => {
     const ctx = makeContext(chain, handlers);
     const receipt = await adapter.getReceipt(ctx, { kind: 'hash', hash: TX_HASH });
     expect(receipt?.success).toBe(true);
@@ -194,14 +195,14 @@ describe('EVM Adapter 只读路径（M0：getInfo / getBalance / getBlock / getT
     expect(receipt?.effectiveFee?.amount).toBe('21000000000000');
   });
 
-  it('非法交易哈希 → DFR_INVALID_REQUEST', async () => {
+  it('invalid transaction hash → DFR_INVALID_REQUEST', async () => {
     const ctx = makeContext(chain, handlers);
     await expect(
       adapter.getTransaction(ctx, { kind: 'hash', hash: '0xdeadbeef' }),
     ).rejects.toMatchObject({ code: 'DFR_INVALID_REQUEST' });
   });
 
-  it('所有只读调用都声明 safe-read（Provider 层据此重试）', async () => {
+  it('all read-only calls declare safe-read (the Provider layer retries on that basis)', async () => {
     const methods: string[] = [];
     const ctx = makeContext(chain, handlers, (m) => methods.push(m));
     await adapter.getInfo(ctx);
@@ -216,14 +217,14 @@ describe('EVM Adapter 只读路径（M0：getInfo / getBalance / getBlock / getT
 });
 
 /* ------------------------------------------------------------------ */
-/* M1-B02：EVM build 能力                                             */
+/* M1-B02: EVM build capability                                              */
 /* ------------------------------------------------------------------ */
 
 const TO_ADDRESS = '0x2222222222222222222222222222222222222222';
 const TIP_HEX = '0x3b9aca00'; // 1 gwei
 const GAS_ESTIMATE_HEX = '0x5208'; // 21000
 
-/** 在只读 handlers 上叠加 build 需要的 RPC；用 overrides / delete 制造边界场景。 */
+/** Layers the RPCs build needs on top of the read-only handlers; uses overrides / delete to construct boundary scenarios. */
 function buildHandlers(
   overrides: Record<string, (params: readonly unknown[]) => unknown> = {},
 ): Record<string, (params: readonly unknown[]) => unknown> {
@@ -264,21 +265,21 @@ function buildContext(
 }
 
 /* ------------------------------------------------------------------ */
-/* M1-C02：广播能力的契约面（能力声明 + 本地校验失败不得发出广播）          */
+/* M1-C02: the contract side of broadcast capability (capability declaration + local validation failure must not emit a broadcast) */
 /* ------------------------------------------------------------------ */
 
-describe('EVM Adapter broadcast 能力（M1-C02）', () => {
+describe('EVM Adapter broadcast capability (M1-C02)', () => {
   const adapter = new EvmAdapter({ chain });
 
-  it('capabilities() 声明 transaction.broadcast', () => {
+  it('capabilities() declares transaction.broadcast', () => {
     expect(adapter.capabilities().capabilities).toContain('transaction.broadcast');
   });
 
-  it('未签名载荷 → DFR_TRANSACTION_REJECTED，且不发出 eth_sendRawTransaction', async () => {
+  it('unsigned payload → DFR_TRANSACTION_REJECTED, and no eth_sendRawTransaction is emitted', async () => {
     const methods: string[] = [];
     const ctx = makeContext(chain, { ...handlers }, (method) => methods.push(method));
 
-    // 未签名载荷：结构合法但不是可广播的已签名交易。
+    // Unsigned payload: structurally valid but not a broadcastable signed transaction.
     const unsigned = encodeUnsignedTransaction({
       chainId: '11155111',
       nonce: '42',
@@ -309,22 +310,22 @@ describe('EVM Adapter broadcast 能力（M1-C02）', () => {
       );
 
     expect(isDfrError(error) && error.code).toBe('DFR_TRANSACTION_REJECTED');
-    // 必须是"未签名"这一条原因，而不是碰巧被别的校验拦住
-    // （否则移除 not_signed 分支时这条负对照会空转）。
+    // It must be the "unsigned" reason, not coincidentally blocked by some other check
+    // (or this negative control would spin idle if the not_signed branch were removed).
     expect(isDfrError(error) && error.details?.['reason']).toBe('not_signed');
-    // 关键安全属性：本地校验失败时绝不能已经发出广播。
+    // Key safety property: a local validation failure must never have already emitted a broadcast.
     expect(methods).toEqual([]);
   });
 });
 
-describe('EVM Adapter build 能力（M1-B02，ADR-016 / m1-api-contract.md）', () => {
+describe('EVM Adapter build capability (M1-B02, ADR-016 / m1-api-contract.md)', () => {
   const adapter = new EvmAdapter({ chain });
 
-  it('capabilities() 声明 transaction.build', () => {
+  it('capabilities() declares transaction.build', () => {
     expect(adapter.capabilities().capabilities).toContain('transaction.build');
   });
 
-  it('build 复用同一个 Provider 句柄，产出可解码的 eip1559 未签名载荷', async () => {
+  it('build reuses the same Provider handle and produces a decodable eip1559 unsigned payload', async () => {
     const router = createMockProviderRouter({ chain: chain.id, handlers: buildHandlers() });
     const ctx: AdapterContext = {
       chain: chain.id,
@@ -335,14 +336,14 @@ describe('EVM Adapter build 能力（M1-B02，ADR-016 / m1-api-contract.md）', 
     };
     const unsigned = await adapter.build(ctx, BUILD_REQUEST);
 
-    // nonce + gas + fee + chainId 校验必须落在同一端点上（adapter-spec 8.1）。
+    // nonce + gas + fee + chainId checks must land on the same endpoint (adapter-spec 8.1).
     expect((router as unknown as { acquired: number }).acquired).toBe(1);
     expect(unsigned.schemaVersion).toBe('1');
     expect(unsigned.chain).toBe(SEPOLIA);
     expect(unsigned.meta.encoding).toBe('hex');
     expect(unsigned.meta.chainIdForSigning).toBe('11155111');
     expect(unsigned.meta.requiresNonce).toBe('42');
-    // 费用上限 = gas × maxFeePerGas（21000 × 3 gwei），计价资产为原生币。
+    // Fee cap = gas × maxFeePerGas (21000 × 3 gwei), priced in the native coin.
     expect(unsigned.meta.feeEstimate).toEqual({
       asset: { kind: 'native', chain: SEPOLIA },
       amount: '63000000000000',
@@ -356,12 +357,12 @@ describe('EVM Adapter build 能力（M1-B02，ADR-016 / m1-api-contract.md）', 
     expect(decoded.value).toBe('1000000000000000');
     expect(decoded.gas).toBe('21000');
     expect(decoded.maxPriorityFeePerGas).toBe('1000000000');
-    // maxFeePerGas = 2 × baseFee + tip（有界余量，见交付报告决策）。
+    // maxFeePerGas = 2 × baseFee + tip (bounded headroom; see the delivery report decision).
     expect(decoded.maxFeePerGas).toBe('3000000000');
     expect(decoded.signed).toBe(false);
   });
 
-  it('pending nonce 来自 eth_getTransactionCount(from, "pending")', async () => {
+  it('pending nonce comes from eth_getTransactionCount(from, "pending")', async () => {
     let nonceParams: readonly unknown[] | undefined;
     const ctx = buildContext(
       buildHandlers({
@@ -376,7 +377,7 @@ describe('EVM Adapter build 能力（M1-B02，ADR-016 / m1-api-contract.md）', 
     expect(unsigned.meta.requiresNonce).toBe('42');
   });
 
-  it('显式 nonce 优先，且不再查询链上 nonce', async () => {
+  it('an explicit nonce takes priority, and the on-chain nonce is no longer queried', async () => {
     const methods: string[] = [];
     const ctx = buildContext(buildHandlers(), (m) => methods.push(m));
     const unsigned = await adapter.build(ctx, { ...BUILD_REQUEST, nonce: '7' as never });
@@ -385,7 +386,7 @@ describe('EVM Adapter build 能力（M1-B02，ADR-016 / m1-api-contract.md）', 
     expect(decodeTransactionPayload(unsigned.payload).nonce).toBe('7');
   });
 
-  it('req.maxFee 作为费用上限；低于 baseFee + tip 时 fail-closed', async () => {
+  it('req.maxFee acts as the fee cap; below baseFee + tip it fails closed', async () => {
     const ctx = buildContext(buildHandlers());
     const capped = await adapter.build(ctx, { ...BUILD_REQUEST, maxFee: '5000000000' as never });
     expect(decodeTransactionPayload(capped.payload).maxFeePerGas).toBe('5000000000');
@@ -395,21 +396,21 @@ describe('EVM Adapter build 能力（M1-B02，ADR-016 / m1-api-contract.md）', 
     ).rejects.toMatchObject({ code: 'DFR_VALIDATION_FAILED' });
   });
 
-  it('端点 chainId 与注册表不一致 → DFR_CHAIN_MISMATCH，不构造载荷', async () => {
+  it('endpoint chainId disagrees with the registry → DFR_CHAIN_MISMATCH, no payload is constructed', async () => {
     const ctx = buildContext(buildHandlers({ eth_chainId: () => '0x1' }));
     await expect(adapter.build(ctx, BUILD_REQUEST)).rejects.toMatchObject({
       code: 'DFR_CHAIN_MISMATCH',
     });
   });
 
-  it('Provider 返回非法十六进制数量 → DFR_PROVIDER_INVALID_RESPONSE（fail-closed）', async () => {
+  it('Provider returns an illegal hex quantity → DFR_PROVIDER_INVALID_RESPONSE (fail-closed)', async () => {
     const ctx = buildContext(buildHandlers({ eth_estimateGas: () => 'not-a-quantity' }));
     await expect(adapter.build(ctx, BUILD_REQUEST)).rejects.toMatchObject({
       code: 'DFR_PROVIDER_INVALID_RESPONSE',
     });
   });
 
-  it('缺少 to（合约创建）→ DFR_UNSUPPORTED_CAPABILITY', async () => {
+  it('missing to (contract creation) → DFR_UNSUPPORTED_CAPABILITY', async () => {
     const ctx = buildContext(buildHandlers());
     const withoutTo = { ...BUILD_REQUEST } as Record<string, unknown>;
     delete withoutTo.to;
@@ -418,7 +419,7 @@ describe('EVM Adapter build 能力（M1-B02，ADR-016 / m1-api-contract.md）', 
     });
   });
 
-  it('非原生 value → DFR_INVALID_ASSET', async () => {
+  it('non-native value → DFR_INVALID_ASSET', async () => {
     const ctx = buildContext(buildHandlers());
     await expect(
       adapter.build(ctx, {
@@ -431,7 +432,7 @@ describe('EVM Adapter build 能力（M1-B02，ADR-016 / m1-api-contract.md）', 
     ).rejects.toMatchObject({ code: 'DFR_INVALID_ASSET' });
   });
 
-  it('build 全程只发 safe-read 调用，不出现广播 / 签名方法', async () => {
+  it('build only issues safe-read calls; no broadcast / signing methods appear', async () => {
     const methods: string[] = [];
     const ctx = buildContext(buildHandlers(), (m) => methods.push(m));
     await adapter.build(ctx, BUILD_REQUEST);
@@ -445,13 +446,13 @@ describe('EVM Adapter build 能力（M1-B02，ADR-016 / m1-api-contract.md）', 
       'eth_feeHistory',
     ]);
     for (const method of methods) {
-      expect(allowed.has(method), `build 发出了未预期的 RPC 方法 ${method}`).toBe(true);
+      expect(allowed.has(method), `build issued an unexpected RPC method ${method}`).toBe(true);
     }
     expect(methods).not.toContain('eth_sendRawTransaction');
     expect(methods).toContain('eth_estimateGas');
   });
 
-  it('不支持 eth_maxPriorityFeePerGas 时回退 eth_feeHistory；两者都不可用则 fail-closed', async () => {
+  it('falls back to eth_feeHistory when eth_maxPriorityFeePerGas is unsupported; fails closed when neither is available', async () => {
     const withHistory = buildHandlers({ eth_feeHistory: () => ({ reward: [['0x77359400']] }) });
     delete withHistory.eth_maxPriorityFeePerGas;
     const unsigned = await adapter.build(buildContext(withHistory), BUILD_REQUEST);
@@ -464,7 +465,7 @@ describe('EVM Adapter build 能力（M1-B02，ADR-016 / m1-api-contract.md）', 
     });
   });
 
-  it('legacy 交易类型使用 eth_gasPrice，不请求 1559 费用字段', async () => {
+  it('legacy transaction types use eth_gasPrice and do not request 1559 fee fields', async () => {
     const legacy = new EvmAdapter({ chain, transactionType: 'legacy' });
     const methods: string[] = [];
     const ctx = buildContext(buildHandlers(), (m) => methods.push(m));
@@ -479,7 +480,7 @@ describe('EVM Adapter build 能力（M1-B02，ADR-016 / m1-api-contract.md）', 
     expect(unsigned.meta.feeEstimate?.amount).toBe('420000000000000');
   });
 
-  it('build 输出的数值字段全部是十进制字符串（无 JS number）', async () => {
+  it('all numeric fields in build output are decimal strings (no JS number)', async () => {
     const ctx = buildContext(buildHandlers());
     const unsigned = await adapter.build(ctx, BUILD_REQUEST);
     expect(typeof unsigned.meta.requiresNonce).toBe('string');
@@ -493,12 +494,12 @@ describe('EVM Adapter build 能力（M1-B02，ADR-016 / m1-api-contract.md）', 
     }
   });
 
-  it('build 不绕过 Provider 直接访问网络（fetch 调用次数为 0）', async () => {
+  it('build does not bypass the Provider to reach the network directly (fetch call count is 0)', async () => {
     const originalFetch = globalThis.fetch;
     let fetchCalls = 0;
     globalThis.fetch = (() => {
       fetchCalls += 1;
-      throw new Error('Adapter 不得直接访问网络');
+      throw new Error('Adapter must not access the network directly');
     }) as typeof fetch;
     try {
       await adapter.build(buildContext(buildHandlers()), BUILD_REQUEST);
@@ -510,7 +511,7 @@ describe('EVM Adapter build 能力（M1-B02，ADR-016 / m1-api-contract.md）', 
 });
 
 /* ------------------------------------------------------------------ */
-/* M1-B03：EVM simulate 能力                                          */
+/* M1-B03: EVM simulate capability                                          */
 /* ------------------------------------------------------------------ */
 
 const SIMULATE_TO = '0x3333333333333333333333333333333333333333';
@@ -526,17 +527,17 @@ const SIMULATE_REQUEST: TransactionRequest = {
   value: { asset: { kind: 'native', chain: SEPOLIA }, amount: '0' as never },
 };
 
-/** 与 Provider transport 一致的"执行回滚"错误（error-spec 第 5.1 章映射）。 */
+/** An "execution reverted" error consistent with the Provider transport (error-spec §5.1 mapping). */
 function revertedError(message = 'execution reverted: ERC20: transfer amount exceeds balance') {
   return createDfrError('DFR_TRANSACTION_REVERTED', {
     requestId: BUILD_REQUEST_ID,
-    message: '执行回滚',
+    message: 'execution reverted',
     chain: SEPOLIA,
     chainError: { message },
   });
 }
 
-describe('EVM Adapter simulate 能力（M1-B03）', () => {
+describe('EVM Adapter simulate capability (M1-B03)', () => {
   const adapter = new EvmAdapter({ chain });
 
   it.each(['legacy', 'eip2930'] as const)(
@@ -552,11 +553,11 @@ describe('EVM Adapter simulate 能力（M1-B03）', () => {
     },
   );
 
-  it('capabilities() 声明 transaction.simulate', () => {
+  it('capabilities() declares transaction.simulate', () => {
     expect(adapter.capabilities().capabilities).toContain('transaction.simulate');
   });
 
-  it('simulate(TransactionRequest) 复用同一句柄并归一化 success / cost / fee', async () => {
+  it('simulate(TransactionRequest) reuses the same handle and normalizes success / cost / fee', async () => {
     const router = createMockProviderRouter({ chain: chain.id, handlers: SIMULATE_HANDLERS });
     const ctx: AdapterContext = {
       chain: chain.id,
@@ -576,7 +577,7 @@ describe('EVM Adapter simulate 能力（M1-B03）', () => {
     });
   });
 
-  it('eth_call 回滚 → success=false + revertReason，不抛 500', async () => {
+  it('eth_call revert → success=false + revertReason, no 500 thrown', async () => {
     const ctx = buildContext({
       ...SIMULATE_HANDLERS,
       eth_call: () => {
@@ -588,7 +589,7 @@ describe('EVM Adapter simulate 能力（M1-B03）', () => {
     expect(result.revertReason).toContain('transfer amount exceeds balance');
   });
 
-  it('eth_estimateGas 回滚同样归一化为 success=false', async () => {
+  it('eth_estimateGas revert is likewise normalized to success=false', async () => {
     const ctx = buildContext({
       ...SIMULATE_HANDLERS,
       eth_estimateGas: () => {
@@ -600,7 +601,7 @@ describe('EVM Adapter simulate 能力（M1-B03）', () => {
     expect(result.revertReason).toContain('arithmetic overflow');
   });
 
-  it('非回滚错误（Provider 不可用）向上抛出，不伪装成回滚', async () => {
+  it('a non-revert error (Provider unavailable) is thrown upward, not disguised as a revert', async () => {
     const ctx = buildContext({
       ...SIMULATE_HANDLERS,
       eth_call: () => {
@@ -616,7 +617,7 @@ describe('EVM Adapter simulate 能力（M1-B03）', () => {
     });
   });
 
-  it('simulate(UnsignedTransaction) 复用载荷的 gas/费用，且不谎报发送方', async () => {
+  it('simulate(UnsignedTransaction) reuses the payload gas/fees and does not lie about the sender', async () => {
     const built = await adapter.build(buildContext(buildHandlers()), BUILD_REQUEST);
 
     let callParams: readonly unknown[] | undefined;
@@ -636,17 +637,17 @@ describe('EVM Adapter simulate 能力（M1-B03）', () => {
     expect(result.success).toBe(true);
     expect(result.estimatedCost).toBe('21000');
     expect(result.estimatedFee?.amount).toBe('63000000000000');
-    // 载荷不携带发送方：必须显式提示，而不是假装用零地址就等价。
-    expect(result.warnings?.join(' ')).toContain('发送方');
-    // 已构造载荷不再重新估 gas（gas 已由 build 固定）。
+    // The payload carries no sender: it must be stated explicitly, not pretended equivalent to the zero address.
+    expect(result.warnings?.join(' ')).toContain('sender');
+    // A constructed payload is not re-estimated for gas (gas is already fixed by build).
     expect(methods).not.toContain('eth_estimateGas');
     expect(methods).toContain('eth_call');
-    // eth_call 不得携带伪造的 from。
+    // eth_call must not carry a forged from.
     expect(callParams?.[0]).not.toHaveProperty('from');
     expect((callParams?.[0] as { to?: string })?.to).toBe(TO_ADDRESS);
   });
 
-  it('simulate 全程只发 safe-read，chainId 不符时 fail-closed', async () => {
+  it('simulate only issues safe-read throughout; chainId mismatch fails closed', async () => {
     const methods: string[] = [];
     const ctx = buildContext(SIMULATE_HANDLERS, (m) => methods.push(m));
     await adapter.simulate(ctx, SIMULATE_REQUEST);
@@ -661,7 +662,7 @@ describe('EVM Adapter simulate 能力（M1-B03）', () => {
     ).rejects.toMatchObject({ code: 'DFR_CHAIN_MISMATCH' });
   });
 
-  it('simulate(UnsignedTransaction) 的 chainId 必须与请求链一致', async () => {
+  it('simulate(UnsignedTransaction) chainId must match the request chain', async () => {
     const built = await adapter.build(buildContext(buildHandlers()), BUILD_REQUEST);
     const foreign = { ...built, chain: 'base-sepolia' as ChainId };
     await expect(adapter.simulate(buildContext(SIMULATE_HANDLERS), foreign as never)).rejects.toMatchObject(

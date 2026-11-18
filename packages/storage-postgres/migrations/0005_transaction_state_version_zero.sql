@@ -1,9 +1,9 @@
--- DFR-M1-D07：修复 state_version 起始值与数据库约束的冲突。
+-- DFR-M1-D07: fix the conflict between the state_version starting value and the database constraint.
 --
--- state_version 是乐观并发令牌：TradeRecord 首次落库为 0（TransactionEngine.build），
--- 每次 CAS 转移 +1（m1-storage-model §3.1 “CAS 每次 +1”）。但 0001 的
--- CHECK (state_version >= 1) 让真实 PostgreSQL 上 engine.build 必然失败
--- （transactions_state_version_check）。放宽为 >= 0：仍拒绝负值，但允许初始值 0。
+-- state_version is the optimistic-concurrency token: a TradeRecord is first persisted as 0 (TransactionEngine.build),
+-- and +1 on every CAS transition (m1-storage-model §3.1 "CAS +1 each time"). But 0001's
+-- CHECK (state_version >= 1) made engine.build always fail on real PostgreSQL
+-- (transactions_state_version_check). Relax it to >= 0: negative values are still rejected, but the initial value 0 is allowed.
 ALTER TABLE transaction_data.transactions
   DROP CONSTRAINT transactions_state_version_check;
 

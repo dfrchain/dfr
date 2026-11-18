@@ -1,20 +1,20 @@
 /**
- * Solana 已签名交易的解析与绑定校验（DFR-M3-C01）。
+ * Parsing and binding verification of signed Solana transactions (DFR-M3-C01).
  *
- * 权威来源：m1-api-contract 第 3 节（txHash 由载荷重算）、EVM 版
- * `adapters/evm/src/signed-transaction.ts`（同构，但只做 Solana 能证明的部分）。
+ * Authoritative sources: m1-api-contract Section 3 (txHash is recomputed from the payload), and the EVM version
+ * `adapters/evm/src/signed-transaction.ts` (isomorphic, but only what Solana can prove).
  *
- * 与 EVM 的关键差异：Solana **没有账户 nonce**。绑定校验因此比对：
- *   1. 载荷已签名（签名非全零）；
- *   2. fee payer == 记录里的 from；
- *   3. 重算的交易哈希 == 记录的 expectedHash；
- *   4. 记录的 unsigned 载荷（真值）**去掉签名段后的 message** 与签名载荷的 message 逐字节一致。
+ * Key difference from EVM: Solana has **no account nonce**. Binding verification therefore compares:
+ *   1. the payload is signed (signature is not all zeros);
+ *   2. fee payer == the from in the record;
+ *   3. the recomputed transaction hash == the recorded expectedHash;
+ *   4. the **message of the recorded unsigned payload (ground truth) with the signature section removed** matches the signed payload's message byte for byte.
  *
- * 第 4 条替代了 EVM 的"逐字段比对 nonce/to/value/data"：Solana 的 message 是自描述的，
- * 逐字节相等比逐字段重建更强（连账户顺序、指令数据都覆盖）。
+ * Rule 4 replaces EVM's "field-by-field comparison of nonce/to/value/data": a Solana message is self-describing,
+ * so byte-for-byte equality is stronger than field-by-field reconstruction (it covers account order and instruction data too).
  *
- * 不验证签名本身（那需要 ed25519 + 完整账户解析）；这不是本层的职责，也**不**谎称已做。
- * 真正的最终权威是链：广播后由 `simulateTransaction`/确认路径判断。
+ * The signature itself is not verified (that needs ed25519 + full account parsing); that is not this layer's job, and it is **not** claimed to be done.
+ * The chain is the real final authority: after broadcast, `simulateTransaction` / the confirmation path decides.
  */
 import { fromBase64, splitSignatures, decodeTransactionPayload } from './transaction-codec.js';
 import type { SolanaDecodedTransaction } from './transaction-codec.js';
@@ -38,21 +38,21 @@ export class SolanaBindingError extends Error {
 }
 
 export interface SolanaSignedBindingInput {
-  /** 记录里的发送方（fee payer）。 */
+  /** The sender from the record (fee payer). */
   readonly from: string;
-  /** 记录里的未签名载荷（真值）。 */
+  /** The unsigned payload in the record (ground truth). */
   readonly unsignedPayload: string;
-  /** 记录里的 expectedHash（由载荷重算）。 */
+  /** The recorded expectedHash (recomputed from the payload). */
   readonly expectedHash: string;
 }
 
 export interface SolanaSignedBindingResult {
-  /** 由签名载荷重算的交易哈希（第 0 个签名，base58）。 */
+  /** Transaction hash recomputed from the signed payload (signature 0, base58). */
   readonly txHash: string;
   readonly decoded: SolanaDecodedTransaction;
 }
 
-/** 返回去掉签名段后的 message 字节（base64 输入）。 */
+/** Return the message bytes with the signature section removed (base64 input). */
 function messageBytesOf(payloadBase64: string): Uint8Array {
   const bytes = fromBase64(payloadBase64, 'payload');
   const { messageBytes } = splitSignatures(bytes);
@@ -68,9 +68,9 @@ function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
 }
 
 /**
- * 解析并绑定一笔外部签名的 Solana 交易。
+ * Parse and bind an externally signed Solana transaction.
  *
- * 所有失败都抛 `SolanaBindingError`（由 Adapter 归一化为 422 `DFR_TRANSACTION_REJECTED`）。
+ * All failures throw `SolanaBindingError` (normalized by the Adapter to 422 `DFR_TRANSACTION_REJECTED`).
  */
 export function bindSignedTransaction(
   signedPayload: string,
@@ -80,38 +80,38 @@ export function bindSignedTransaction(
   try {
     decoded = decodeTransactionPayload(signedPayload);
   } catch (error) {
-    throw new SolanaBindingError('invalid_payload', error instanceof Error ? error.message : '载荷解析失败');
+    throw new SolanaBindingError('invalid_payload', error instanceof Error ? error.message : 'payload parsing failed');
   }
   if (!decoded.signed) {
-    throw new SolanaBindingError('not_signed', '载荷没有有效签名（签名为全零）');
+    throw new SolanaBindingError('not_signed', 'payload has no valid signature (signature is all zeros)');
   }
 
   const feePayer = decoded.accountKeys[0];
   if (feePayer === undefined || feePayer !== input.from) {
-    throw new SolanaBindingError('sender_mismatch', '签名载荷的 fee payer 与记录不一致');
+    throw new SolanaBindingError('sender_mismatch', 'signed payload fee payer does not match the record');
   }
 
   const txHash = decoded.signatures[0];
   if (txHash === undefined) {
-    throw new SolanaBindingError('invalid_payload', '签名载荷没有签名段');
+    throw new SolanaBindingError('invalid_payload', 'signed payload has no signature section');
   }
   if (txHash !== input.expectedHash) {
-    throw new SolanaBindingError('expected_hash_mismatch', '重算的交易哈希与记录不一致');
+    throw new SolanaBindingError('expected_hash_mismatch', 'recomputed transaction hash does not match the record');
   }
 
-  // message 逐字节相等：记录的 unsigned 载荷与签名载荷必须是**同一笔交易**。
+  // Messages must be byte-for-byte equal: the recorded unsigned payload and the signed payload must be the **same transaction**.
   let expectedMessage: Uint8Array;
   try {
     expectedMessage = messageBytesOf(input.unsignedPayload);
   } catch (error) {
     throw new SolanaBindingError(
       'invalid_expectation',
-      error instanceof Error ? error.message : '记录的未签名载荷无法解析',
+      error instanceof Error ? error.message : 'recorded unsigned payload cannot be parsed',
     );
   }
   const actualMessage = messageBytesOf(signedPayload);
   if (!bytesEqual(expectedMessage, actualMessage)) {
-    throw new SolanaBindingError('unsigned_payload_mismatch', '签名载荷与记录的未签名载荷不是同一笔交易');
+    throw new SolanaBindingError('unsigned_payload_mismatch', 'signed payload is not the same transaction as the recorded unsigned payload');
   }
 
   return { txHash, decoded };

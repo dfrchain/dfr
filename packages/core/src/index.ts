@@ -1,5 +1,5 @@
 /**
- * @dfr/core —— DFR Core（M0：Query Engine + Capability Router）。
+ * @dfr/core — DFR Core (M0: Query Engine + Capability Router).
  */
 export {
   DfrCore,

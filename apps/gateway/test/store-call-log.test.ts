@@ -1,8 +1,8 @@
-// Store 调用结构化日志契约测试（observability-spec 第 4 章 store.read / store.write）。
+// Store call structured-log contract test (observability-spec chapter 4 store.read / store.write).
 //
-// 与 provider / adapter 日志测试同构：白名单护栏 + 真实 composition root 接线。
-// Store 调用由 `TransactionEngine` 内的端口层包装产生（单点实现），因此这里主要验证
-// "白名单正确"与"真实请求会产出记录"，而不重复引擎侧的行为测试。
+// Isomorphic to the provider / adapter log tests: allowlist guardrail + real composition-root wiring.
+// Store calls are produced by the port-layer wrapper inside `TransactionEngine` (a single implementation point), so this mainly verifies
+// "the allowlist is correct" and "a real request produces records", without repeating the engine-side behavior tests.
 import { describe, expect, it, vi } from 'vitest';
 import type { StoreCallRecord } from '@dfr/transaction';
 import {
@@ -25,8 +25,8 @@ const RECORD: StoreCallRecord = {
   spanId: 'b'.repeat(16),
 };
 
-describe('Store 调用结构化日志（observability-spec §4）', () => {
-  it('字段名符合 observability-spec 第 3 章统一命名，并带 store.read/write span 名', () => {
+describe('Store call structured logging (observability-spec §4)', () => {
+  it('field names follow the unified naming in observability-spec chapter 3, with store.read/write span names', () => {
     const fields = storeCallLogFields(RECORD);
     expect(fields['request_id']).toBe(RECORD.requestId);
     expect(fields['trace_id']).toBe(RECORD.traceId);
@@ -40,13 +40,13 @@ describe('Store 调用结构化日志（observability-spec §4）', () => {
     expect(fields['msg']).toBe('store call');
     expect(fields['level']).toBe('info');
 
-    // 读操作映射到 store.read。
+    // Read operations map to store.read.
     expect(storeCallLogFields({ ...RECORD, operation: 'get', kind: 'read' })['span']).toBe(
       'store.read',
     );
   });
 
-  it('每个记录字段都必须被归类为"可入日志"或"有意排除"（新增字段会让本测试失败）', () => {
+  it('every record field must be classified as "loggable" or "deliberately excluded" (a new field fails this test)', () => {
     const allowlisted = new Set(Object.keys(STORE_CALL_LOG_FIELDS));
     const excluded = new Set<string>(STORE_CALL_LOG_EXCLUDED);
     const unclassified = Object.keys(RECORD).filter(
@@ -54,11 +54,11 @@ describe('Store 调用结构化日志（observability-spec §4）', () => {
     );
     expect(
       unclassified,
-      'StoreCallRecord 新增了未归类字段：请判断它是否可写日志，并更新白名单或排除列表',
+      'StoreCallRecord has an unclassified field: judge whether it may be logged, and update the allowlist or exclusion list',
     ).toEqual([]);
   });
 
-  it('失败调用以 warn 记录并带稳定错误码', () => {
+  it('failed calls are recorded as warn with a stable error code', () => {
     const fields = storeCallLogFields({
       ...RECORD,
       status: 'error',
@@ -68,7 +68,7 @@ describe('Store 调用结构化日志（observability-spec §4）', () => {
     expect(fields['error_code']).toBe('DFR_INTERNAL_ERROR');
   });
 
-  it('业务值（地址 / 载荷 / nonce / 租约 token）绝不进入日志（白名单负对照）', () => {
+  it('business values (addresses / payloads / nonces / lease tokens) never enter logs (allowlist negative control)', () => {
     const polluted = {
       ...RECORD,
       address: '0x1111111111111111111111111111111111111111',
@@ -85,16 +85,16 @@ describe('Store 调用结构化日志（observability-spec §4）', () => {
     expect(serialized).not.toContain('aa'.repeat(32));
   });
 
-  it('日志出口不抛错', () => {
+  it('the log outlet does not throw', () => {
     const logger = createStoreCallLogger(() => {
       throw new Error('stdout closed');
     });
     expect(() => logger(RECORD)).not.toThrow();
   });
 
-  it('真实 Gateway：一次成功的 build 请求产出 store 调用日志', async () => {
-    // 用仓库的内存 Store 替身（与 transaction 包测试同一实现），避免手写假 Store 的形状偏差；
-    // 本用例只验证"composition root 把观测出口接上且分类正确"。
+  it('real Gateway: one successful build request produces store call logs', async () => {
+    // Use the repo's in-memory Store stand-in (the same implementation as the transaction package tests), avoiding shape drift from hand-written fake Stores;
+    // this case only verifies "the composition root wires up the observability outlet with correct classification".
     const { TransactionEngine } = await import('@dfr/transaction');
     const stores = createInMemoryTransactionStores();
     const observed: string[] = [];
@@ -148,7 +148,7 @@ describe('Store 调用结构化日志（observability-spec §4）', () => {
         }),
       });
       expect(response.status).toBe(200);
-      // 四次写调用都被观测，且分类正确。
+      // All four write calls are observed, with correct classification.
       expect(observed).toEqual([
         'idempotency.begin:write',
         'nonce.reserve:write',
@@ -160,10 +160,10 @@ describe('Store 调用结构化日志（observability-spec §4）', () => {
     }
   }, 20_000);
 
-  it('真实 startGateway：M1 装配 store 观测出口（启动恢复轮即产生记录）', async () => {
-    // 接线测试：真实 composition root 必须把 onStoreCall 接上。
-    // M1 启动时会先跑一轮 RecoveryCoordinator（pruneExpired / releaseExpiredOrphaned /
-    // listRecoverable），这些 Store 调用应当产生日志——因此无需业务请求即可验证接线。
+  it('real startGateway: M1 assembles the store observability outlet (the startup recovery round already produces records)', async () => {
+    // Wiring test: the real composition root must wire up onStoreCall.
+    // At M1 startup, one RecoveryCoordinator round runs first (pruneExpired / releaseExpiredOrphaned /
+    // listRecoverable), and these Store calls should produce logs — so the wiring can be verified without any business request.
     const { startGateway } = await import('../src/main.js');
     const lines: string[] = [];
     const stdout = vi.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => {
@@ -207,7 +207,7 @@ describe('Store 调用结构化日志（observability-spec §4）', () => {
       expect(record['kind']).toBe('write');
       expect(record['span']).toBe('store.write');
       expect(record['latency_ms']).toBeTypeOf('number');
-      // 后台恢复路径没有请求上下文，不得凭空造一个 request_id。
+      // Background recovery paths have no request context; a request_id must not be invented out of thin air.
       expect(record).not.toHaveProperty('request_id');
     } finally {
       await app?.close();
@@ -216,10 +216,10 @@ describe('Store 调用结构化日志（observability-spec §4）', () => {
     }
   }, 20_000);
 
-  it('真实 startGateway：引擎写路径的 store 调用带 request_id（区分引擎接线与后台接线）', async () => {
-    // 关键区分信号：后台巡检（恢复/重组）没有请求上下文，记录**不带** request_id；
-    // 只有把 onStoreCall 接进 TransactionEngine，请求路径的 store 调用才会带 request_id。
-    // 因此本用例能捕获"引擎接线被删掉"（后台接线仍在）这种回归。
+  it('real startGateway: store calls on the engine write path carry request_id (distinguishing engine wiring from background wiring)', async () => {
+    // Key distinguishing signal: background sweeps (recovery/reorg) have no request context, so records carry **no** request_id;
+    // only when onStoreCall is wired into TransactionEngine do request-path store calls carry request_id.
+    // So this case can catch the regression of "engine wiring deleted" (while background wiring remains).
     const { startGateway } = await import('../src/main.js');
     const stores = createInMemoryTransactionStores();
     const lines: string[] = [];
@@ -256,9 +256,9 @@ describe('Store 调用结构化日志（observability-spec §4）', () => {
       );
 
       const before = lines.length;
-      // build 会先写幂等记录（idempotency.begin）再读链上 nonce。
-      // 本测试未配置 Provider，因此链调用会失败；但幂等 begin 已经发生，
-      // 足以验证"请求路径的 store 调用被观测且带 request_id"。
+      // build first writes the idempotency record (idempotency.begin), then reads the on-chain nonce.
+      // This test configures no Provider, so the chain call fails; but the idempotency begin has already happened,
+      // which is enough to verify "request-path store calls are observed and carry request_id".
       const response = await fetch(`http://127.0.0.1:${app.port}/v1/transactions/build`, {
         method: 'POST',
         headers: {
@@ -291,7 +291,7 @@ describe('Store 调用结构化日志（observability-spec §4）', () => {
     }
   }, 20_000);
 
-  it('createStoreCallLogger 输出单行 JSON', () => {
+  it('createStoreCallLogger outputs single-line JSON', () => {
     const write = vi.fn();
     createStoreCallLogger(write)(RECORD);
     const line = write.mock.calls[0]?.[0] as string;

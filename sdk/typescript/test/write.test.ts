@@ -1,11 +1,11 @@
 /**
- * SDK 写路径契约测试（DFR-M1-B09）。
+ * SDK write-path contract tests (DFR-M1-B09).
  *
- * 权威来源：docs/architecture/m1-api-contract.md 第 1/2/5 节、
- * docs/architecture/error-spec-v0.1.md 第 7 节（客户端处理建议）。
+ * Authoritative sources: docs/architecture/m1-api-contract.md Sections 1/2/5,
+ * docs/architecture/error-spec-v0.1.md Section 7 (client-handling advice).
  *
- * 本文件只验证 SDK 的职责：默认生成幂等键、请求体原样透传、把 HTTP/传输失败
- * 归一化为 `DfrApiError`，并且**取消（caller abort）与超时是两种不同结果**。
+ * This file only verifies the SDK's responsibilities: generating default idempotency keys, passing request bodies through unchanged, and normalizing HTTP/transport failures
+ * into `DfrApiError`; and **cancellation (caller abort) and timeout are two different outcomes**.
  */
 import { describe, expect, it, vi } from 'vitest';
 import { isValidRequestId } from '@dfr/errors';
@@ -84,8 +84,8 @@ const OK_BUILD = {
   requestId: 'req_01J8Z6W3Q2K9M4ABCDEFGHJKMN',
 };
 
-describe('SDK confirmTransaction（DFR-M1-D05）', () => {
-  it('POST confirm path/body，保留 requestId 封套与 reached=false', async () => {
+describe('SDK confirmTransaction (DFR-M1-D05)', () => {
+  it('POST confirm path/body, keeping the requestId envelope and reached=false', async () => {
     const seen: Captured[] = [];
     const txHash = `0x${'a'.repeat(64)}`;
     const payload = {
@@ -108,7 +108,7 @@ describe('SDK confirmTransaction（DFR-M1-D05）', () => {
     expect(result).toEqual(payload);
   });
 
-  it('本地 HTTP 超时不会早于服务端 timeoutMs 等待窗口', async () => {
+  it('local HTTP timeout never fires before the server-side timeoutMs wait window', async () => {
     const txHash = `0x${'b'.repeat(32)}`;
     const dfr = client(async () => {
       await new Promise((resolve) => setTimeout(resolve, 80));
@@ -128,8 +128,8 @@ describe('SDK confirmTransaction（DFR-M1-D05）', () => {
   });
 });
 
-describe('SDK buildTransaction（DFR-M1-B09）', () => {
-  it('POST /v1/transactions/build，默认生成幂等键，并返回契约封套', async () => {
+describe('SDK buildTransaction (DFR-M1-B09)', () => {
+  it('POST /v1/transactions/build, generating a default idempotency key and returning the contract envelope', async () => {
     const seen: Captured[] = [];
     const dfr = client(capture(() => jsonResponse(200, OK_BUILD), seen));
 
@@ -150,7 +150,7 @@ describe('SDK buildTransaction（DFR-M1-B09）', () => {
     expect(result.requestId).toBe(OK_BUILD.requestId);
   });
 
-  it('每次调用生成不同的幂等键（重试要显式复用同一个键）', async () => {
+  it('each call generates a different idempotency key (retries must explicitly reuse the same key)', async () => {
     const seen: Captured[] = [];
     const dfr = client(capture(() => jsonResponse(200, OK_BUILD), seen));
 
@@ -160,7 +160,7 @@ describe('SDK buildTransaction（DFR-M1-B09）', () => {
     expect(seen[0]?.headers['idempotency-key']).not.toBe(seen[1]?.headers['idempotency-key']);
   });
 
-  it('调用方显式给出的幂等键优先于自动生成', async () => {
+  it('a caller-provided idempotency key wins over the generated one', async () => {
     const seen: Captured[] = [];
     const dfr = client(capture(() => jsonResponse(200, OK_BUILD), seen));
 
@@ -170,8 +170,8 @@ describe('SDK buildTransaction（DFR-M1-B09）', () => {
   });
 });
 
-describe('SDK simulateTransaction（DFR-M1-B09）', () => {
-  it('POST /v1/transactions/simulate，body 为 transactionId + unsignedTransaction', async () => {
+describe('SDK simulateTransaction (DFR-M1-B09)', () => {
+  it('POST /v1/transactions/simulate, body is transactionId + unsignedTransaction', async () => {
     const seen: Captured[] = [];
     const dfr = client(
       capture(
@@ -195,14 +195,14 @@ describe('SDK simulateTransaction（DFR-M1-B09）', () => {
       transactionId: OK_BUILD.transactionId,
       unsignedTransaction: UNSIGNED,
     });
-    // simulate 由 transactionId 定位；不自动生成幂等键。
+    // simulate is located by transactionId; no idempotency key is generated.
     expect(seen[0]?.headers['idempotency-key']).toBeUndefined();
     expect(result.simulation).toEqual({ success: true });
   });
 });
 
-describe('SDK 错误与取消语义（DFR-M1-B09）', () => {
-  it('HTTP 错误 → DfrApiError（code/status/requestId 来自错误封套），不重试', async () => {
+describe('SDK error and cancellation semantics (DFR-M1-B09)', () => {
+  it('HTTP error → DfrApiError (code/status/requestId from the error envelope), no retry', async () => {
     const seen: Captured[] = [];
     const dfr = client(
       capture(
@@ -238,7 +238,7 @@ describe('SDK 错误与取消语义（DFR-M1-B09）', () => {
     expect(seen).toHaveLength(1);
   });
 
-  it('响应体不是错误封套时仍给可用的 DfrApiError（不泄漏 Key）', async () => {
+  it('a usable DfrApiError is still given when the response body is not an error envelope (no Key leaked)', async () => {
     const dfr = client(
       capture(() => new Response('<html>502</html>', { status: 502 }), []),
     );
@@ -251,7 +251,7 @@ describe('SDK 错误与取消语义（DFR-M1-B09）', () => {
     expect(JSON.stringify(apiError.message)).not.toContain(KEY);
   });
 
-  it('超时 → DfrApiError DFR_PROVIDER_TIMEOUT(504)，可重试且带上调用方 requestId', async () => {
+  it('timeout → DfrApiError DFR_PROVIDER_TIMEOUT(504), retryable and carrying the caller's requestId', async () => {
     const dfr = client(neverResponds, 20);
 
     const err = await dfr
@@ -266,12 +266,12 @@ describe('SDK 错误与取消语义（DFR-M1-B09）', () => {
     expect(apiError.code).toBe('DFR_PROVIDER_TIMEOUT');
     expect(apiError.status).toBe(504);
     expect(apiError.retryable).toBe(true);
-    // SDK 发送 X-Request-Id（Gateway 会回写同一个值），因此超时也能关联服务端日志。
-    // 用 @dfr/errors 的真实校验器断言格式，防止两份 ID 实现漂移。
+    // The SDK sends X-Request-Id (the Gateway writes back the same value), so timeouts can also be correlated with server logs.
+    // Assert the format with the real @dfr/errors validator, so the two ID implementations do not drift.
     expect(isValidRequestId(apiError.requestId)).toBe(true);
   });
 
-  it('调用方取消 → 原样抛出调用方的 abort 原因，不伪装成 DfrApiError', async () => {
+  it('caller cancellation → the caller's abort reason is rethrown as-is, not disguised as a DfrApiError', async () => {
     const dfr = client(neverResponds, 10_000);
     const controller = new AbortController();
     const reason = new Error('caller-cancelled');
@@ -283,7 +283,7 @@ describe('SDK 错误与取消语义（DFR-M1-B09）', () => {
     expect(isDfrApiError(err)).toBe(false);
   });
 
-  it('传输失败（fetch reject）→ DfrApiError DFR_PROVIDER_UNAVAILABLE，且不含 Key/URL 细节', async () => {
+  it('transport failure (fetch reject) → DfrApiError DFR_PROVIDER_UNAVAILABLE, with no Key/URL details', async () => {
     const dfr = client(
       async () => {
         throw new TypeError('fetch failed: connect ECONNREFUSED');
@@ -299,7 +299,7 @@ describe('SDK 错误与取消语义（DFR-M1-B09）', () => {
     expect(apiError.message).not.toContain(BASE);
   });
 
-  it('describe() 与错误信息不包含 API Key', async () => {
+  it('describe() and error messages contain no API Key', async () => {
     const dfr = client(capture(() => jsonResponse(200, OK_BUILD), []));
     expect(dfr.describe()).toBe(`DFR(baseUrl=${BASE})`);
     expect(dfr.describe()).not.toContain(KEY);
@@ -316,7 +316,7 @@ describe('SDK 错误与取消语义（DFR-M1-B09）', () => {
   });
 });
 
-/** 永不 resolve，但会把 abort 转成 fetch 的 rejection（模拟真实 fetch 行为）。 */
+/** Never resolves, but turns abort into a fetch rejection (simulating real fetch behavior). */
 const neverResponds: typeof fetch = (_input, init) =>
   new Promise<Response>((_resolve, reject) => {
     const signal = init?.signal ?? undefined;
@@ -330,15 +330,15 @@ const neverResponds: typeof fetch = (_input, init) =>
 
 void vi;
 
-describe('SDK Idempotency-Key 长度契约（TODO-007）', () => {
-  // 与 OpenAPI `IdempotencyKey` / `IdempotencyKeyOptional` 及 Gateway 强制值一致。
-  // 本地 fail-fast 的价值：调用方立刻拿到清晰错误，且不浪费一次必然被拒的网络往返。
-  it('常量与 OpenAPI 一致（8..128）', () => {
+describe('SDK Idempotency-Key length contract (TODO-007)', () => {
+  // Matches OpenAPI `IdempotencyKey` / `IdempotencyKeyOptional` and the Gateway-enforced values.
+  // The value of local fail-fast: the caller immediately gets a clear error without wasting a network round trip on a request that will certainly be rejected.
+  it('constants match OpenAPI (8..128)', () => {
     expect(IDEMPOTENCY_KEY_MIN_LENGTH).toBe(8);
     expect(IDEMPOTENCY_KEY_MAX_LENGTH).toBe(128);
   });
 
-  it('buildTransaction：过短 / 过长 / 边界值', async () => {
+  it('buildTransaction: too short / too long / boundary values', async () => {
     const seen: Captured[] = [];
     const dfr = client(capture(() => jsonResponse(200, OK_BUILD), seen));
 
@@ -348,13 +348,13 @@ describe('SDK Idempotency-Key 长度契约（TODO-007）', () => {
     await expect(
       dfr.buildTransaction(REQUEST, { idempotencyKey: 'a'.repeat(129) }),
     ).rejects.toBeInstanceOf(TypeError);
-    // 边界值合法，且不得发出请求前就被拒。
+    // Boundary values are valid and must not be rejected before a request is sent.
     await dfr.buildTransaction(REQUEST, { idempotencyKey: 'b'.repeat(8) });
     await dfr.buildTransaction(REQUEST, { idempotencyKey: 'c'.repeat(128) });
     expect(seen).toHaveLength(2);
   });
 
-  it('simulateTransaction：提供键时同样受契约约束', async () => {
+  it('simulateTransaction: providing a key is bound by the same contract', async () => {
     const seen: Captured[] = [];
     const dfr = client(
       capture(
@@ -373,7 +373,7 @@ describe('SDK Idempotency-Key 长度契约（TODO-007）', () => {
     expect(seen).toHaveLength(1);
   });
 
-  it('broadcastTransaction：缺失 / 过短 / 过长都被本地拒绝', async () => {
+  it('broadcastTransaction: missing / too short / too long are all rejected locally', async () => {
     const dfr = client(capture(() => jsonResponse(202, {}), []));
     const signed = {
       schemaVersion: '1',

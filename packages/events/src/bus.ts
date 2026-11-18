@@ -1,30 +1,30 @@
 /**
- * 进程内事件总线（M2-C01，ADR-006 / ADR-026）。
+ * In-process event bus (M2-C01, ADR-006 / ADR-026).
  *
- * 语义（与 ADR-006 一致，不含任何更强承诺）：
- * - **at-least-once**：订阅者可能收到重复，必须按 `eventId` 去重；
- * - **cursor 仅在进程生命周期内有效**：不跨重启，不跨进程；
- * - **订阅作用域内单调**：`filter.chain` 省略时在跨链合并流上统一分配，
- *   指定时按该链各自分配；两种作用域的 cursor **不可互换**；
- * - **有界重放**：`afterCursor` 只能重放仍在环形缓冲区中的事件；超出即明确告知
- *   （`replayTruncated`），而不是静默丢掉一段历史。
+ * Semantics (matching ADR-006, with no stronger promises):
+ * - **at-least-once**: subscribers may receive duplicates and must dedupe by `eventId`;
+ * - **cursor valid only within the process lifetime**: not across restarts, not across processes;
+ * - **monotonic within the subscription scope**: when `filter.chain` is omitted, cursors are allocated uniformly on the merged cross-chain stream;
+ *   when specified, each chain allocates its own; cursors from the two scopes are **not interchangeable**;
+ * - **bounded replay**: `afterCursor` can only replay events still in the ring buffer; going beyond is reported explicitly
+ *   (`replayTruncated`) instead of silently dropping a slice of history.
  *
- * 本模块不 import Core / Adapter / Transaction / Storage，也不做持久化。
+ * This module does not import Core / Adapter / Transaction / Storage, and does no persistence.
  */
 
 import { randomUUID } from 'node:crypto';
 import type { ChainEvent, ChainId, Cursor, EventFilter, Iso8601 } from '@dfr/types';
 
-/** 默认环形缓冲容量：进程内重放窗口。可按部署调整。 */
+/** Default ring-buffer capacity: the in-process replay window. Adjustable per deployment. */
 export const DEFAULT_REPLAY_CAPACITY = 1_000;
 
 export interface EventBusOptions {
-  /** 保留最近多少个事件用于进程内重放。 */
+  /** How many recent events to retain for in-process replay. */
   readonly replayCapacity?: number;
-  /** 注入点（测试用）：事件 ID 与时间。 */
+  /** Injection point (for tests): event ID and time. */
   readonly newEventId?: () => string;
   readonly now?: () => string;
-  /** 注入点（测试用）：cursor 起始值。 */
+  /** Injection point (for tests): cursor start value. */
   readonly initialCursor?: bigint;
 }
 
@@ -36,41 +36,41 @@ export interface PublishInput<T> {
   readonly txRef?: ChainEvent<T>['txRef'];
 }
 
-/** 订阅句柄：`close()` 幂等，之后不再收到任何事件。 */
+/** Subscription handle: `close()` is idempotent; no more events arrive afterwards. */
 export interface Subscription {
   readonly id: string;
   readonly filter: EventFilter;
   close(): void;
-  /** 供测试与运维观察：已投递事件数。 */
+  /** For test and ops observation: number of events delivered. */
   readonly delivered: number;
 }
 
 export interface ReplayResult<T = unknown> {
   readonly events: readonly ChainEvent<T>[];
   /**
-   * 请求的 `afterCursor` 早于缓冲区最早事件 → 中间有一段已无法重放。
-   * 调用方**必须**据此判断是否接受"不完整重放"，不得当作完整历史。
+   * The requested `afterCursor` predates the earliest event in the buffer -> a middle slice can no longer be replayed.
+   * The caller **must** use this to decide whether to accept an "incomplete replay"; it must not be treated as complete history.
    */
   readonly replayTruncated: boolean;
   readonly oldestAvailableCursor?: Cursor;
 }
 
 /**
- * 事件总线。
+ * Event bus.
  *
- * cursor 分配按**订阅作用域**隔离：全局流一个计数器，每条链一个计数器。
- * 这样"跨链订阅"与"单链订阅"各自的 cursor 单调，且互不干扰。
+ * Cursor allocation is isolated by **subscription scope**: one counter for the global stream, one per chain.
+ * That way "cross-chain subscriptions" and "single-chain subscriptions" each have monotonic cursors, without interfering with each other.
  */
 export class EventBus {
   private readonly capacity: number;
   private readonly newEventId: () => string;
   private readonly now: () => string;
 
-  /** 全局流（filter.chain 省略时使用）的 cursor 与缓冲区。 */
+  /** Cursor and buffer of the global stream (used when filter.chain is omitted). */
   private globalCursor: bigint;
   private readonly globalBuffer: ChainEvent[] = [];
 
-  /** 每链流（filter.chain 指定时使用）。 */
+  /** Per-chain streams (used when filter.chain is specified). */
   private readonly chainCursors = new Map<string, bigint>();
   private readonly chainBuffers = new Map<string, ChainEvent[]>();
 
@@ -79,7 +79,7 @@ export class EventBus {
   constructor(options: EventBusOptions = {}) {
     this.capacity = options.replayCapacity ?? DEFAULT_REPLAY_CAPACITY;
     if (!Number.isInteger(this.capacity) || this.capacity < 1) {
-      throw new RangeError('replayCapacity 必须是正整数');
+      throw new RangeError('replayCapacity must be a positive integer');
     }
     this.newEventId = options.newEventId ?? randomUUID;
     this.now = options.now ?? (() => new Date().toISOString());
@@ -87,11 +87,11 @@ export class EventBus {
   }
 
   /**
-   * 发布一个事件。**同时**进入全局流与对应链流，各自分配独立 cursor。
+   * Publish an event. It enters **both** the global stream and the matching chain stream, each with its own cursor.
    *
-   * 为什么要两份：ADR-006 的 A-24 修正规定 cursor 的作用域由订阅时的 filter 决定。
-   * 若只分配一个 cursor，跨链订阅与单链订阅就会互相"跳号"，消费者无法按自己的
-   * 作用域重放。
+   * Why two copies: ADR-006 fix A-24 states that cursor scope is decided by the filter at subscribe time.
+   * With a single cursor, cross-chain and single-chain subscriptions would "skip numbers" on each other, and consumers could not
+   * replay within their own scope.
    */
   publish<T>(input: PublishInput<T>): { global: ChainEvent<T>; chain: ChainEvent<T> } {
     const eventId = this.newEventId();
@@ -122,7 +122,7 @@ export class EventBus {
     }
     this.push(buffer, chainEvent);
 
-    // 投递给匹配的活跃订阅者（at-least-once：不做去重，由消费端负责）。
+    // Deliver to matching active subscribers (at-least-once: no dedupe; the consumer is responsible).
     for (const entry of this.subscriptions.values()) {
       if (entry.closed) continue;
       if (!matches(entry.filter, globalEvent, chainEvent)) continue;
@@ -131,14 +131,14 @@ export class EventBus {
       try {
         entry.listener(delivered);
       } catch {
-        // 单个订阅者的异常不得影响其他订阅者或发布路径（与"观测失败不影响业务"同约定）。
+        // One subscriber's exception must not affect other subscribers or the publish path (same convention as "observation failures do not affect business").
       }
     }
 
     return { global: globalEvent, chain: chainEvent };
   }
 
-  /** 订阅。返回句柄；`close()` 幂等。 */
+  /** Subscribe. Returns a handle; `close()` is idempotent. */
   subscribe(filter: EventFilter, listener: (event: ChainEvent) => void): Subscription {
     const id = this.newEventId();
     const entry = { filter, listener, delivered: 0, closed: false };
@@ -157,9 +157,9 @@ export class EventBus {
   }
 
   /**
-   * 按 filter 在对应作用域内重放。**仅进程内**：只覆盖仍在缓冲区中的事件。
+   * Replay within the filter's scope. **In-process only**: covers only events still in the buffer.
    *
-   * 不传 `afterCursor` 时从缓冲区最早处开始（即"尽可能完整地重放"）。
+   * Without `afterCursor`, start from the earliest point in the buffer (i.e. "replay as completely as possible").
    */
   replay<T = unknown>(filter: EventFilter): ReplayResult<T> {
     const scope = scopeOf(filter);
@@ -172,7 +172,7 @@ export class EventBus {
     let start = 0;
     if (filter.afterCursor !== undefined) {
       const after = BigInt(filter.afterCursor);
-      // 缓冲区最早事件的 cursor 已经大于 afterCursor → 中间有空档。
+      // The earliest event's cursor in the buffer already exceeds afterCursor -> there is a gap in the middle.
       if (oldest !== undefined && BigInt(oldest) > after + 1n) truncated = true;
       start = buffer.findIndex((e) => BigInt(e.cursor) > after);
       if (start === -1) start = buffer.length;
@@ -186,12 +186,12 @@ export class EventBus {
     };
   }
 
-  /** 当前活跃订阅数（运维/测试观察用）。 */
+  /** Current active subscription count (for ops/test observation). */
   get subscriptionCount(): number {
     return this.subscriptions.size;
   }
 
-  /** 缓冲区中可用于重放的最早/最新 cursor（诊断用）。 */
+  /** Earliest/latest replayable cursor in the buffer (for diagnostics). */
   replayWindow(chain?: ChainId): { oldest?: Cursor; newest?: Cursor; size: number } {
     const buffer = chain === undefined
       ? this.globalBuffer
@@ -205,7 +205,7 @@ export class EventBus {
 
   private push(buffer: ChainEvent[], event: ChainEvent): void {
     buffer.push(event);
-    // 环形缓冲：超出容量即丢弃最旧的（因此重放窗口有界，见 replayTruncated）。
+    // Ring buffer: exceeding capacity drops the oldest (so the replay window is bounded, see replayTruncated).
     if (buffer.length > this.capacity) buffer.splice(0, buffer.length - this.capacity);
   }
 }
@@ -215,10 +215,10 @@ function scopeOf(filter: EventFilter): 'global' | 'chain' {
 }
 
 function matches(filter: EventFilter, globalEvent: ChainEvent, chainEvent: ChainEvent): boolean {
-  // 作用域决定投递哪一个：跨链订阅收全局流，单链订阅收链流。
+  // Scope decides which one to deliver: cross-chain subscriptions get the global stream, single-chain subscriptions get the chain stream.
   if (scopeOf(filter) === 'chain' && globalEvent.chain !== filter.chain) {
-    // 单链订阅只应收到该链的事件。缺了这条判断，链 B 的事件也会投给链 A 的订阅者
-    // （cursor 作用域因此失去意义）。
+    // A single-chain subscription should only receive events from that chain. Without this check, chain B's events would also go to chain A's subscribers
+    // (and cursor scope would lose its meaning).
     return false;
   }
   const event = scopeOf(filter) === 'global' ? globalEvent : chainEvent;
@@ -228,7 +228,7 @@ function matches(filter: EventFilter, globalEvent: ChainEvent, chainEvent: Chain
 function matchesTypesAndAddresses(filter: EventFilter, event: ChainEvent): boolean {
   if (filter.types !== undefined && !filter.types.includes(event.type)) return false;
   if (filter.addresses !== undefined) {
-    // `addresses` 过滤的是"合约/程序事件"；非 contract.event 一律不匹配。
+    // `addresses` filters "contract/program events"; anything that is not a contract.event never matches.
     if (event.type !== 'contract.event') return false;
     const payload = event.payload as { address?: unknown } | null;
     const address = typeof payload === 'object' && payload !== null ? payload.address : undefined;

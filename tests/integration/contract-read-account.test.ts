@@ -1,7 +1,7 @@
 /**
- * `contract.read` / `account.code` 真实链只读联调（ADR-035/036，M4）。
+ * `contract.read` / `account.code` real-chain read-only integration test (ADR-035/036, M4).
  *
- * 默认跳过；显式开启：
+ * Skipped by default; enable explicitly:
  *   DFR_RUN_TESTNET=1 \
  *   DFR_PROVIDER_BASE_SEPOLIA_PRIMARY_URL=https://sepolia.base.org \
  *   pnpm vitest run tests/integration/contract-read-account.test.ts
@@ -18,7 +18,7 @@ const RUN = process.env['DFR_RUN_TESTNET'] === '1';
 const BASE = process.env['DFR_PROVIDER_BASE_SEPOLIA_PRIMARY_URL'];
 const ENABLED = RUN && BASE !== undefined && BASE !== '';
 const CHAIN = 'base-sepolia' as ChainId;
-// Base Sepolia 的 Wrapped Ether（ERC-20 合约，公开已知地址）。
+// Base Sepolia Wrapped Ether (ERC-20 contract, publicly known address).
 const WETH = '0x4200000000000000000000000000000000000006';
 
 function makeCore(): DfrCore {
@@ -38,8 +38,8 @@ function makeCore(): DfrCore {
   });
 }
 
-describe.skipIf(!ENABLED)('contract.read / account.code 真实链只读联调（ADR-035/036）', () => {
-  it('account.code：WETH 是合约；普通地址是 EOA', async () => {
+describe.skipIf(!ENABLED)('contract.read / account.code real-chain read-only integration test (ADR-035/036)', () => {
+  it('account.code: WETH is a contract; a regular address is an EOA', async () => {
     const core = makeCore();
     const contract = await core.getAccount(CHAIN, { chain: CHAIN, address: WETH }, { requestId: newRequestId() });
     expect(contract.kind).toBe('contract');
@@ -49,7 +49,7 @@ describe.skipIf(!ENABLED)('contract.read / account.code 真实链只读联调（
     expect(eoa.kind).toBe('externally-owned');
   }, 30_000);
 
-  it('contract.read：abi+method 读 WETH.totalSupply() 并解码为十进制字符串', async () => {
+  it('contract.read: abi+method reads WETH.totalSupply() and decodes it to a decimal string', async () => {
     const result = await makeCore().readContract(
       CHAIN,
       { chain: CHAIN, contract: WETH, abi: ['function totalSupply() view returns (uint256)'], method: 'totalSupply' },
@@ -57,7 +57,7 @@ describe.skipIf(!ENABLED)('contract.read / account.code 真实链只读联调（
     );
     expect(typeof result.data).toBe('string');
     expect(result.data.startsWith('0x')).toBe(true);
-    // bigint 被归一化为十进制字符串。
+    // bigint is normalized to a decimal string.
     expect(typeof result.decoded).toBe('string');
     expect(/^\d+$/u.test(String(result.decoded))).toBe(true);
   }, 30_000);

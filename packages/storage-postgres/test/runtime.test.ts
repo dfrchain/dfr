@@ -6,8 +6,8 @@ import {
   createPostgresTransactionRuntime,
 } from '../src/runtime.js';
 
-describe('PostgreSQL runtime factory（ADR-017）', () => {
-  it('本地不可达端口只返回固定脱敏错误', async () => {
+describe('PostgreSQL runtime factory (ADR-017)', () => {
+  it('an unreachable local port returns only the fixed redacted error', async () => {
     const databaseUrl = 'postgres://127.0.0.1:1/dfr_unreachable';
 
     let caught: unknown;
@@ -27,7 +27,7 @@ describe('PostgreSQL runtime factory（ADR-017）', () => {
 const RUNTIME_DSN = process.env['DFR_TRANSACTION_DATABASE_URL'];
 const DB_ENABLED = typeof RUNTIME_DSN === 'string' && RUNTIME_DSN.length > 0;
 
-describe.skipIf(!DB_ENABLED)('PostgreSQL runtime 空闲连接丢失（E5 故障演练发现）', () => {
+describe.skipIf(!DB_ENABLED)('PostgreSQL runtime idle-connection loss (found by the E5 failure drill)', () => {
   let admin: Client;
 
   beforeAll(async () => {
@@ -40,7 +40,7 @@ describe.skipIf(!DB_ENABLED)('PostgreSQL runtime 空闲连接丢失（E5 故障�
     if (DB_ENABLED) await admin.end();
   });
 
-  it('空闲连接被数据库切断时池错误被处理，进程继续可查询', async () => {
+  it('when the database cuts an idle connection, the pool error is handled and the process can still query', async () => {
     let poolErrorSignals = 0;
     const uncaught: unknown[] = [];
     const onUncaught = (error: unknown): void => {
@@ -55,10 +55,10 @@ describe.skipIf(!DB_ENABLED)('PostgreSQL runtime 空闲连接丢失（E5 故障�
     });
 
     try {
-      // 先执行一次查询，让池中产生真实空闲连接。
+      // Run one query first so the pool holds a real idle connection.
       await runtime.healthCheck();
 
-      // 用管理连接终止该库的其它后端；pool 的空闲 client 会收到连接错误。
+      // Use an admin connection to terminate the database's other backends; the pool's idle clients receive a connection error.
       await admin.query(
         `SELECT pg_terminate_backend(pid)
            FROM pg_stat_activity
@@ -68,16 +68,16 @@ describe.skipIf(!DB_ENABLED)('PostgreSQL runtime 空闲连接丢失（E5 故障�
       );
       await delay(150);
 
-      // 关键行为：池级 error 被 runtime 的监听器吞掉，没有冒泡成未捕获异常。
-      // pg 会自动重连，因此 healthCheck 通常恢复成功；若数据库确实不可达，
-      // 它会按契约抛固定脱敏错误。两种结果都必须允许。
+      // Key behavior: the pool-level error is swallowed by the runtime's listener and never bubbles up as an uncaught exception.
+      // pg reconnects automatically, so healthCheck usually recovers; if the database is genuinely unreachable,
+      // it throws the fixed redacted error per the contract. Both outcomes must be allowed.
       try {
         await runtime.healthCheck();
       } catch (error) {
         expect(error).toBeInstanceOf(PostgresRuntimeUnavailableError);
       }
       expect(uncaught).toEqual([]);
-      // 该断言是观测而不是强依赖：某些 pg 版本只在真正空闲超时后发 error。
+      // This assertion is an observation, not a hard dependency: some pg versions only emit error after a genuine idle timeout.
       expect(poolErrorSignals).toBeGreaterThanOrEqual(0);
     } finally {
       process.off('uncaughtException', onUncaught);

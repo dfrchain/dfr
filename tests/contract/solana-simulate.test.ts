@@ -1,8 +1,8 @@
 /**
- * Solana Adapter simulate 测试（DFR-M3-B02）。
+ * Solana Adapter simulate test (DFR-M3-B02).
  *
- * 权威来源：m3-taskbook B02、adapter-spec §8.2、EVM 版 simulate 的语义（对齐）。
- * 全部离线：mock Provider 固定 simulateTransaction 的返回。
+ * Authoritative sources: m3-taskbook B02, adapter-spec §8.2, the EVM simulate semantics (aligned).
+ * Fully offline: the mock Provider fixes the simulateTransaction response.
  */
 import { describe, expect, it } from 'vitest';
 import { SolanaAdapter } from '@dfr/adapter-solana';
@@ -39,10 +39,10 @@ const request = (): TransactionRequest => ({
   value: { asset: { kind: 'native', chain: DEVNET }, amount: '0' },
 } as never);
 
-describe('Solana Adapter simulate（M3-B02）', () => {
+describe('Solana Adapter simulate (M3-B02)', () => {
   const adapter = new SolanaAdapter({ chain });
 
-  it('声明 transaction.simulate，且成功路径返回 unitsConsumed / fee', async () => {
+  it('declares transaction.simulate, and the success path returns unitsConsumed / fee', async () => {
     expect(adapter.capabilities().capabilities).toContain('transaction.simulate');
     const ctx = makeContext(chain, { ...baseHandlers, simulateTransaction: okResult });
     const result = await adapter.simulate(ctx, request());
@@ -51,7 +51,7 @@ describe('Solana Adapter simulate（M3-B02）', () => {
     expect(result.estimatedFee).toEqual({ asset: { kind: 'native', chain: DEVNET }, amount: '5000' });
   });
 
-  it('请求路径先 build 再模拟（一次 getLatestBlockhash）', async () => {
+  it('the request path builds first, then simulates (one getLatestBlockhash)', async () => {
     const seen: string[] = [];
     const ctx = makeContext(chain, { ...baseHandlers, simulateTransaction: okResult }, (m) => seen.push(m));
     await adapter.simulate(ctx, request());
@@ -59,27 +59,27 @@ describe('Solana Adapter simulate（M3-B02）', () => {
     expect(seen).toContain('simulateTransaction');
   });
 
-  it('执行回滚不抛 5xx，而是 success:false + revertReason', async () => {
+  it('an execution revert does not throw 5xx; instead success:false + revertReason', async () => {
     const ctx = makeContext(chain, { ...baseHandlers, simulateTransaction: revertResult });
     const result = await adapter.simulate(ctx, request());
     expect(result.success).toBe(false);
     expect(result.revertReason).toContain('InstructionError');
-    // 回滚路径不报 estimatedCost（没有可通过的交易）。
+    // The revert path reports no estimatedCost (there is no passable transaction).
     expect(result.estimatedCost).toBeUndefined();
   });
 
-  it('载荷路径：直接模拟给定 base64 载荷（不再取 blockhash）', async () => {
+  it('the payload path: simulates the given base64 payload directly (no fresh blockhash)', async () => {
     const ctx = makeContext(chain, { ...baseHandlers, simulateTransaction: okResult });
     const built = await adapter.build(ctx, request());
     const seen: string[] = [];
     const ctx2 = makeContext(chain, { ...baseHandlers, simulateTransaction: okResult }, (m) => seen.push(m));
     const result = await adapter.simulate(ctx2, built);
     expect(result.success).toBe(true);
-    expect(seen).toEqual(['simulateTransaction']); // 未再 build
+    expect(seen).toEqual(['simulateTransaction']); // did not build again
     expect(result.warnings?.length).toBeGreaterThan(0);
   });
 
-  it('载荷路径拒绝非 base64 编码（fail-closed）', async () => {
+  it('the payload path rejects non-base64 encoding (fail-closed)', async () => {
     const ctx = makeContext(chain, { ...baseHandlers, simulateTransaction: okResult });
     const unsigned = {
       schemaVersion: '1',
@@ -92,7 +92,7 @@ describe('Solana Adapter simulate（M3-B02）', () => {
     });
   });
 
-  it('BlockhashNotFound → success:false 并提示需重新 build（C03 交接）', async () => {
+  it('BlockhashNotFound → success:false with a hint to rebuild (C03 handoff)', async () => {
     const ctx = makeContext(chain, {
       ...baseHandlers,
       simulateTransaction: () => ({ value: { err: 'BlockhashNotFound', logs: [], unitsConsumed: 0, fee: null } }),
@@ -100,17 +100,17 @@ describe('Solana Adapter simulate（M3-B02）', () => {
     const result = await adapter.simulate(ctx, request());
     expect(result.success).toBe(false);
     expect(result.revertReason).toBe('BlockhashNotFound');
-    expect(result.warnings?.some((w) => w.includes('重新 build'))).toBe(true);
+    expect(result.warnings?.some((w) => w.includes('rebuild'))).toBe(true);
   });
 
-  it('simulateTransaction 缺值 → DFR_PROVIDER_UNAVAILABLE（不假装成功）', async () => {
+  it('simulateTransaction with no value → DFR_PROVIDER_UNAVAILABLE (do not fake success)', async () => {
     const ctx = makeContext(chain, { ...baseHandlers, simulateTransaction: () => ({}) });
     await expect(adapter.simulate(ctx, request())).rejects.toMatchObject({
       code: 'DFR_PROVIDER_UNAVAILABLE',
     });
   });
 
-  it('contract.read 尚未实现 → DFR_UNSUPPORTED_CAPABILITY', async () => {
+  it('contract.read is not implemented yet → DFR_UNSUPPORTED_CAPABILITY', async () => {
     const ctx = makeContext(chain, baseHandlers);
     await expect(
       (adapter as unknown as { readContract(a: unknown, b: unknown): Promise<unknown> }).readContract(ctx, {}),

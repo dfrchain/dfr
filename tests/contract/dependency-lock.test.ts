@@ -33,14 +33,14 @@ function runGate(root: string): { status: number | null; output: string } {
   }
 }
 
-describe('依赖声明与 pnpm 锁文件门禁', () => {
-  it('package.json 暴露门禁且 verify 会执行它', () => {
+describe('Dependency declarations and the pnpm lockfile gate', () => {
+  it('package.json exposes the gate and verify runs it', () => {
     const pkg = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8')) as { scripts: Record<string, string> };
     expect(pkg.scripts['check:dependency-lock']).toBeTruthy();
     expect(pkg.scripts.verify).toContain('check:dependency-lock');
   });
 
-  it('声明版本与锁文件一致时通过', () => {
+  it('passes when declared versions match the lockfile', () => {
     const root = copyFixture();
     try {
       expect(runGate(root)).toMatchObject({ status: 0 });
@@ -49,7 +49,7 @@ describe('依赖声明与 pnpm 锁文件门禁', () => {
     }
   });
 
-  it('锁文件中同一依赖的声明版本漂移时拒绝', () => {
+  it('rejects when the declared version of the same dependency drifts in the lockfile', () => {
     const root = copyFixture();
     try {
       const lockPath = join(root, 'pnpm-lock.yaml');

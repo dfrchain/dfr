@@ -1,15 +1,15 @@
 /**
- * 重播路径契约测试（TODO-012）。
+ * Rebroadcast-path contract test (TODO-012).
  *
- * 预复审发现：`rebroadcast: true` 在引擎中**不可达**——四处文档宣称可用，但
- * `assertBroadcastable` 只放行 `simulated`，且后续用 `sign` 事件而 `dropped`
- * 没有 `sign` 入边。可执行探针曾实测 `broadcastCalls=0`。
+ * What the pre-review found: `rebroadcast: true` was **unreachable** in the engine — four docs claimed it was available, but
+ * `assertBroadcastable` only admitted `simulated`, and the follow-up used the `sign` event, which `dropped``
+ * has no inbound edge for. An executable probe once measured `broadcastCalls=0`.
  *
- * 本文件把重播路径锁成可用，并加负对照防止它被误放宽：
- *   1. `dropped` + 显式 `rebroadcast: true` → 走 `rebroadcast` 事件、单次广播、状态回 `broadcast`；
- *   2. `dropped` + 未显式给 `rebroadcast` → 拒绝（状态机要求显式标记，防隐式第二次广播）；
- *   3. **非 `dropped`** 状态传 `rebroadcast: true` → 拒绝（不能借重播绕过状态闸门）；
- *   4. 重播仍只调用一次 Adapter 广播（non-idempotent-write 不重试）。
+ * This file locks the rebroadcast path as usable, with negative controls to stop it being loosened by mistake:
+ *   1. `dropped` + explicit `rebroadcast: true` → take the `rebroadcast` event, broadcast once, state back to `broadcast`;
+ *   2. `dropped` without an explicit `rebroadcast` → reject (the state machine requires the explicit flag, guarding against an implicit second broadcast);
+ *   3. a **non-`dropped`** state passing `rebroadcast: true` → reject (rebroadcast must not bypass the state gate);
+ *   4. a rebroadcast still calls the Adapter broadcast exactly once (non-idempotent-write is not retried).
  */
 import { describe, expect, it } from 'vitest';
 import { TransactionEngine } from '../src/index.js';
@@ -63,8 +63,8 @@ async function harness(status: string, withExpectedHash = true, failBroadcast?: 
   return { engine, stores, calls: () => broadcastCalls };
 }
 
-describe('重播路径（TODO-012）', () => {
-  it('dropped + 显式 rebroadcast:true → 单次广播、状态回 broadcast、结果标记 rebroadcast', async () => {
+describe('Rebroadcast path (TODO-012)', () => {
+  it('dropped + explicit rebroadcast:true → single broadcast, state back to broadcast, result flagged rebroadcast', async () => {
     const h = await harness('dropped');
 
     const result = await h.engine.broadcast({
@@ -105,18 +105,18 @@ describe('重播路径（TODO-012）', () => {
     expect(h.calls()).toBe(1);
   });
 
-  it('dropped 但未显式给 rebroadcast → 拒绝（防隐式第二次广播）', async () => {
+  it('dropped without an explicit rebroadcast → reject (guard against an implicit second broadcast)', async () => {
     const h = await harness('dropped');
 
     await expect(
       h.engine.broadcast({ transactionId: TX, signed: signed() }),
     ).rejects.toMatchObject({ code: 'DFR_TRANSACTION_REJECTED' });
-    // 关键：拒绝时**不得**发出广播。
+    // Key point: a rejection must **not** emit a broadcast.
     expect(h.calls()).toBe(0);
   });
 
   it.each(['simulated', 'built', 'signed', 'broadcast', 'pending', 'included', 'confirmed'])(
-    '非 dropped 状态 %s 传 rebroadcast:true → 拒绝（不得借重播绕过状态闸门）',
+    'a non-dropped state %s passing rebroadcast:true → reject (rebroadcast must not bypass the state gate)',
     async (status) => {
       const h = await harness(status);
 
@@ -133,7 +133,7 @@ describe('重播路径（TODO-012）', () => {
     },
   );
 
-  it('重播的 expectedHash 与记录不一致 → 拒绝且零广播（不得借重播换一笔交易）', async () => {
+  it('a rebroadcast whose expectedHash differs from the record → reject with zero broadcasts (no swapping in another transaction via rebroadcast)', async () => {
     const h = await harness('dropped');
 
     const error = await h.engine
@@ -151,7 +151,7 @@ describe('重播路径（TODO-012）', () => {
     expect(h.calls()).toBe(0);
   });
 
-  it('dropped 缺失原始 expectedHash 时必须拒绝重播且零广播', async () => {
+  it('a dropped record missing its original expectedHash must refuse rebroadcast with zero broadcasts', async () => {
     const h = await harness('dropped', false);
     expect((await h.stores.transaction.get(TX))?.expectedHash).toBeUndefined();
 
@@ -165,7 +165,7 @@ describe('重播路径（TODO-012）', () => {
     expect(h.calls()).toBe(0);
   });
 
-  it('dropped 重播不能替换已落库的 unsigned payload，拒绝且零广播', async () => {
+  it('a dropped rebroadcast cannot replace the persisted unsigned payload; reject with zero broadcasts', async () => {
     const h = await harness('dropped');
     const altered = signed() as { unsigned: { payload: string } };
     const error = await h.engine.broadcast({
@@ -183,7 +183,7 @@ describe('重播路径（TODO-012）', () => {
     expect((await h.stores.transaction.get(TX))?.status).toBe('dropped');
   });
 
-  it('同一 dropped 交易的并发显式重播最多一次广播（CAS 不允许双重发送）', async () => {
+  it('concurrent explicit rebroadcasts of the same dropped transaction broadcast at most once (CAS forbids double-send)', async () => {
     const h = await harness('dropped');
     const attempt = () => h.engine.broadcast({
       transactionId: TX,
@@ -198,14 +198,14 @@ describe('重播路径（TODO-012）', () => {
     expect((await h.stores.transaction.get(TX))?.status).toBe('broadcast');
   });
 
-  it('simulated + 不传 rebroadcast → 仍走首次广播路径（不因新增分支而回归）', async () => {
+  it('simulated without rebroadcast → still take the first-broadcast path (no regression from the new branch)', async () => {
     const h = await harness('simulated');
 
     const result = await h.engine.broadcast({ transactionId: TX, signed: signed() });
 
     expect(result.status).toBe('broadcast');
     expect(h.calls()).toBe(1);
-    // 首次广播不得被标记为重播。
+    // A first broadcast must not be flagged as a rebroadcast.
     expect(result.rebroadcast).toBeUndefined();
   });
 });

@@ -1,14 +1,14 @@
 /**
- * Core 能力路由的两条失败路径（testing-strategy §8：Capability 路由 100%）。
+ * The two failure paths of Core capability routing (testing-strategy §8: 100% Capability routing).
  *
- * 规范要求"每个能力的支持/不支持两条路径"都被覆盖。`DFR_UNSUPPORTED_CAPABILITY`
- * 有两个成因，二者语义不同、必须区分（observability-spec §5.2 分别计数）：
+ * The spec requires both the supported and unsupported paths of every capability to be covered. `DFR_UNSUPPORTED_CAPABILITY`
+ * has two causes with different semantics that must be distinguished (observability-spec §5.2 counts them separately):
  *
- *   - `capability_not_declared`：Adapter 没声明该能力 → 正常的"这条链不支持"；
- *   - `method_missing`：Registry 声明了、Adapter 却没有对应方法 → 启动校验被绕过，
- *     属**配置事故**，正常应恒为 0。
+ *   - `capability_not_declared`: the Adapter did not declare the capability → the normal "this chain does not support it";
+ *   - `method_missing`: the Registry declared it but the Adapter has no matching method → startup validation was bypassed,
+ *     a **configuration incident**, normally always 0.
  *
- * 后者需要刻意构造一个"能力清单与实现不一致"的 Adapter 才能触发。
+ * The latter needs a deliberately constructed Adapter whose capability list disagrees with its implementation to trigger.
  */
 import { describe, expect, it } from 'vitest';
 import { ChainRegistry } from '@dfr/registry';
@@ -48,7 +48,7 @@ function registry(): ChainRegistry {
   });
 }
 
-/** 声明全部能力、但不实现任何方法的 Adapter（模拟启动校验被绕过）。 */
+/** An Adapter that declares all capabilities but implements none of the methods (simulating bypassed startup validation). */
 function declaredButUnimplemented(chain: unknown): ChainAdapter {
   return {
     family: 'evm',
@@ -77,8 +77,8 @@ function makeCore(create: (chain: unknown) => ChainAdapter, onCapabilityUnsuppor
 
 const ctx = { requestId: 'req_01J8Z6W3Q2K9M4ABCDEFGHJKMN' as never };
 
-describe('Core 能力路由：method_missing（Registry 声明但 Adapter 未实现）', () => {
-  it('getBalance：声明了 account.balance 但没有方法 → UNSUPPORTED，且计为 method_missing', async () => {
+describe('Core capability routing: method_missing (Registry declares it but the Adapter does not implement it)', () => {
+  it('getBalance: declared account.balance but has no method → UNSUPPORTED, counted as method_missing', async () => {
     const seen: Array<{ kind?: string; capability?: string }> = [];
     const core = makeCore(declaredButUnimplemented, (event) => {
       seen.push(event as { kind?: string; capability?: string });
@@ -99,7 +99,7 @@ describe('Core 能力路由：method_missing（Registry 声明但 Adapter 未实
     expect(seen[0]?.capability).toBe('account.balance');
   });
 
-  it('getBlock：同上，block.read 缺方法 → method_missing', async () => {
+  it('getBlock: same as above; block.read missing its method → method_missing', async () => {
     const seen: Array<{ kind?: string }> = [];
     const core = makeCore(declaredButUnimplemented, (event) => {
       seen.push(event as { kind?: string });
@@ -110,7 +110,7 @@ describe('Core 能力路由：method_missing（Registry 声明但 Adapter 未实
     expect(seen[0]?.kind).toBe('method_missing');
   });
 
-  it('getTransaction：同上，transaction.read 缺方法 → method_missing', async () => {
+  it('getTransaction: same as above; transaction.read missing its method → method_missing', async () => {
     const seen: Array<{ kind?: string }> = [];
     const core = makeCore(declaredButUnimplemented, (event) => {
       seen.push(event as { kind?: string });
@@ -122,12 +122,12 @@ describe('Core 能力路由：method_missing（Registry 声明但 Adapter 未实
   });
 });
 
-describe('Core 启动校验：registry ⊄ adapter 时 fail-closed', () => {
-  it('Adapter 未声明 Registry 要求的能力时，构造 Core 直接失败（不进入运行期）', () => {
-    // 这条解释了一个重要事实：`capability_not_declared` **不会**因为"Registry 声明了、
-    // Adapter 没声明"而在运行期出现——那是启动校验的职责，会在这里直接拒绝。
-    // 运行期该分支只会在 Core 请求一个 Adapter 未声明的能力时触发（见上面的 method_missing
-    // 与 gateway 端点的 422 用例）。
+describe('Core startup validation: fail-closed when registry ⊄ adapter', () => {
+  it('when the Adapter does not declare a Registry-required capability, constructing Core fails directly (never reaches runtime)', () => {
+    // This explains an important fact: `capability_not_declared` **never** appears at runtime because "the Registry declared it
+    // but the Adapter did not declare it" — that is the startup validation's job; it refuses directly here.
+    // At runtime, that branch only triggers when Core requests a capability the Adapter did not declare (see the method_missing case above
+    // and the gateway endpoint's 422 case).
     expect(() =>
       new DfrCore({
         registry: registry(),
@@ -152,11 +152,11 @@ describe('Core 启动校验：registry ⊄ adapter 时 fail-closed', () => {
         ],
         milestone: 'M0',
       }),
-    ).toThrowError(/registry 能力超出 Adapter 声明/u);
+    ).toThrowError(/registry capabilities beyond those declared by the Adapter/u);
   });
 });
 
-describe('Core 公开只读 API', () => {
+describe('Core public read-only API', () => {
   const unimplemented = (chain: unknown): ChainAdapter =>
     ({
       family: 'evm',
@@ -171,26 +171,26 @@ describe('Core 公开只读 API', () => {
       }),
     }) as unknown as ChainAdapter;
 
-  it('hasChain 对已注册链为 true、对未知链为 false', () => {
+  it('hasChain is true for a registered chain and false for an unknown chain', () => {
     const core = makeCore(unimplemented);
     expect(core.hasChain('ethereum-sepolia')).toBe(true);
     expect(core.hasChain('base-sepolia')).toBe(false);
   });
 
-  it('providerHealth 对未配置端点的链返回空快照（不抛错、不伪造）', () => {
+  it('providerHealth returns an empty snapshot for a chain with no configured endpoints (no throw, no fabrication)', () => {
     const core = makeCore(unimplemented);
-    // 该链在测试 Registry 里没有可用 Provider 端点，管理器的惰性构造会被跳过，
-    // 因此快照为空数组——这既是"不伪造",也是 `/readyz` 的 0 providers 口径。
+    // That chain has no usable Provider endpoint in the test Registry, so the Manager's lazy construction is skipped,
+    // and the snapshot is therefore an empty array — both "no fabrication" and the `/readyz` 0-providers wording.
     expect(core.providerHealth()).toEqual({ 'ethereum-sepolia': [] });
   });
 
-  it('listChains 只返回当前 milestone 下启用的链', () => {
+  it('listChains only returns chains enabled under the current milestone', () => {
     const core = makeCore(unimplemented);
     expect(core.listChains().map((c) => c.id)).toEqual(['ethereum-sepolia']);
   });
 });
 
-describe('Core 排序前提过期路由（M3-A01，ADR-032）', () => {
+describe('Core ordering-precondition expiry routing (M3-A01, ADR-032)', () => {
   const token = {
     kind: 'blockhash' as const,
     value: '1'.repeat(48) + '2345', // secret-scan:allow public-blockhash-placeholder
@@ -216,18 +216,18 @@ describe('Core 排序前提过期路由（M3-A01，ADR-032）', () => {
     });
   }
 
-  it('Adapter 实现该方法时按它的判定返回', async () => {
+  it('when the Adapter implements the method, return by its decision', async () => {
     await expect(withExpiry(true).isSequencingExpired('ethereum-sepolia' as never, token, ctx)).resolves.toBe(true);
     await expect(withExpiry(false).isSequencingExpired('ethereum-sepolia' as never, token, ctx)).resolves.toBe(false);
   });
 
-  it('B41: 缺少 Solana blockhash 过期检查能力，必须 fail-closed，不得假装仍有效', async () => {
+  it('B41: without the Solana blockhash expiry-check capability, it must fail closed and never pretend it is still valid', async () => {
     await expect(
       withExpiry('missing').isSequencingExpired('ethereum-sepolia' as never, token, ctx),
     ).rejects.toMatchObject({ code: 'DFR_UNSUPPORTED_CAPABILITY' });
   });
 
-  it('B41: EVM nonce 不按区块高度过期，缺少方法时仍兼容返回 false', async () => {
+  it('B41: an EVM nonce does not expire by block height; without the method, still compatibly return false', async () => {
     const nonce = { kind: 'nonce' as const, value: '42' as never };
     await expect(
       withExpiry('missing').isSequencingExpired('ethereum-sepolia' as never, nonce, ctx),

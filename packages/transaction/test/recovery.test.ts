@@ -44,7 +44,7 @@ function sequencing(released: number[] = []): SequencingStore {
 }
 
 describe('RecoveryCoordinator', () => {
-  it('分页扫描且只在获得租约后解析 unknown，不触发广播', async () => {
+  it('paged scan, resolving unknown only after acquiring the lease, with no broadcast triggered', async () => {
     const records = [
       { transactionId: 'txn_1', chain: 'ethereum-sepolia', status: 'unknown', expectedHash: '0xexpected' },
       { transactionId: 'txn_2', status: 'pending' },
@@ -171,7 +171,7 @@ describe('RecoveryCoordinator', () => {
     expect(observed).toBe(0);
   });
 
-  it('有效租约被其他 owner 持有时跳过，不并发解析', async () => {
+  it('skip when a valid lease is held by another owner; no concurrent resolution', async () => {
     const record = {
       transactionId: 'txn_1', chain: 'ethereum-sepolia', status: 'unknown', expectedHash: '0xexpected',
     } as TransactionRecord;
@@ -188,7 +188,7 @@ describe('RecoveryCoordinator', () => {
     expect(resolved).toBe(0);
   });
 
-  it('没有可验证 hash 的 unknown 保持原状，不调用链解析', async () => {
+  it('an unknown with no verifiable hash stays as-is and does not call chain resolution', async () => {
     const record = { transactionId: 'txn_1', chain: 'ethereum-sepolia', status: 'unknown' } as TransactionRecord;
     let acquired = 0;
     let resolved = 0;
@@ -205,7 +205,7 @@ describe('RecoveryCoordinator', () => {
     expect(resolved).toBe(0);
   });
 
-  it('启动前以相同批量上限清理过期幂等和孤儿 nonce 租约', async () => {
+  it('before startup, clean up expired idempotency records and orphaned nonce leases with the same batch cap', async () => {
     const pruned: number[] = [];
     const released: number[] = [];
     const coordinator = new RecoveryCoordinator({
@@ -221,7 +221,7 @@ describe('RecoveryCoordinator', () => {
     expect(released).toHaveLength(1);
   });
 
-  it('装配 sequencing 时同样以相同批量上限回收过期 blockhash 租约（M3-A01 遗留）', async () => {
+  it('with sequencing wired up, reclaim expired blockhash leases with the same batch cap (M3-A01 leftover)', async () => {
     const seqReleased: number[] = [];
     const coordinator = new RecoveryCoordinator({
       transactions: { listRecoverable: async () => [] } as unknown as TransactionStore,
@@ -329,7 +329,7 @@ describe('RecoveryCoordinator', () => {
     await expect(coordinator.reconcileDropped({ limit: 2 })).rejects.toBe(databaseError);
   });
 
-  it('未装配 sequencing 时不报错（EVM-only 部署）', async () => {
+  it('no error when sequencing is not wired up (EVM-only deployment)', async () => {
     const coordinator = new RecoveryCoordinator({
       transactions: { listRecoverable: async () => [] } as unknown as TransactionStore,
       idempotency: idempotency(),
@@ -342,7 +342,7 @@ describe('RecoveryCoordinator', () => {
   });
 });
 
-describe('RecoveryCoordinator.reconcileStrandedSigned（ADR-040 运维通道）', () => {
+describe('RecoveryCoordinator.reconcileStrandedSigned (ADR-040 ops channel)', () => {
   const NOW = Date.parse('2026-01-01T00:10:00.000Z');
 
   function solanaSigned(overrides: Partial<TransactionRecord> = {}): TransactionRecord {
@@ -388,7 +388,7 @@ describe('RecoveryCoordinator.reconcileStrandedSigned（ADR-040 运维通道）'
     return { coordinator, calls };
   }
 
-  it('陈旧 Solana signed 经租约围栏 + CAS 进入 unknown，并做一次只读观测', async () => {
+  it('a stale Solana signed record enters unknown via the lease fence + CAS, with one read-only observation', async () => {
     const record = solanaSigned();
     const transitions: Record<string, unknown>[] = [];
     const { coordinator, calls } = harness({
@@ -402,7 +402,7 @@ describe('RecoveryCoordinator.reconcileStrandedSigned（ADR-040 运维通道）'
     await expect(coordinator.reconcileStrandedSigned({
       transactionId: record.transactionId, staleAfterMs: 300_000, now: NOW,
     })).resolves.toBe('transitioned');
-    // 顺序即安全语义：先围栏、再 CAS、再只读观测、最后释放租约。没有广播入口。
+    // The order is the safety semantics: fence first, then CAS, then the read-only observation, then release the lease. No broadcast entry point.
     expect(calls).toEqual(['acquire', 'transition', 'observe', 'release']);
     expect(transitions).toHaveLength(1);
     expect(transitions[0]).toMatchObject({
@@ -414,7 +414,7 @@ describe('RecoveryCoordinator.reconcileStrandedSigned（ADR-040 运维通道）'
     });
   });
 
-  it('新鲜的 Solana signed 拒绝迁移（not_stale），不取租约不写状态', async () => {
+  it('a fresh Solana signed record refuses migration (not_stale); no lease taken, no state written', async () => {
     const record = solanaSigned({ updatedAt: '2026-01-01T00:09:30.000Z' as Iso8601 });
     let transitions = 0;
     const { coordinator, calls } = harness({
@@ -431,7 +431,7 @@ describe('RecoveryCoordinator.reconcileStrandedSigned（ADR-040 运维通道）'
     expect(transitions).toBe(0);
   });
 
-  it('带 nonce 的 EVM 记录归巡检所有，本通道拒绝代劳（not_applicable）', async () => {
+  it('an EVM record with a nonce belongs to the sweep; this channel refuses to do it (not_applicable)', async () => {
     const record = solanaSigned({
       chain: 'ethereum-sepolia' as ChainId,
       nonce: '8' as DecimalUint,
@@ -444,7 +444,7 @@ describe('RecoveryCoordinator.reconcileStrandedSigned（ADR-040 运维通道）'
     expect(calls).toEqual([]);
   });
 
-  it('缺 expectedHash 或缺 sequencingRef 的记录不可验证，绝不转换（unverifiable）', async () => {
+  it('a record missing expectedHash or sequencingRef is unverifiable and is never converted (unverifiable)', async () => {
     const noHash = {
       transactionId: 'txn_solana_nohash',
       chain: 'solana-devnet',
@@ -470,7 +470,7 @@ describe('RecoveryCoordinator.reconcileStrandedSigned（ADR-040 运维通道）'
     }
   });
 
-  it('记录不存在返回 not_found；不在 signed 返回 not_signed', async () => {
+  it('a missing record returns not_found; a non-signed record returns not_signed', async () => {
     const missing = harness({ get: async () => null });
     await expect(missing.coordinator.reconcileStrandedSigned({
       transactionId: 'txn_missing' as TransactionRecord['transactionId'],
@@ -484,7 +484,7 @@ describe('RecoveryCoordinator.reconcileStrandedSigned（ADR-040 运维通道）'
     })).resolves.toBe('not_signed');
   });
 
-  it('tracker 租约被他人持有时返回 lease_held，不写状态', async () => {
+  it('returns lease_held when the tracker lease is held by someone else; no state written', async () => {
     const record = solanaSigned();
     let transitions = 0;
     const { coordinator } = harness(
@@ -503,7 +503,7 @@ describe('RecoveryCoordinator.reconcileStrandedSigned（ADR-040 运维通道）'
     expect(transitions).toBe(0);
   });
 
-  it('CAS 冲突返回 conflict：不观测、仍释放租约', async () => {
+  it('a CAS conflict returns conflict: no observation, lease still released', async () => {
     const record = solanaSigned();
     const { coordinator, calls } = harness({
       get: async () => record,
@@ -518,7 +518,7 @@ describe('RecoveryCoordinator.reconcileStrandedSigned（ADR-040 运维通道）'
     expect(calls).toEqual(['acquire', 'release']);
   });
 
-  it('租约内复查发现记录已被并发推进时返回 conflict，不写状态', async () => {
+  it('returns conflict when the in-lease recheck finds the record already advanced concurrently; no state written', async () => {
     const record = solanaSigned();
     let gets = 0;
     let transitions = 0;
@@ -538,7 +538,7 @@ describe('RecoveryCoordinator.reconcileStrandedSigned（ADR-040 运维通道）'
     expect(transitions).toBe(0);
   });
 
-  it('只读观测失败不撤销已落库的迁移（transitioned），租约仍释放', async () => {
+  it('a failed read-only observation does not undo the persisted migration (transitioned); the lease is still released', async () => {
     const record = solanaSigned();
     const { coordinator, calls } = harness(
       {
@@ -558,7 +558,7 @@ describe('RecoveryCoordinator.reconcileStrandedSigned（ADR-040 运维通道）'
     expect(calls).toEqual(['acquire', 'observe', 'release']);
   });
 
-  it('staleAfterMs 低于 60 秒下限直接抛 RangeError（与巡检同口径）', async () => {
+  it('staleAfterMs below the 60-second lower bound throws RangeError directly (same rule as the sweep)', async () => {
     const { coordinator } = harness({ get: async () => solanaSigned() });
     await expect(coordinator.reconcileStrandedSigned({
       transactionId: 'txn_solana_stranded' as TransactionRecord['transactionId'],

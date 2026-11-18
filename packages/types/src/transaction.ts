@@ -1,8 +1,8 @@
 /**
- * 交易与收据模型（见 docs/architecture/domain-model.md 第 4.5 节、
- * docs/architecture/transaction-lifecycle.md）。
+ * Transaction and receipt model (see docs/architecture/domain-model.md section 4.5,
+ * docs/architecture/transaction-lifecycle.md).
  *
- * 禁止在本文件引入任何私钥、助记词或凭证字段。
+ * Never introduce any private key, mnemonic, or credential field in this file.
  */
 import type { ChainId, DecimalUint, Iso8601 } from './primitives.js';
 import type { AccountRef } from './account.js';
@@ -29,10 +29,10 @@ export type TransactionStatus =
   | 'replaced'
   | 'unknown'
   /**
-   * 被**显式作废**的未广播交易（ADR-037）。
+   * An unbroadcast transaction **explicitly voided** (ADR-037).
    *
-   * 只对 `built` / `simulated` 可达：`signed` 及以上**永不**进入本状态，
-   * 因此"已签名/已广播的 nonce 不可复用"这条资金安全约束不受影响。
+   * Only reachable from `built` / `simulated`: `signed` and above **never** enter this state,
+   * so the fund-safety constraint "a signed/broadcast nonce cannot be reused" is unaffected.
    */
   | 'abandoned';
 
@@ -46,17 +46,17 @@ export interface Transaction {
   to?: AccountRef;
   value?: Amount;
   fee?: Amount;
-  /** EVM nonce；其他链可省略。 */
+  /** EVM nonce; other chains may omit it. */
   nonce?: DecimalUint;
-  /** 已获得的确认为十进制字符串，避免大数问题。 */
+  /** Confirmations obtained, decimal string to avoid large-number issues. */
   confirmations?: DecimalUint;
   error?: DfrError;
   observedAt?: Iso8601;
   /**
-   * 链特定原始数据。仅内部使用：
-   * - 不进入公开 HTTP 响应；
-   * - 不进入日志；
-   * - 调用方不得依赖其结构。
+   * Chain-specific raw data. Internal use only:
+   * - never enters a public HTTP response;
+   * - never enters logs;
+   * - callers must not depend on its structure.
    */
   raw?: unknown;
 }
@@ -69,41 +69,41 @@ export interface Amount {
 export interface Receipt {
   ref: TransactionRef;
   chain: ChainId;
-  /** 是否执行成功（EVM receipt.status == 1）。 */
+  /** Whether execution succeeded (EVM receipt.status == 1). */
   success: boolean;
   blockRef?: BlockRef;
-  /** 消耗的 gas 或计算资源，十进制字符串。 */
+  /** Gas or compute consumed, decimal string. */
   gasUsed?: DecimalUint;
   /**
-   * 实际费用（含小费）。审计修正 A-21：改用 `Amount` 以携带计价资产，
-   * 旧版本是裸 DecimalUint，消费方无法知道费用用的是哪个币种。
+   * Actual fee (including tip). Audit fix A-21: use `Amount` to carry the pricing asset;
+   * the old version was a bare DecimalUint, leaving consumers unable to tell which currency the fee was in.
    */
   effectiveFee?: Amount;
   logs?: readonly ChainLog[];
-  /** 失败原因（已脱敏）。 */
+  /** Failure reason (redacted). */
   revertReason?: string;
 }
 
 export interface ChainLog {
-  /** EVM 日志索引（`logIndex`）。 */
+  /** EVM log index (`logIndex`). */
   index?: DecimalUint;
   address?: string;
-  /** 事件 topic / Solana program 标识。 */
+  /** Event topic / Solana program identifier. */
   topics?: readonly string[];
   data?: string;
-  /** 已解码的事件参数（仅当 ABI 已知时）。 */
+  /** Decoded event parameters (only when the ABI is known). */
   decoded?: Record<string, unknown>;
-  /** 该日志所在区块（`contract.logs` 查询需要；ADR-034）。 */
+  /** The block the log is in (needed by `contract.logs` queries; ADR-034). */
   blockRef?: BlockRef;
-  /** 区块内交易哈希与交易内日志序号。 */
+  /** Transaction hash within the block and log sequence within the transaction. */
   txHash?: string;
   txIndex?: DecimalUint;
-  /** reorg 后作废的日志（`eth_getLogs` 的 removed 标志）。 */
+  /** Logs voided after a reorg (the `removed` flag of `eth_getLogs`). */
   removed?: boolean;
 }
 
 /* ------------------------------------------------------------------ */
-/* 交易生命周期：build / simulate / sign / broadcast / confirm        */
+/* Transaction lifecycle: build / simulate / sign / broadcast / confirm        */
 /* ------------------------------------------------------------------ */
 
 export interface TransactionRequest {
@@ -111,14 +111,14 @@ export interface TransactionRequest {
   from: AccountRef;
   to?: AccountRef;
   value?: Amount;
-  /** 十六进制（EVM）或 base64（Solana）编码的调用数据。 */
+  /** Calldata encoded as hex (EVM) or base64 (Solana). */
   data?: string;
   maxFee?: DecimalUint;
-  /** EVM nonce；省略时由 build 阶段显式推导并写入 meta。 */
+  /** EVM nonce; when omitted, derived explicitly by the build phase and written to meta. */
   nonce?: DecimalUint;
   /**
-   * Solana recent blockhash；省略时由 build 阶段取链上最新（ADR-033）。
-   * 引擎已分配排序前提时会**注入**该字段，确保租约与载荷一致。
+   * Solana recent blockhash; when omitted, taken from the latest on-chain value by the build phase (ADR-033).
+   * When the engine has already assigned an ordering precondition, it is **injected** into this field so lease and payload agree.
    */
   recentBlockhash?: string;
   commitment?: string;
@@ -126,9 +126,9 @@ export interface TransactionRequest {
 }
 
 export interface TransactionOptions {
-  /** 默认 true；模拟失败必须阻止广播。 */
+  /** Default true; a failed simulation must block broadcast. */
   simulateBeforeBroadcast?: boolean;
-  /** 默认不等待最终性。类型为有序目标等级（审计修正 A-10）。 */
+  /** Default: do not wait for finality. An ordered target level (audit fix A-10). */
   waitForFinality?: FinalityLevel;
   idempotencyKey?: string;
 }
@@ -136,23 +136,23 @@ export interface TransactionOptions {
 export interface UnsignedTransaction {
   schemaVersion: '1';
   chain: ChainId;
-  /** 不透明载荷，仅生成它的 Adapter 能解释。 */
+  /** Opaque payload, interpretable only by the Adapter that generated it. */
   payload: string;
   meta: UnsignedTransactionMeta;
 }
 
 export interface UnsignedTransactionMeta {
   /**
-   * 载荷的编码方式（审计修正 A-22）。旧版本未声明编码，二进制载荷只能靠约定。
+   * The payload's encoding (audit fix A-22). The old version did not declare an encoding, so binary payloads could only rely on convention.
    */
   encoding?: 'hex' | 'base64';
   requiresNonce?: DecimalUint;
   chainIdForSigning?: string;
-  /** Solana recent blockhash。 */
+  /** Solana recent blockhash. */
   recentBlockhash?: string;
   expiresAt?: Iso8601;
   feeEstimate?: Amount;
-  /** 需要调用方注意的风险提示，例如目标地址为新地址。 */
+  /** Risk notes the caller should watch, e.g. the destination address is new. */
   warnings?: readonly string[];
 }
 
@@ -160,22 +160,22 @@ export interface SignedTransaction {
   schemaVersion: '1';
   chain: ChainId;
   unsigned: UnsignedTransaction;
-  /** 已签名载荷。禁止写入日志、错误详情或数据库明文存储以外的位置。 */
+  /** Signed payload. Must not be written to logs, error details, or anywhere other than plaintext database storage. */
   signedPayload: string;
-  /** 广播前用于去重的预期哈希。 */
+  /** Expected hash for dedupe before broadcast. */
   expectedHash: string;
-  /** 仅标识签名来源，例如 "external:wallet"，不是凭证。 */
+  /** Only identifies the signing source, e.g. "external:wallet", not a credential. */
   signerRef?: string;
 }
 
 export interface SimulationResult {
   success: boolean;
-  /** 预计消耗（EVM gas / Solana compute units）。 */
+  /** Estimated consumption (EVM gas / Solana compute units). */
   estimatedCost?: DecimalUint;
-  /** 预计费用。 */
+  /** Estimated fee. */
   estimatedFee?: Amount;
   revertReason?: string;
-  /** 状态变更摘要，供调用方展示或策略判断。 */
+  /** State-change summary, for caller display or policy decisions. */
   stateChanges?: readonly StateChange[];
   warnings?: readonly string[];
 }
@@ -193,42 +193,42 @@ export interface BroadcastResult {
   ref: TransactionRef;
   status: TransactionStatus;
   accepted: boolean;
-  /** 广播节点返回的原始标识（已脱敏）。 */
+  /** Raw identifier returned by the broadcast node (redacted). */
   providerId?: string;
   /**
-   * 本次广播是否为重播（审计修正 A-06）。
+   * Whether this broadcast is a replay (audit fix A-06).
    *
-   * `dropped → broadcast` 的回边由 transaction-lifecycle.md 定义并要求携带该标记，
-   * 但旧版本契约中没有承载它的字段，规范要求了一个不存在的属性。
+   * The `dropped → broadcast` back edge is defined by transaction-lifecycle.md and requires this flag,
+   * but the old contract had no field to carry it, so the spec required a property that did not exist.
    */
   rebroadcast?: boolean;
   observedAt: Iso8601;
 }
 
 /**
- * 广播选项（审计修正 A-06）。
+ * Broadcast options (audit fix A-06).
  *
- * `broadcast()` 旧签名只有 `(ctx, signed)`，无法传入重播标记或幂等键；
- * 这些是广播调用本身的属性，不属于已签名交易，因此放在选项参数上。
+ * The old `broadcast()` signature was just `(ctx, signed)` and could not carry a replay flag or idempotency key;
+ * those are properties of the broadcast call itself, not of the signed transaction, so they go on the options parameter.
  */
 export interface BroadcastOptions {
-  /** 同一 nonce 的重播；用于把 `dropped` 交易重新提交。 */
+  /** Replay of the same nonce; used to resubmit a `dropped` transaction. */
   rebroadcast?: boolean;
-  /** 幂等键，与 HTTP 层的 Idempotency-Key 对应。 */
+  /** Idempotency key, matching the HTTP layer's Idempotency-Key. */
   idempotencyKey?: string;
   /**
-   * 记录里的发送方（DFR-M1-C03a）。
+   * The sender in the record (DFR-M1-C03a).
    *
-   * 与 `SimulationOptions.from` 同源：`UnsignedTransaction` / `SignedTransaction`
-   * 都**不含**发送方，而"签名恢复出的 from 必须等于当初预留 nonce 的那个账户"
-   * 只能由记录提供。Adapter 拿到它才能做链语义校验，Core/Gateway 只负责搬运。
+   * Same source as `SimulationOptions.from`: `UnsignedTransaction` / `SignedTransaction`
+   * both **lack** a sender, and "the from recovered from the signature must equal the account that originally reserved the nonce"
+   * can only come from the record. The Adapter needs it for chain-semantics checks; Core/Gateway only carry it.
    */
   expectedFrom?: AccountRef;
   /**
-   * 记录里保存的**未签名**载荷（真值来源）。
+   * The **unsigned** payload saved in the record (the source of truth).
    *
-   * 客户端会把 build 返回的 unsigned 一起回传，但那只是回声；Adapter 必须与记录比对，
-   * 否则"换参数但复用同一 transactionId"无法被发现（m1-api-contract 第 3 节）。
+   * The client sends back the unsigned payload returned by build, but that is only an echo; the Adapter must compare against the record,
+   * otherwise "swap parameters but reuse the same transactionId" cannot be detected (m1-api-contract section 3).
    */
   expectedUnsignedPayload?: string;
 }
@@ -236,7 +236,7 @@ export interface BroadcastOptions {
 export interface ConfirmRequest {
   chain: ChainId;
   ref: TransactionRef;
-  /** 最低可接受的最终性，默认由 Chain Registry 决定。有序目标等级（审计修正 A-10）。 */
+  /** Minimum acceptable finality, default decided by the Chain Registry. Ordered target level (audit fix A-10). */
   minFinality?: FinalityLevel;
   timeoutMs?: number;
 }
@@ -245,11 +245,11 @@ export interface ConfirmationResult {
   ref: TransactionRef;
   status: TransactionStatus;
   finality: FinalityState;
-  /** 实际评估目标；未取得观测（例如 lease 被其他 owner 持有）时可省略。 */
+  /** The target actually evaluated; may be omitted when no observation was obtained (e.g. the lease is held by another owner). */
   requiredFinality?: FinalityLevel;
   blockRef?: BlockRef;
   canonicalBlockHash?: string;
   confirmations?: DecimalUint;
-  /** true 表示在超时前达到要求；false 表示仍在跟踪。 */
+  /** true means the requirement was met before the timeout; false means still tracking. */
   reached: boolean;
 }

@@ -1,23 +1,23 @@
 /**
- * Transaction Engine 的链访问端口实现（DFR-M1-B07，composition root 的一部分）。
+ * Transaction Engine chain-access port implementation (DFR-M1-B07, part of the composition root).
  *
- * 权威来源：docs/architecture/development-plan.md 第 4.3/4.4 节、
- * docs/architecture/adapter-spec-v0.1.md 第 8.1 节。
+ * Authoritative sources: docs/architecture/development-plan.md sections 4.3/4.4,
+ * docs/architecture/adapter-spec-v0.1.md section 8.1.
  *
- * 为什么需要这一层：`@dfr/transaction` 不得 import Adapter / Provider / Core
- * （AGENTS.md 第 3 节依赖方向），所以它只认识 `TransactionChainPort` 端口；
- * 把端口接到真实链路是 composition root 的职责，本文件就是那根接线。
+ * Why this layer is needed: `@dfr/transaction` must not import Adapter / Provider / Core
+ * (AGENTS.md section 3 dependency direction), so it only knows the `TransactionChainPort` port;
+ * connecting the port to the real chain path is the composition root's job, and this file is that wiring.
  *
- * 装配出来的端口保证：
- *   1. `getPendingNonce` 走 `eth_getTransactionCount(from,'pending')`，返回十进制字符串；
- *   2. `build` 使用 Engine 已经分配的显式 nonce（Adapter 不再自行查 nonce，
- *      否则链上读数与 nonce 租约可能不一致）；
- *   3. `simulate` 把记录里的 `from` 交给 Adapter，让余额 / 授权 / nonce 检查生效
- *      （`UnsignedTransaction` 本身不含发送方）；
- *   4. `broadcast` 把记录真值（`from` + unsigned 载荷）交给 Adapter 做完整绑定校验，
- *      客户端回传的 unsigned 只是回声、不作数（M1-C03a）；
- *   5. `observe` 在广播结果不确定时按 expectedHash 观测链上处境（M1-C03b），
- *      字段全部来自记录，不接受调用方声明。
+ * The assembled port guarantees:
+ *   1. `getPendingNonce` goes through `eth_getTransactionCount(from,'pending')` and returns a decimal string;
+ *   2. `build` uses the explicit nonce already allocated by the Engine (the Adapter no longer looks up nonces itself,
+ *      or the on-chain reading could disagree with the nonce lease);
+ *   3. `simulate` hands the record's `from` to the Adapter, so balance / authorization / nonce checks take effect
+ *      (`UnsignedTransaction` itself carries no sender);
+ *   4. `broadcast` hands the record's true values (`from` + unsigned payload) to the Adapter for full binding validation,
+ *      while the unsigned payload echoed back by the client counts for nothing (M1-C03a);
+ *   5. `observe` watches the on-chain situation by expectedHash when the broadcast outcome is uncertain (M1-C03b),
+ *      with all fields coming from the record, accepting no caller declarations.
  */
 import type { DfrCore } from '@dfr/core';
 import { newRequestId } from '@dfr/errors';
@@ -33,7 +33,7 @@ import type {
   TransactionChainPort,
 } from '@dfr/transaction';
 
-/** 端口输入 → Core 调用上下文；缺省 requestId 只为兼容手写调用，正常由 Engine 透传。 */
+/** Port input → Core call context; the default requestId only exists for hand-written calls and is normally passed through by the Engine. */
 function context(
   input:
     | GetPendingNonceInput
@@ -53,21 +53,21 @@ function context(
 }
 
 /**
- * 用 Core 装配 `TransactionChainPort`。
+ * Assemble a `TransactionChainPort` with Core.
  *
- * Core 负责 Capability 路由与错误归一化；非 EVM 链族（或未启用写能力的链）在这里
- * fail-closed：未知链 → `DFR_NOT_FOUND`，链存在但 Adapter 未实现对应方法 →
- * `DFR_UNSUPPORTED_CAPABILITY`。**不**静默降级到 EVM 语义。
+ * Core handles capability routing and error normalization; non-EVM chain families (or chains without write capability enabled) fail closed here:
+ * fail-closed: unknown chains → `DFR_NOT_FOUND`; a chain that exists but whose Adapter does not implement the method →
+ * `DFR_UNSUPPORTED_CAPABILITY`. **Never** silently degrade to EVM semantics.
  */
 export function createCoreTransactionChainPort(core: DfrCore): TransactionChainPort {
   return {
     getPendingNonce: (input) => core.getPendingNonce(input.chain, input.account, context(input)),
 
-    // ADR-033：链无关排序前提（EVM nonce / Solana blockhash）。
+    // ADR-033: chain-agnostic ordering prerequisite (EVM nonce / Solana blockhash).
     getSequencingToken: (input) =>
       core.getSequencingToken(input.chain, input.account, context(input)),
 
-    // ADR-033：把引擎分配的排序前提注入请求（Solana 用它固定 blockhash）。
+    // ADR-033: inject the engine-allocated ordering prerequisite into the request (Solana uses it to pin the blockhash).
     withSequencingToken: (request, token) =>
       core.withSequencingToken(request.chain, request, token),
 
@@ -79,8 +79,8 @@ export function createCoreTransactionChainPort(core: DfrCore): TransactionChainP
     build: (input) => core.buildTransaction(input.request.chain, input.request, context(input)),
 
     /**
-     * 只读模拟。`from` 必须来自记录（Engine 提供），否则 Adapter 只能退化到
-     * "节点默认发送方"并在 `warnings` 里标注——那是 B03 的兼容行为，不是写路径常态。
+     * Read-only simulation. `from` must come from the record (provided by the Engine); otherwise the Adapter can only fall back to
+     * the "node default sender", flagged in `warnings` — that is the B03 compatibility behavior, not the write-path norm.
      */
     simulate: (input) =>
       core.simulateTransaction(input.unsigned.chain, input.unsigned, context(input), {
@@ -88,8 +88,8 @@ export function createCoreTransactionChainPort(core: DfrCore): TransactionChainP
       }),
 
     /**
-     * 单次广播（M1-C03a）。记录真值（from / unsigned 载荷）与 `rebroadcast` 一起交给
-     * Adapter：只有 Adapter 能做链语义绑定（公钥恢复），Core 只搬运。
+     * Single broadcast (M1-C03a). The record's true values (from / unsigned payload) are handed to the
+     * Adapter together with `rebroadcast`: only the Adapter can do chain-semantics binding (public-key recovery); Core only carries.
      */
     broadcast: (input) =>
       core.broadcastTransaction(input.signed.chain, input.signed, context(input), {
@@ -99,8 +99,8 @@ export function createCoreTransactionChainPort(core: DfrCore): TransactionChainP
       }),
 
     /**
-     * 广播结果不确定时的链上观测（M1-C03b）。全部字段来自记录（expectedHash / from / nonce），
-     * 不接受调用方声明；只读，不会重发广播。
+     * On-chain observation when the broadcast outcome is uncertain (M1-C03b). All fields come from the record (expectedHash / from / nonce),
+     * accepting no caller declarations; read-only, never re-sending the broadcast.
      */
     observe: (input) =>
       core.observeBroadcast(

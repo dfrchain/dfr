@@ -1,29 +1,29 @@
 /**
- * TransactionEngine —— build 阶段编排（DFR-M1-B04）。
+ * TransactionEngine — build-phase orchestration (DFR-M1-B04).
  *
- * 权威来源：docs/architecture/development-plan.md 第 4.3/4.4 节、
- * docs/architecture/transaction-lifecycle.md 第 8 节、
- * docs/architecture/m1-api-contract.md 第 2 节。
+ * Authoritative sources: docs/architecture/development-plan.md sections 4.3/4.4,
+ * docs/architecture/transaction-lifecycle.md section 8,
+ * docs/architecture/m1-api-contract.md section 2.
  *
- * 职责（只做编排，不做链语义、不做数据库驱动）：
+ * Responsibilities (orchestration only — no chain semantics, no database drivers):
  *
  * ```text
- * 幂等 begin ─► 读链上 pending nonce ─► NonceStore.reserve ─► 链 build（显式 nonce）
+ * Idempotent begin ─► read on-chain pending nonce ─► NonceStore.reserve ─► chain build (explicit nonce)
  *                                                   │
- *                                   失败 ───────────┴─► 安全释放未签名租约 → 原错误上抛
- *                                   成功 ─► TransactionStore.create(status='built')
- *                                        ─► 幂等 complete（保存 transactionId）
+ *                                   failure ───────────┴─► safely release the unsigned lease → rethrow the original error
+ *                                   success ─► TransactionStore.create(status='built')
+ *                                        ─► idempotent complete (persist transactionId)
  * ```
  *
- * 依赖方向（AGENTS.md 第 3 节）：本包只依赖 `@dfr/types` 与 `@dfr/errors`。
- * 链访问因此通过**端口** `TransactionChainPort` 注入，由 composition root
- * （Gateway main）用具体 Adapter 实现；本包不 import Adapter / Provider / Core / Storage。
+ * Dependency direction (AGENTS.md section 3): this package only depends on `@dfr/types` and `@dfr/errors`.
+ * Chain access therefore arrives through the **port** `TransactionChainPort`, implemented by the composition root
+ * (Gateway main) with a concrete Adapter; this package does not import Adapter / Provider / Core / Storage.
  *
- * M1 边界：
- * - nonce 一律由服务端分配并落租约；请求自带 `nonce` 直接拒绝（fail-closed），
- *   避免调用方绕过租约造成同 nonce 双花。Adapter 的"显式 nonce"正是给本引擎用的；
- * - `signedPayload` 不属于本阶段，记录里也没有该字段；
- * - build 无链上副作用，因此幂等键可选（gateway-spec 第 7.1 节）。
+ * M1 boundaries:
+ * - nonces are always allocated by the server and persisted as a lease; a request carrying its own `nonce` is rejected outright (fail-closed),
+ *   so callers cannot bypass the lease and double-spend the same nonce. The Adapter's "explicit nonce" exists for this engine;
+ * - `signedPayload` does not belong to this phase, and the record has no such field;
+ * - build has no on-chain side effects, so the idempotency key is optional (gateway-spec section 7.1).
  */
 import { createHash, randomBytes } from 'node:crypto';
 import { createDfrError, isDfrError, newRequestId } from '@dfr/errors';
@@ -69,15 +69,15 @@ import type {
 } from './stores.js';
 
 /* ================================================================== */
-/* 端口：链访问                                                       */
+ /* Port: chain access                                                       */
 /* ================================================================== */
 
 export interface GetPendingNonceInput {
   readonly chain: ChainId;
   readonly account: AccountRef;
   /**
-   * 关联错误与审计的请求 ID（DFR-M1-B07 起由引擎透传）。
-   * 端口实现必须把它带进 `AdapterContext.requestId`，不得用随机值掩盖调用来源。
+    * The request ID tying errors to the audit trail (passed through by the engine since DFR-M1-B07).
+    * Port implementations must carry it into `AdapterContext.requestId`; never hide the call source behind a random value.
    */
   readonly requestId?: RequestId;
   readonly traceId?: string;
@@ -87,9 +87,9 @@ export interface GetPendingNonceInput {
 
 export interface ChainBuildInput {
   /**
-   * 携带引擎**分配并落租约**的排序前提（ADR-033）：EVM 路径注入 `nonce`，
-   * Solana 路径注入 `recentBlockhash`。Adapter 必须原样使用，不得自行查询，
-   * 否则租约与载荷会不一致。
+    * Carries the ordering precondition the engine **allocated and persisted as a lease** (ADR-033): the EVM path injects `nonce`,
+    * the Solana path injects `recentBlockhash`. Adapters must use it verbatim and never query one themselves,
+    * or the lease and the payload will disagree.
    */
   readonly request: TransactionRequest;
   readonly requestId?: RequestId;
@@ -102,11 +102,11 @@ export interface ChainSimulateInput {
   readonly transactionId: TransactionId;
   readonly unsigned: UnsignedTransaction;
   /**
-   * 记录中的发送方。
+    * The sender in the record.
    *
-   * `UnsignedTransaction` 本身**不含**发送方（见 B03 交付报告），而 EVM 的
-   * `eth_call` 需要 `from` 才能覆盖余额 / 授权 / nonce 检查。引擎知道这个事实，
-   * 因此显式传给端口；具体如何使用由实现方（composition root + Adapter）决定。
+    * `UnsignedTransaction` itself **contains no** sender (see the B03 delivery report), while EVM
+    * `eth_call` needs `from` to cover balance / allowance / nonce checks. The engine knows this fact,
+    * so it passes it explicitly to the port; how exactly it is used is up to the implementer (composition root + Adapter).
    */
   readonly from: AccountRef;
   readonly requestId?: RequestId;
@@ -116,17 +116,17 @@ export interface ChainSimulateInput {
 }
 
 /**
- * 链访问端口（由 composition root 实现）。
+ * The chain-access port (implemented by the composition root).
  *
- * 只暴露 build 阶段需要的两个动作：读 pending nonce 与构造未签名载荷。
- * 两次调用必须落到**同一个** Provider 句柄上的同一条链，该约束由实现方（Adapter）保证。
+ * It exposes only the two actions the build phase needs: reading the pending nonce and constructing the unsigned payload.
+ * Both calls must land on the **same** Provider handle on the same chain; that constraint is guaranteed by the implementer (Adapter).
  */
 /**
- * 广播端口输入（DFR-M1-C03a）。
+ * Broadcast port input (DFR-M1-C03a).
  *
- * `expected` 是**记录真值**：`SignedTransaction` 不含发送方，客户端回传的 unsigned
- * 也只是回声。Adapter 必须用它与签名载荷逐项比对（`bindSignedTransaction`），
- * 否则"换账户/换参数但复用同一 transactionId"无法被发现。
+ * `expected` is the **record's ground truth**: `SignedTransaction` contains no sender, and the unsigned payload
+ * the client sends back is only an echo. The Adapter must compare it item by item against the signed payload (`bindSignedTransaction`),
+ * otherwise "same transactionId, different account/parameters" cannot be detected.
  */
 export interface ChainBroadcastInput {
   readonly signed: SignedTransaction;
@@ -155,44 +155,44 @@ export interface ChainSequencingExpiryInput {
 }
 
 export interface TransactionChainPort {
-  /** EVM nonce 路径（有则优先用它，保持 M1 行为不变）。 */
+   /** EVM nonce path (preferred when present, preserving M1 behavior). */
   getPendingNonce?(input: GetPendingNonceInput): Promise<DecimalUint>;
   /**
-   * 链无关排序前提（ADR-033）：EVM 返回 nonce，Solana 返回 blockhash。
-   * 引擎按"本链用哪条路径"选择：有 `getPendingNonce` 走 nonce，否则走本方法。
+    * Chain-agnostic ordering precondition (ADR-033): EVM returns a nonce, Solana returns a blockhash.
+    * The engine picks by "which path this chain uses": `getPendingNonce` if present, otherwise this method.
    */
   getSequencingToken?(input: GetPendingNonceInput): Promise<SequencingToken>;
   /** Mandatory pre-broadcast validity check for Store-persisted blockhash tokens. */
   isSequencingExpired?(input: ChainSequencingExpiryInput): Promise<boolean>;
   /**
-   * 把引擎分配的排序前提注入请求（ADR-033）。走 sequencing 路径时必填：
-   * Solana 的 build 必须用 Store 已落租约的 blockhash，否则租约与载荷不一致。
+    * Inject the ordering precondition allocated by the engine into the request (ADR-033). Required on the sequencing path:
+    * Solana's build must use the blockhash the Store has already leased, or the lease and the payload will disagree.
    */
   withSequencingToken?(request: TransactionRequest, token: SequencingToken): TransactionRequest;
   build(input: ChainBuildInput): Promise<UnsignedTransaction>;
-  /** 只读模拟（无副作用）。回滚通过 `SimulationResult.success=false` 表达，不抛错。 */
+   /** Read-only simulation (no side effects). A revert is expressed as `SimulationResult.success=false`, not thrown. */
   simulate(input: ChainSimulateInput): Promise<SimulationResult>;
   /**
-   * 单次广播（DFR-M1-C03a）。
+    * Single broadcast (DFR-M1-C03a).
    *
-   * 可选：未装配广播实现的部署在运行时 fail-closed（`DFR_UNSUPPORTED_CAPABILITY`），
-   * 而不是静默跳过。实现方（composition root）负责把它接到 Adapter 的
-   * `broadcast()` 与签名绑定校验上。
+    * Optional: a deployment without a broadcast implementation fails closed at runtime (`DFR_UNSUPPORTED_CAPABILITY`),
+    * instead of silently skipping. The implementer (composition root) is responsible for wiring it to the Adapter's
+    * `broadcast()` and the signature-binding check.
    */
   broadcast?(input: ChainBroadcastInput): Promise<BroadcastResult>;
 
   /**
-   * 观测一笔交易在链上的真实处境（DFR-M1-C03b，ADR-019）。
+    * Observe where a transaction really stands on-chain (DFR-M1-C03b, ADR-019).
    *
-   * 只在广播结果不确定时调用。**可选**：未装配时引擎保持 `unknown`
-   * （fail-closed：不假装 dropped，也不假装 failed）。
+    * Called only when a broadcast result is indeterminate. **Optional**: without it the engine stays `unknown`
+    * (fail-closed: it neither pretends dropped nor pretends failed).
    *
-   * 实现方（composition root + Adapter）按 expectedHash 查询，并在查不到时
-   * 比较该账户的链上 nonce 以区分 `replaced` 与 `absent`。
+    * The implementer (composition root + Adapter) queries by expectedHash and, when nothing is found,
+    * compares the account's on-chain nonce to distinguish `replaced` from `absent`.
    */
   observe?(input: ChainObserveInput): Promise<ChainBroadcastObservation>;
 
-  /** 单次只读确认观测；状态判定由 Core/Registry 提供，等待与 lease 由 Transaction 负责。 */
+   /** A single read-only confirmation observation; state decisions come from Core/Registry, waiting and leases are Transaction's job. */
   confirm?(input: ChainConfirmInput): Promise<ConfirmationResult>;
 }
 
@@ -207,7 +207,7 @@ export interface ChainConfirmInput {
   readonly background?: boolean;
 }
 
-/** 观测输入：全部来自记录（expectedHash / from / nonce），不来自调用方声明。 */
+/** Observation input: all from the record (expectedHash / from / nonce), never from caller claims. */
 export interface ChainObserveInput {
   readonly chain: ChainId;
   readonly txHash: string;
@@ -220,16 +220,16 @@ export interface ChainObserveInput {
 }
 
 /* ================================================================== */
-/* 依赖与结果类型                                                     */
+ /* Dependencies and result types                                             */
 /* ================================================================== */
 
 export interface TransactionEngineStores {
   readonly transaction: TransactionStore;
   readonly idempotency: IdempotencyStore;
   readonly nonce: NonceStore;
-  /** M3-B03：Solana 的 blockhash 排序租约；走 sequencing 路径时必填。 */
+   /** M3-B03: Solana's blockhash ordering lease; required on the sequencing path. */
   readonly sequencing?: SequencingStore;
-  /** D02 tracker lease；缺失时 confirm 必须 fail-closed。 */
+   /** D02 tracker lease; confirm must fail closed when it is missing. */
   readonly tracker?: TrackerLeaseStore;
 }
 
@@ -247,63 +247,63 @@ export interface ConfirmTransactionInput {
 export interface TransactionEngineDeps {
   readonly stores: TransactionEngineStores;
   readonly chain: TransactionChainPort;
-  /** 注入时钟（测试确定性）；默认 `() => new Date().toISOString()`。 */
+   /** Injected clock (test determinism); defaults to `() => new Date().toISOString()`. */
   readonly now?: () => Iso8601;
-  /** 注入交易 ID 生成器；默认 `txn_<32 hex>`。 */
+   /** Injected transaction ID generator; defaults to `txn_<32 hex>`. */
   readonly newTransactionId?: () => TransactionId;
-  /** 幂等执行权 owner token 生成器；默认随机 16 字节 hex。 */
+   /** Idempotent execution-right owner token generator; defaults to a random 16-byte hex. */
   readonly newOwnerToken?: () => string;
   /**
-   * 请求指纹。默认 `fingerprintBuildRequest`。
+    * Request fingerprint. Defaults to `fingerprintBuildRequest`.
    *
-   * m1-api-contract 第 4 节要求"canonicalization 只有一个实现"：Gateway 必须
-   * 复用本函数（或注入同一个实现），不得再写一份。
+    * m1-api-contract section 4 requires "exactly one canonicalization implementation": the Gateway must
+    * reuse this function (or inject the same implementation), never write a second copy.
    */
   readonly fingerprint?: (request: TransactionRequest) => string;
-  /** 幂等 in-flight 租约时长；默认 30s。 */
+   /** Idempotent in-flight lease duration; defaults to 30s. */
   readonly idempotencyLeaseTtlMs?: number;
-  /** nonce 租约时长；默认 5 分钟。 */
+   /** Nonce lease duration; defaults to 5 minutes. */
   readonly nonceLeaseTtlMs?: number;
-  /** 确认等待时钟注入点；生产使用 Date.now/setTimeout。 */
+   /** Clock injection point for the confirmation wait; production uses Date.now/setTimeout. */
   readonly confirmationClock?: () => number;
   readonly confirmationSleep?: (ms: number) => Promise<void>;
   readonly metrics?: TransactionMetricsSink;
   /**
-   * Store 调用观测出口（observability-spec 第 4 章 `store.read` / `store.write`）。
-   * 与 metrics 一样是可选汇点；未注入时零开销。观测失败绝不影响业务。
+    * Store-call observation outlet (observability-spec chapter 4, `store.read` / `store.write`).
+    * Like metrics, an optional sink; zero overhead when not injected. Observation failures never affect the business path.
    */
   readonly onStoreCall?: StoreCallSink;
   /**
-   * 状态迁移事件出口（transaction-lifecycle 第 6 章："一切状态变化必须发事件"）。
+    * State-transition event outlet (transaction-lifecycle chapter 6: "every state change must emit an event").
    *
-   * 与 `onStoreCall` 同一约定：可选汇点，未注入时零开销，**抛错被吞掉**——
-   * 事件投递失败绝不能改变业务结果（与"观测失败不得影响被观测路径"一致）。
+    * Same convention as `onStoreCall`: an optional sink, zero overhead when not injected, and **thrown errors are swallowed** —
+    * a failed event delivery must never change the business outcome (consistent with "observation failures must not affect the observed path").
    *
-   * 为什么用回调而不是让引擎依赖 `@dfr/events`：模块边界要求本包只依赖叶子工具包
-   * （types/errors/metrics）。引擎不感知总线；composition root 负责把它接到总线上，
-   * 并分配 cursor（cursor 属于**订阅作用域**，是总线侧的概念）。
+    * Why a callback instead of letting the engine depend on `@dfr/events`: module boundaries require this package to depend only on leaf utility packages
+    * (types/errors/metrics). The engine knows nothing about the bus; the composition root wires it to the bus
+    * and allocates the cursor (a cursor belongs to the **subscription scope** — a bus-side concept).
    */
   readonly onTransition?: TransitionEventSink;
   /**
-   * `unknown` 判定为 `dropped` 所需的静默时长（ADR-023）。默认 30 分钟。
+    * How long `unknown` must stay silent before it may be judged `dropped` (ADR-023). Defaults to 30 minutes.
    *
-   * 只有"观测为 absent **且** 静默已超过本时长"才判丢弃；单独任一条都不够。
+    * Only "observed `absent` **and** silent longer than this duration" counts as dropped; either condition alone is not enough.
    */
   readonly dropTimeoutMs?: number;
   /**
-   * 判定超时用的时钟（毫秒）。默认 `Date.now`。
+    * Clock (milliseconds) for the timeout decision. Defaults to `Date.now`.
    *
-   * 与 `now`（写记录时间戳）分开：测试需要"记录时间固定、当前时间可推进"才能
-   * 验证超时语义；生产两者都是真实时钟。
+    * Kept separate from `now` (which timestamps record writes): tests need "record time fixed, current time advancable" to
+    * verify timeout semantics; in production both are real clocks.
    */
   readonly dropClock?: () => number;
 }
 
 /**
- * 一次已提交的状态迁移（引擎 → 汇点）。
+ * One committed state transition (engine → sink).
  *
- * 只在 Store 确认写入成功后发出（"事务提交后才发布"），因此订阅者看到的
- * 都是已持久化的事实，不会出现"事件说变了、库里没变"。
+ * Emitted only after the Store confirms the write ("publish only after the transaction commits"), so subscribers always see
+ * persisted facts — never "the event says it changed but the database didn't".
  */
 export interface TransitionEventRecord {
   readonly transactionId: TransactionId;
@@ -318,18 +318,18 @@ export interface TransitionEventRecord {
 export type TransitionEventSink = (record: TransitionEventRecord) => void;
 
 /**
- * 预检请求（ADR-037 方案 B）。
+ * Preflight request (ADR-037, option B).
  *
- * 与 `build` 的区别：**不占 nonce、不落库、不产生任何持久副作用**。
- * 用途是回答"这笔交易大概能不能过、要多少 gas"——而当前 `simulate` 必须先有
- * `transactionId`（即必须先 build），于是调用方被迫用 `build` 做预检，
- * 每次预检都消耗一个链上 nonce，反复预检即留下永久空洞（ADR-037 背景）。
+ * Difference from `build`: **no nonce taken, no store write, no persistent side effects at all**.
+ * It answers "can this transaction roughly go through, and how much gas will it need?" — while the current `simulate` requires a
+ * `transactionId` first (i.e. it requires a build), forcing callers to use `build` for preflight,
+ * burning one on-chain nonce per preflight; repeated preflights leave permanent gaps (ADR-037 background).
  */
 /**
- * 显式作废一笔**未广播**的交易（ADR-037 方案 A）。
+ * Explicitly void an **unbroadcast** transaction (ADR-037, option A).
  *
- * 用途：build 会立即占用一个链上 nonce；若调用方决定不提交这笔交易，
- * 必须有正确的清理动作，否则 nonce 永久占位、链上形成永久空洞。
+ * Why: build immediately occupies an on-chain nonce; if the caller decides not to submit the transaction,
+ * there must be a correct cleanup action, or the nonce stays occupied forever and a permanent gap forms on-chain.
  */
 export interface AbandonTransactionInput {
   readonly transactionId: TransactionId;
@@ -345,7 +345,7 @@ export interface AbandonTransactionInput {
 export interface AbandonTransactionResult {
   readonly transactionId: TransactionId;
   readonly status: 'abandoned';
-  /** 本次是否真的释放了 nonce 租约（幂等重放时为 false）。 */
+   /** Whether the nonce lease was actually released this time (false on idempotent replay). */
   readonly leaseReleased: boolean;
   readonly nonce?: DecimalUint;
 }
@@ -357,40 +357,40 @@ export interface PreflightTransactionInput {
   readonly spanId?: string;
   readonly signal?: AbortSignal;
   /**
-   * 预检结果的「新鲜度上限」（毫秒）。省略即用端口默认。
+    * Freshness cap (milliseconds) for the preflight result. Omit to use the port default.
    *
-   * 与 `simulate` 一致的**只读**语义：`eth_call`/`eth_estimateGas` 走 pending 区块，
-   * 结果不是承诺——链上状态可能在下一次调用前变化。
+    * Same **read-only** semantics as `simulate`: `eth_call`/`eth_estimateGas` run against the pending block,
+    * and the result is not a promise — on-chain state may change before the next call.
    */
   readonly estimateTimeoutMs?: number;
 }
 
 export interface PreflightTransactionResult {
   /**
-   * 构造出来的未签名载荷。
+    * The unsigned payload that was constructed.
    *
-   * **仅供预览**：它是在**只读**的 pending nonce 之上构造的，没有租约保护，
-   * 因此**不可用于签名与广播**（并发 build 可能拿到同一个 nonce）。
-   * 要真正提交，必须另走 `build` → `simulate` → 签名 → `broadcast`。
+    * **Preview only**: it was constructed on a **read-only** pending nonce with no lease protection,
+    * so it **must not be used for signing or broadcast** (concurrent builds may get the same nonce).
+    * To actually submit, go through `build` → `simulate` → sign → `broadcast`.
    *
-   * `undefined` 表示**在 gas 估计阶段就回滚了**（没有可通过的载荷可供预览）。
-   * 这是诚实的：不伪造一个注定失败、且字段不完整的载荷。
+    * `undefined` means **it reverted during the gas-estimation phase** (there is no passable payload to preview).
+    * This is the honest answer: it does not fabricate a payload that is doomed to fail and has incomplete fields.
    */
   readonly unsignedTransaction?: UnsignedTransaction;
-  /** 只读模拟结果；回滚以 `success=false` 表达，不抛错（与 simulate 一致）。 */
+   /** Read-only simulation result; a revert is expressed as `success=false`, never thrown (same as simulate). */
   readonly simulation: SimulationResult;
-  /** 本次预检**未**占用，仅供展示的 pending nonce；调用方不得据此签名。 */
+   /** The pending nonce this preflight **did not** occupy, shown for display only; callers must not sign from it. */
   readonly observedNonce?: DecimalUint;
   readonly requestId: RequestId;
 }
 
 export interface BuildTransactionInput {
   readonly request: TransactionRequest;
-  /** 可选：build 无副作用（gateway-spec 第 7.1 节）。 */
+   /** Optional: build has no side effects (gateway-spec section 7.1). */
   readonly idempotencyKey?: string;
-  /** M1 固定 `default`；多租户控制面属 M5。 */
+   /** M1 fixes this to `default`; a multi-tenant control plane belongs to M5. */
   readonly projectId?: string;
-  /** 用于关联错误与审计；省略时自动生成。 */
+   /** Used to tie errors to the audit trail; auto-generated when omitted. */
   readonly requestId?: RequestId;
   readonly traceId?: string;
   readonly spanId?: string;
@@ -399,18 +399,18 @@ export interface BuildTransactionInput {
 
 export interface BuiltTransactionResult {
   readonly transactionId: TransactionId;
-  /** 记录**当前**生命周期状态；首次 build 为 `built`，重放时可能是后续状态。 */
+   /** The record's **current** lifecycle state; `built` on the first build, possibly a later state on replay. */
   readonly status: TransactionStatus;
-  /** EVM 的排序前提；Solana 为 undefined（用 `sequencingToken`）。 */
+   /** The EVM ordering precondition; undefined for Solana (which uses `sequencingToken`). */
   readonly nonce?: DecimalUint;
-  /** 链无关排序前提（ADR-033）：EVM={kind:nonce}，Solana={kind:blockhash}。 */
+   /** Chain-agnostic ordering precondition (ADR-033): EVM={kind:nonce}, Solana={kind:blockhash}. */
   readonly sequencingToken?: SequencingToken;
   readonly unsignedTransaction: UnsignedTransaction;
-  /** true = 命中幂等记录，未重新执行、未消耗新 nonce。 */
+   /** true = an idempotent record was hit; nothing re-executed, no new nonce consumed. */
   readonly replayed: boolean;
   /**
-   * false = 该结果不会被重放：未提供幂等键，或本次失去幂等写入权。
-   * 调用方据此决定"能否安全重试同一请求"。
+    * false = this result will not be replayed: no idempotency key was supplied, or this call lost the idempotent write right.
+    * Callers use this to decide "whether it is safe to retry the same request".
    */
   readonly replayable: boolean;
 }
@@ -418,10 +418,10 @@ export interface BuiltTransactionResult {
 export interface SimulateTransactionInput {
   readonly transactionId: TransactionId;
   /**
-   * build 返回的未签名载荷。
+    * The unsigned payload returned by build.
    *
-   * M1 不接受"另带一个载荷"：必须与落库记录逐字节一致，否则拒绝
-   * （m1-api-contract 第 2 节："不接受与已保存 build 指纹不一致的 unsigned payload"）。
+    * M1 does not accept "bringing a different payload": it must match the persisted record byte for byte, otherwise it is rejected
+    * (m1-api-contract section 2: "unsigned payloads inconsistent with the saved build fingerprint are not accepted").
    */
   readonly unsignedTransaction: UnsignedTransaction;
   readonly requestId?: RequestId;
@@ -432,13 +432,13 @@ export interface SimulateTransactionInput {
 
 export interface SimulatedTransactionResult {
   readonly transactionId: TransactionId;
-  /** 记录**当前**生命周期状态：`simulated`（成功）或调用方捕获 `reverted` 错误。 */
+   /** The record's **current** lifecycle state: `simulated` (success), or the caller catches a `reverted` error. */
   readonly status: TransactionStatus;
   readonly simulation: SimulationResult;
 }
 
 /* ================================================================== */
-/* 规范化指纹                                                         */
+ /* Normalized fingerprint                                                 */
 /* ================================================================== */
 
 /** Encode canonical JSON directly: object reconstruction reorders integer-like keys. */
@@ -461,10 +461,10 @@ function canonicalize(value: unknown): string | undefined {
 }
 
 /**
- * `TransactionRequest` 的规范指纹（SHA-256，hex）。
+ * The canonical fingerprint of a `TransactionRequest` (SHA-256, hex).
  *
- * 不含 header / requestId / traceId：调用方换个 User-Agent 不应被判成冲突
- * （gateway-spec 第 7.2 节）。数值仍是十进制字符串，因此指纹稳定。
+ * Excludes header / requestId / traceId: changing User-Agent must not count as a conflict
+ * (gateway-spec section 7.2). Amounts are still decimal strings, so the fingerprint is stable.
  */
 export function fingerprintBuildRequest(request: TransactionRequest): string {
   const encoded = canonicalize(request);
@@ -473,15 +473,15 @@ export function fingerprintBuildRequest(request: TransactionRequest): string {
 }
 
 /* ================================================================== */
-/* 引擎                                                               */
+ /* Engine                                                               */
 /* ================================================================== */
 
 const DEFAULT_IDEMPOTENCY_LEASE_TTL_MS = 30_000;
 const DEFAULT_NONCE_LEASE_TTL_MS = 5 * 60_000;
-/** ADR-023：unknown 静默超过该时长（且观测为 absent）才判 dropped。 */
+/** ADR-023: only judge `dropped` after unknown has stayed silent longer than this (and the observation is absent). */
 const DEFAULT_DROP_TIMEOUT_MS = 30 * 60_000;
 
-/** 状态迁移的 CAS 重试上限：冲突说明有并发写入者，重读后重新推导即可。 */
+/** CAS retry cap for state transitions: a conflict means a concurrent writer exists; re-read and re-derive. */
 const MAX_TRANSITION_ATTEMPTS = 3;
 
 function traceContext(input: { readonly traceId?: string; readonly spanId?: string }): {
@@ -494,7 +494,7 @@ function traceContext(input: { readonly traceId?: string; readonly spanId?: stri
   };
 }
 
-/** 允许执行 simulate 的状态：只允许在签名之前（transaction-lifecycle 第 4.2 节）。 */
+/** States that allow simulate: only before signing (transaction-lifecycle section 4.2). */
 const SIMULATABLE_STATUSES: readonly TransactionStatus[] = ['built', 'simulated'];
 
 type ScopedTransactionRequest = {
@@ -506,13 +506,13 @@ type ScopedTransactionRequest = {
 export interface BroadcastTransactionInput extends ScopedTransactionRequest {
   readonly transactionId: TransactionId;
   /**
-   * 客户端回传的签名结果。
+    * The signature result sent back by the client.
    *
-   * `signed.unsigned.payload` 只是回声：引擎把它与**记录里的** unsigned 载荷比对，
-   * 不一致直接拒绝，绝不因为"客户端说一致"就放行。
+    * `signed.unsigned.payload` is only an echo: the engine compares it against the **record's** unsigned payload,
+    * rejects on any mismatch, and never lets "the client says it matches" pass.
    */
   readonly signed: SignedTransaction;
-  /** `rebroadcast` 由状态机与 HTTP 层控制；引擎只透传。 */
+   /** `rebroadcast` is controlled by the state machine and the HTTP layer; the engine only passes it through. */
   readonly options?: BroadcastOptions;
   readonly requestId?: RequestId;
   readonly traceId?: string;
@@ -522,7 +522,7 @@ export interface BroadcastTransactionInput extends ScopedTransactionRequest {
 
 export interface BroadcastTransactionResult {
   readonly transactionId: TransactionId;
-  /** 广播成功后的记录状态，固定为 `broadcast`。 */
+   /** The record state after a successful broadcast, fixed to `broadcast`. */
   readonly status: TransactionStatus;
   readonly txHash: string;
   readonly accepted: boolean;
@@ -531,7 +531,7 @@ export interface BroadcastTransactionResult {
 }
 
 /* ================================================================== */
-/* 引擎                                                               */
+ /* Engine                                                               */
 /* ================================================================== */
 
 export class TransactionEngine {
@@ -539,12 +539,12 @@ export class TransactionEngine {
   private readonly fingerprint: (request: TransactionRequest) => string;
   private readonly confirmationTracker?: ConfirmationTracker;
 
-  /** 被观测包装后的 Store 端口；所有内部调用都走这里（见 store-call.ts）。 */
+   /** The Store port wrapped for observation; all internal calls go through here (see store-call.ts). */
   private readonly stores: TransactionEngineStores;
 
   constructor(deps: TransactionEngineDeps) {
     this.deps = deps;
-    // 端口层包装：单点实现，结构上不可能漏掉某个调用处。
+     // Port-layer wrapping: a single implementation, so structurally no call site can be missed.
     const sink = deps.onStoreCall;
     const tagged: TransactionEngineStores = {
       transaction: tagStoreName(deps.stores.transaction, 'transaction'),
@@ -569,7 +569,7 @@ export class TransactionEngine {
     this.fingerprint = deps.fingerprint ?? fingerprintBuildRequest;
     if (this.stores.tracker !== undefined && deps.chain.confirm !== undefined) {
       this.confirmationTracker = new ConfirmationTracker({
-        // 传入**包装后**的端口：confirm 路径的 Store 调用同样被观测。
+         // Pass in the **wrapped** port: Store calls on the confirm path are observed the same way.
         leases: this.stores.tracker,
         transactions: this.stores.transaction,
         observe: async (input) => {
@@ -595,9 +595,9 @@ export class TransactionEngine {
     }
   }
 
-  /** 构造未签名交易并落库为 `built`（B04）。不签名、不广播。 */
+   /** Build an unsigned transaction and persist it as `built` (B04). No signing, no broadcast. */
   async build(input: BuildTransactionInput): Promise<BuiltTransactionResult> {
-    // 建立进程内请求上下文：其间的 Store 调用自动携带 requestId/trace/span。
+     // Set up the in-process request context: Store calls within it automatically carry requestId/trace/span.
     return this.measure(input.request.chain, 'build', () =>
       withStoreCallContext(
         {
@@ -611,12 +611,12 @@ export class TransactionEngine {
   }
 
   /**
-   * 显式作废一笔未广播的交易（ADR-037 方案 A）。**幂等**：已 `abandoned` 再调返回 200。
+    * Explicitly void an unbroadcast transaction (ADR-037, option A). **Idempotent**: calling again after `abandoned` returns 200.
    *
-   * 安全顺序（B37）：**先基于状态+版本 CAS 转终态，再释放租约**。
-   * 并发签名若抢赢 CAS，手动作废不得先释放仍可能上链的 nonce；
-   * 如果后续释放暂时失败，租约仍 reserved，但 B34 的 TTL 清理仅允许
-   * 无 expected_hash/tx_hash 的 abandoned 交易回收，避免误释放已签名 nonce。
+    * Safe order (B37): **first CAS-transition to the terminal state on state+version, then release the lease**.
+    * If a concurrent signer wins the CAS, a manual void must not release a nonce that may still land on-chain;
+    * if the later release fails temporarily, the lease stays reserved, but B34's TTL cleanup only reclaims
+    * abandoned transactions without expected_hash/tx_hash, so a signed nonce is never released by mistake.
    */
   async abandon(input: AbandonTransactionInput): Promise<AbandonTransactionResult> {
     const requestId = input.requestId ?? newRequestId();
@@ -626,7 +626,7 @@ export class TransactionEngine {
         'DFR_TRANSACTION_NOT_FOUND',
         requestId,
         undefined,
-        `未知交易 ${input.transactionId}`,
+         `Unknown transaction ${input.transactionId}`,
         { transactionId: input.transactionId },
       );
     }
@@ -643,11 +643,11 @@ export class TransactionEngine {
         'DFR_PROJECT_SCOPE_DENIED',
         requestId,
         undefined,
-        '无权访问该交易',
+         'No permission to access this transaction',
       );
     }
 
-    // 幂等：已经作废过就直接返回，不重复释放、不重复迁移。
+     // Idempotent: if already voided, return directly — no repeated release, no repeated transition.
     if (record.status === 'abandoned') {
       return {
         transactionId: record.transactionId,
@@ -662,7 +662,7 @@ export class TransactionEngine {
         'DFR_TRANSACTION_REJECTED',
         requestId,
         record.chain,
-        `交易当前状态 ${record.status} 不允许作废（只允许 built / simulated）`,
+         `Transaction is in state ${record.status}, which does not allow voiding (only built / simulated)`,
         { reason: 'not_abandonable', fields: ['status'], status: record.status },
       );
     }
@@ -686,7 +686,7 @@ export class TransactionEngine {
         });
         leaseReleased = released.kind === 'released';
       } catch {
-        // 释放失败不掩盖主流程：记录仍必须进入终态，租约则由巡检/重启清理兜底。
+         // A failed release must not hide the main flow: the record must still reach the terminal state; the lease is cleaned up by the patrol/restart fallback.
         leaseReleased = false;
       }
     } else if (record.sequencingRef !== undefined && this.stores.sequencing !== undefined) {
@@ -712,15 +712,15 @@ export class TransactionEngine {
   }
 
   /**
-   * 预检：只读地回答"这笔交易能不能过"（ADR-037 方案 B）。**不占 nonce、不落库。**
+    * Preflight: read-only answer to "can this transaction go through" (ADR-037, option B). **No nonce taken, nothing persisted.**
    *
-   * 与 `build` 的关键差异（也是它存在的理由）：
-   *   - **不** `nonce.reserve`、**不** `transaction.create`、**不**写幂等表；
-   *   - pending nonce 是**只读**读出来的，仅用于构造预览载荷与模拟 `from` 检查；
-   *   - 因此可以安全地反复调用——这正是调用方此前用 `build` 做的事。
+    * The key differences from `build` (and the reason it exists):
+    *   - **no** `nonce.reserve`, **no** `transaction.create`, **no** writes to the idempotency table;
+    *   - the pending nonce is read **read-only**, only to construct the preview payload and simulate the `from` check;
+    *   - so it is safe to call repeatedly — exactly what callers used to do with `build`.
    *
-   * `simulate` 必须先有 `transactionId`，而 `transactionId` 只在 `build` 时产生；
-   * 在 preflight 出现之前，"预检"只能靠 build，每次消耗一个 nonce（ADR-037 实测成因）。
+    * `simulate` requires a `transactionId` first, and `transactionId` only comes from `build`;
+    * before preflight existed, "preflight" could only be done via build, burning one nonce per call (the cause ADR-037 measured).
    */
   async preflight(input: PreflightTransactionInput): Promise<PreflightTransactionResult> {
     return this.measure(input.request.chain, 'preflight', () =>
@@ -746,14 +746,14 @@ export class TransactionEngine {
         'DFR_VALIDATION_FAILED',
         requestId,
         request.chain,
-        'preflight 不接受自带 nonce；它会只读地取 pending nonce 用于预览',
+         'preflight does not accept a caller-supplied nonce; it reads the pending nonce read-only for the preview',
         { fields: ['nonce'] },
       );
     }
 
     const port = this.deps.chain;
 
-    // 只读取排序前提。**绝不复用 build 的 reserve 路径**——那正是本方法要消除的副作用。
+     // Only read the ordering precondition. **Never reuse build's reserve path** — that is exactly the side effect this method removes.
     let pendingToken: SequencingToken;
     if (typeof port.getSequencingToken === 'function') {
       pendingToken = await port.getSequencingToken({
@@ -779,7 +779,7 @@ export class TransactionEngine {
         'DFR_UNSUPPORTED_CAPABILITY',
         requestId,
         request.chain,
-        '本链既没有排序前提读取，也没有 nonce 读取，无法预检',
+         'This chain has neither an ordering-precondition read nor a nonce read, so preflight is impossible',
         { capability: 'transaction.build', reason: 'method_missing' },
       );
     }
@@ -790,7 +790,7 @@ export class TransactionEngine {
       observedNonce = pendingToken.value;
       adapterRequest = { ...request, nonce: pendingToken.value };
     } else {
-      // Solana：blockhash 注入只是让载荷可构造；不落租约，故与 build 的严格一致性要求无关。
+       // Solana: injecting the blockhash only makes the payload constructible; no lease is persisted, so it is unrelated to build's strict consistency requirement.
       adapterRequest =
         typeof port.withSequencingToken === 'function'
           ? port.withSequencingToken(request, pendingToken)
@@ -801,33 +801,33 @@ export class TransactionEngine {
     try {
       unsigned = await port.build({ request: adapterRequest, requestId, ...trace, signal });
     } catch (err) {
-      // ⚠️ 这是个**真实的**语义要点（2026-10-07 真实链联调抓到）：
-      // `build` 会用 `eth_estimateGas` 推导 gas，而一笔注定回滚的交易在**估计阶段**
-      // 就会回滚，于是 build 抛出 `DFR_TRANSACTION_REVERTED`——
-      // 此时 preflight 根本走不到 simulate，调用方拿到的是 422 而不是"失败信息"。
+       // ⚠️ This is a **real** semantic point (caught in the 2026-10-07 live-chain integration test):
+       // `build` derives gas with `eth_estimateGas`, and a transaction doomed to revert reverts **during the estimation phase**,
+       // so build throws `DFR_TRANSACTION_REVERTED` —
+       // and preflight never reaches simulate; the caller gets a 422 instead of "failure information".
       //
-      // 但预检的价值**恰恰是**把失败当信息返回（否则调用方又要回到"用 build 试"的老路，
-      // 而那正是 ADR-037 要消灭的成因）。因此这里把"可预期的执行回滚"转成
-      // `simulation.success=false` 返回 200，与本方法的文档一致。
+       // But the value of preflight is **precisely** to return failures as information (otherwise callers go back to "trying with build",
+       // which is exactly the cause ADR-037 eliminates). So here an "expected execution revert" is converted into
+       // a `simulation.success=false` 200 response, consistent with this method's documentation.
       //
-      // 只吞**执行回滚**这一类：Provider 不可用、余额不足、配置错误等一律继续抛出——
-      // error-spec 第 5.2 章：分类不确定时不得降级、不得猜测。
+       // Only **execution reverts** are swallowed here: provider unavailable, insufficient balance, config errors, and the like are still rethrown —
+       // error-spec chapter 5.2: when the classification is uncertain, never downgrade and never guess.
       if (!(isDfrError(err) && err.code === 'DFR_TRANSACTION_REVERTED')) throw err;
       return {
-        // 明确**不返回** unsignedTransaction（回滚时没有可通过的载荷可供预览）。
+         // Explicitly **do not return** an unsignedTransaction (there is no passable payload to preview when it reverts).
         simulation: {
           success: false,
           ...(typeof err.details?.['revertReason'] === 'string'
             ? { revertReason: err.details['revertReason'] }
             : {}),
-          warnings: ['preflight 在 gas 估计阶段即回滚；未生成预览载荷'],
+           warnings: ['preflight reverted during the gas-estimation phase; no preview payload was generated'],
         },
         ...(observedNonce !== undefined ? { observedNonce } : {}),
         requestId,
       };
     }
 
-    // 只读模拟。回滚以 success=false 表达（与 simulate 相同），不转成异常。
+     // Read-only simulation. A revert is expressed as success=false (same as simulate), not converted into an exception.
     const simulation = await port.simulate({
       transactionId: `txn_preflight` as TransactionId,
       unsigned,
@@ -857,7 +857,7 @@ export class TransactionEngine {
         'DFR_VALIDATION_FAILED',
         requestId,
         request.chain,
-        'M1 的 nonce 由服务端分配并落租约；请求不得自带 nonce',
+         'In M1, nonces are allocated by the server and persisted as a lease; requests must not carry their own nonce',
         { fields: ['nonce'] },
       );
     }
@@ -882,17 +882,17 @@ export class TransactionEngine {
           'DFR_IDEMPOTENCY_CONFLICT',
           requestId,
           request.chain,
-          '同一幂等键已用于不同的请求体',
+           'The same idempotency key was already used for a different request body',
           { idempotencyKey: scope.key },
         );
       }
       if (began.kind === 'in_flight') {
-        // 并发重复请求：不重复执行，否则会产生两个 nonce / 两笔交易。
+         // Concurrent duplicate requests: do not execute twice, or two nonces / two transactions would be created.
         throw this.fail(
           'DFR_IDEMPOTENCY_CONFLICT',
           requestId,
           request.chain,
-          '同一幂等键的请求正在处理中',
+           'A request with the same idempotency key is currently being processed',
           { idempotencyKey: scope.key, retryAfterMs: began.retryAfterMs },
         );
       }
@@ -905,12 +905,12 @@ export class TransactionEngine {
     const leaseTtlMs = this.deps.nonceLeaseTtlMs ?? DEFAULT_NONCE_LEASE_TTL_MS;
     const port = this.deps.chain;
 
-    // 排序前提（ADR-033）。**按 token 的 kind 分派到对应 Store**，而不是按链族——
-    // 这样引擎完全不知道"哪条链是哪一家"，链差异只经 Adapter。
+     // Ordering precondition (ADR-033). **Dispatch to the matching Store by the token's kind**, not by chain family —
+     // so the engine never knows "which chain belongs to which family"; chain differences only pass through the Adapter.
     //
-    // 取 token 的入口优先级：
-    //   1. `getSequencingToken`（链无关，EVM 返回 nonce / Solana 返回 blockhash）；
-    //   2. 退回到 `getPendingNonce`（M1 的 EVM 端口只实现了它；向后兼容）。
+     // Entry points for fetching the token, in priority order:
+     //   1. `getSequencingToken` (chain-agnostic; EVM returns a nonce / Solana returns a blockhash);
+     //   2. fall back to `getPendingNonce` (the M1 EVM port only implements this one; backward compatible).
     let pendingToken: SequencingToken;
     if (typeof port.getSequencingToken === 'function') {
       pendingToken = await port.getSequencingToken({
@@ -936,19 +936,19 @@ export class TransactionEngine {
         'DFR_UNSUPPORTED_CAPABILITY',
         requestId,
         request.chain,
-        '本链既没有排序前提读取，也没有 nonce 读取，无法分配排序前提',
+         'This chain has neither an ordering-precondition read nor a nonce read, so no ordering precondition can be allocated',
         { capability: 'transaction.build', reason: 'method_missing' },
       );
     }
 
     let nonce: DecimalUint | undefined;
     let sequencingToken: SequencingToken | undefined;
-    // 需要传给 Adapter 的请求：nonce 路径注入 nonce，sequencing 路径注入 blockhash。
+     // The request to pass to the Adapter: the nonce path injects a nonce, the sequencing path injects a blockhash.
     let adapterRequest: TransactionRequest;
     let reservedKind: 'reserved' | 'reused';
 
     if (pendingToken.kind === 'nonce') {
-      // EVM 路径：与 M1 完全一致（NonceStore + 显式 nonce）。
+       // EVM path: exactly as in M1 (NonceStore + explicit nonce).
       const reserved = await this.stores.nonce.reserve({
         chain: request.chain,
         account: request.from,
@@ -961,7 +961,7 @@ export class TransactionEngine {
           'DFR_NONCE_CONFLICT',
           requestId,
           request.chain,
-          `nonce ${reserved.lease.nonce} 已被其他交易占用`,
+           `nonce ${reserved.lease.nonce} is already occupied by another transaction`,
           { nonce: reserved.lease.nonce },
         );
       }
@@ -970,13 +970,13 @@ export class TransactionEngine {
       sequencingToken = { kind: 'nonce', value: nonce };
       adapterRequest = { ...request, nonce };
     } else {
-      // Solana 路径：SequencingStore + 固定的 blockhash。缺装配一律 fail-closed。
+       // Solana path: SequencingStore + a fixed blockhash. Any missing wiring fails closed.
       if (this.stores.sequencing === undefined) {
         throw this.fail(
           'DFR_CONFIGURATION_ERROR',
           requestId,
           request.chain,
-          '本链返回 blockhash 排序前提，但未装配 SequencingStore',
+           'This chain returns a blockhash ordering precondition but has no SequencingStore wired up',
           { capability: 'transaction.build' },
         );
       }
@@ -985,7 +985,7 @@ export class TransactionEngine {
           'DFR_UNSUPPORTED_CAPABILITY',
           requestId,
           request.chain,
-          '本链缺少排序前提注入方法，无法保证租约与载荷一致',
+           'This chain has no ordering-precondition injection method; the lease and the payload cannot be kept consistent',
           { capability: 'transaction.build', reason: 'method_missing' },
         );
       }
@@ -998,7 +998,7 @@ export class TransactionEngine {
       });
       sequencingToken = reserved.lease.token;
       reservedKind = reserved.kind;
-      // 注入 Store 已落租约的**同一个**前提，保证"租约 ↔ 载荷"一致（ADR-033）。
+       // Inject the **same** precondition the Store already leased, keeping "lease ↔ payload" consistent (ADR-033).
       adapterRequest = port.withSequencingToken(request, sequencingToken);
     }
 
@@ -1006,10 +1006,10 @@ export class TransactionEngine {
     try {
       unsigned = await port.build({ request: adapterRequest, requestId, ...trace, signal });
     } catch (err) {
-      // 未签名、未广播的租约必须释放，否则会留下永久空洞（m1-storage-model §3.4）。
-      // 释放失败不得掩盖原始错误：调用方需要看到的是 build 为什么失败。
-      // 携带 transactionId（ADR-030 的所有权证明）：该 nonce 可能已被回收并绑定到新交易，
-      // 没有它会误释放别人的租约。
+       // An unsigned, unbroadcast lease must be released, or it leaves a permanent gap (m1-storage-model §3.4).
+       // A failed release must not hide the original error: the caller needs to see why build failed.
+       // Carry the transactionId (ADR-030's proof of ownership): the nonce may have been reclaimed and bound to a new transaction,
+       // and releasing without it could release someone else's lease.
       if (reservedKind === 'reserved') {
         await this.releaseQuietly(
           request.chain,
@@ -1028,7 +1028,7 @@ export class TransactionEngine {
         'DFR_INTERNAL_ERROR',
         requestId,
         request.chain,
-        'build 边不存在（状态机与规范不一致）',
+         'build edge does not exist (state machine disagrees with the spec)',
       );
     }
     const now = this.now();
@@ -1054,12 +1054,12 @@ export class TransactionEngine {
         : {}),
     });
     if (created.kind === 'already_exists') {
-      // 新生成的 transactionId 撞上既有记录，只可能是 ID 生成器坏了。
+       // A newly generated transactionId colliding with an existing record can only mean the ID generator is broken.
       throw this.fail(
         'DFR_INTERNAL_ERROR',
         requestId,
         request.chain,
-        `transactionId ${transactionId} 已存在`,
+         `transactionId ${transactionId} already exists`,
       );
     }
 
@@ -1075,8 +1075,8 @@ export class TransactionEngine {
           ...(nonce !== undefined ? { nonce } : {}),
         },
       });
-      // 失去写入权说明有并发执行者接管：本次结果仍然真实（记录已落库），
-      // 但不能保证被重放，按 gateway-spec 第 7.2 节显式标记为不可重放。
+       // Losing the write right means a concurrent executor took over: this result is still real (the record is persisted),
+       // but it cannot be guaranteed to be replayable; mark it explicitly as non-replayable per gateway-spec section 7.2.
       if (completed.kind !== 'completed') replayable = false;
     }
 
@@ -1091,7 +1091,7 @@ export class TransactionEngine {
     };
   }
 
-  /** 有界同步等待；超时后启动不依赖 HTTP AbortSignal 的后台只读确认循环。 */
+   /** Bounded synchronous wait; after a timeout, start a background read-only confirmation loop that does not depend on the HTTP AbortSignal. */
   async confirm(input: ConfirmTransactionInput): Promise<ConfirmationResult> {
     return this.measure(input.chain, 'confirm', () =>
       withStoreCallContext(
@@ -1110,10 +1110,10 @@ export class TransactionEngine {
     const trace = traceContext(input);
     const timeoutMs = input.timeoutMs ?? 60_000;
     if (!Number.isInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 600_000) {
-      throw this.fail('DFR_VALIDATION_FAILED', requestId, input.chain, 'timeoutMs 必须在 1000..600000 之间');
+       throw this.fail('DFR_VALIDATION_FAILED', requestId, input.chain, 'timeoutMs must be within 1000..600000');
     }
     if (this.confirmationTracker === undefined) {
-      throw this.fail('DFR_UNSUPPORTED_CAPABILITY', requestId, input.chain, '未装配确认观测端口或 tracker lease store');
+       throw this.fail('DFR_UNSUPPORTED_CAPABILITY', requestId, input.chain, 'No confirmation-observation port or tracker lease store is wired up');
     }
     const signal = input.signal ?? new AbortController().signal;
     const tracked: ConfirmationTrackResult = await this.confirmationTracker.trackUntil({
@@ -1152,26 +1152,26 @@ export class TransactionEngine {
   /* ---------------------------- broadcast ---------------------------- */
 
   /**
-   * 广播一笔已模拟的交易（DFR-M1-C03a，**只做可判定路径**）。
+    * Broadcast an already-simulated transaction (DFR-M1-C03a, **only the decidable paths**).
    *
-   * 顺序（与 transaction-lifecycle §4.4 对齐）：
+    * Order (aligned with transaction-lifecycle §4.4):
    *
    * ```text
-   * 取记录 ─► 状态检查（必须 simulated）─► 客户端回声 vs 记录载荷 ─► 端口存在性
-   *        ─► 记录 sign 转移（signed，只写 expectedHash）─► 单次广播
-   *             ├─ accepted ─► broadcast.accepted 转移（写 txHash）─► 返回
-   *             └─ 其它 ─────► 状态**停在 signed**，原样上抛
+    * Fetch the record ─► state check (must be simulated) ─► client echo vs. record payload ─► port existence
+    *        ─► record sign transition (signed, writes expectedHash only) ─► single broadcast
+    *             ├─ accepted ─► broadcast.accepted transition (writes txHash) ─► return
+    *             └─ other ─────► state **stays signed**, rethrow verbatim
    * ```
    *
-   * 三个刻意的选择：
+    * Three deliberate choices:
    *
-   * 1. **失败不改状态**：`signed` 是"可能已发出"的唯一诚实落点。
-   *    超时既不能当成功也不能当失败（`unknown` 的边尚未定义，见 ADR-019 / C03b），
-   *    因此本方法绝不写 `failed` / `unknown`，只把原始错误上抛。
-   * 2. **不重试**：广播的 `non-idempotent-write` 由 Adapter 声明、Provider 层拒绝重试；
-   *    引擎这里也不加任何循环，否则会绕过那两道保护。
-   * 3. **落库只写公开字段**：`expectedHash` 与 `txHash` 都是哈希，不是签名原文；
-   *    `signedPayload` 永远不进入记录。
+    * 1. **Failures do not change state**: `signed` is the only honest landing spot for "may already be sent".
+    *    A timeout is neither success nor failure (the `unknown` edge is not yet defined, see ADR-019 / C03b),
+    *    so this method never writes `failed` / `unknown`; it only rethrows the original error.
+    * 2. **No retries**: the broadcast's `non-idempotent-write` is declared by the Adapter and refused by the Provider layer;
+    *    the engine adds no loop here either, or it would bypass those two protections.
+    * 3. **Only public fields are persisted**: `expectedHash` and `txHash` are hashes, not the signature text;
+    *    `signedPayload` never enters the record.
    */
   async broadcast(input: BroadcastTransactionInput): Promise<BroadcastTransactionResult> {
     return this.measure(input.signed.chain, 'broadcast', () =>
@@ -1198,7 +1198,7 @@ export class TransactionEngine {
         'DFR_TRANSACTION_NOT_FOUND',
         requestId,
         signed.chain,
-        `未知交易 ${input.transactionId}`,
+         `Unknown transaction ${input.transactionId}`,
         { transactionId: input.transactionId },
       );
     }
@@ -1208,16 +1208,16 @@ export class TransactionEngine {
         'DFR_CHAIN_MISMATCH',
         requestId,
         signed.chain,
-        `签名载荷 chain ${signed.chain} 与记录 ${record.chain} 不一致`,
+         `Signed payload chain ${signed.chain} does not match record ${record.chain}`,
         { fields: ['chain'] },
       );
     }
 
-    // 重播（TODO-012）与首次广播是两条不同的状态路径：
-    //   首次：simulated --sign--> signed --broadcast.accepted--> broadcast
-    //   重播：dropped --rebroadcast--> broadcast（须显式 rebroadcast: true）
-    // 状态机禁止 `dropped → broadcast` 之外的隐式二次广播，因此这里必须显式分流，
-    // 否则 `dropped` 记录会在 `assertBroadcastable` 被拒（这正是预复审发现的问题）。
+     // Rebroadcast (TODO-012) and first broadcast are two different state paths:
+     //   first: simulated --sign--> signed --broadcast.accepted--> broadcast
+     //   rebroadcast: dropped --rebroadcast--> broadcast (requires explicit rebroadcast: true)
+     // The state machine forbids any implicit second broadcast other than `dropped → broadcast`, so this must branch explicitly,
+     // otherwise a `dropped` record would be rejected in `assertBroadcastable` (exactly the problem the pre-review found).
     const rebroadcast = input.options?.rebroadcast === true;
     if (rebroadcast) {
       if (record.status !== 'dropped') {
@@ -1225,18 +1225,18 @@ export class TransactionEngine {
           'DFR_TRANSACTION_REJECTED',
           requestId,
           record.chain,
-          `只有 dropped 状态的交易可以重播（当前 ${record.status}）`,
+           `Only transactions in dropped state can be rebroadcast (currently ${record.status})`,
           { reason: 'rebroadcast_not_allowed', fields: ['rebroadcast'], status: record.status },
         );
       }
-      // 重播必须使用记录里**已签名**的那笔交易：expectedHash 是记录真值，
-      // 不接受客户端换一个哈希来"重播另一笔"。
+       // A rebroadcast must use the **already signed** transaction in the record: expectedHash is the record's ground truth,
+       // and a client-supplied different hash must not be accepted as "rebroadcasting another transaction".
       if (record.expectedHash === undefined || record.expectedHash !== signed.expectedHash) {
         throw this.fail(
           'DFR_TRANSACTION_REJECTED',
           requestId,
           record.chain,
-          '重播的 expectedHash 与记录不一致，拒绝广播',
+           'Rebroadcast expectedHash does not match the record; broadcast refused',
           { reason: 'expected_hash_mismatch', fields: ['signedTransaction.expectedHash'] },
         );
       }
@@ -1244,30 +1244,30 @@ export class TransactionEngine {
       this.assertBroadcastable(record, requestId);
     }
 
-    // 客户端回传的 unsigned 只是回声，真值是记录；不一致说明客户端改了参数。
+       // The unsigned payload the client sends back is only an echo; the record is the ground truth; a mismatch means the client changed the parameters.
     if (record.unsignedPayload !== signed.unsigned.payload) {
       throw this.fail(
         'DFR_TRANSACTION_REJECTED',
         requestId,
         record.chain,
-        '签名请求携带的 unsigned 载荷与记录不一致，拒绝广播',
+         'The unsigned payload in the sign request does not match the record; broadcast refused',
         { reason: 'unsigned_payload_mismatch', fields: ['unsignedTransaction.payload'] },
       );
     }
 
     if (typeof this.deps.chain.broadcast !== 'function') {
-      // fail-closed：宁可拒绝，也不静默跳过绑定校验直接广播。
+       // fail-closed: refuse rather than silently skipping the binding check and broadcasting.
       throw this.fail(
         'DFR_UNSUPPORTED_CAPABILITY',
         requestId,
         record.chain,
-        '当前部署未装配广播实现',
+         'No broadcast implementation is wired up in this deployment',
         { capability: 'transaction.broadcast' },
       );
     }
 
-    // 先落 signed（不含签名原文，只写 expectedHash），再广播：
-    // 广播是不可逆动作，必须让"已签名"这一事实先可查。
+     // Persist signed first (only expectedHash, no signature text), then broadcast:
+     // broadcast is irreversible, so the "already signed" fact must be queryable first.
     const signStarted = performance.now();
     const signedRecord = rebroadcast
       ? await this.applyTransition(
@@ -1280,8 +1280,8 @@ export class TransactionEngine {
       : await this.applyTransition(record, 'sign', requestId, {
           expectedHash: signed.expectedHash,
         });
-    // 这里测量的是"签名落库"这一次状态转移的耗时（DB 写入 + CAS），
-    // 不是客户端签名本身耗时——签名发生在 DFR 之外。
+     // This measures the duration of the one "persist the signature" state transition (DB write + CAS),
+     // not the client's own signing time — signing happens outside DFR.
     this.deps.metrics?.recordStage({
       chain: record.chain,
       stage: 'sign',
@@ -1298,7 +1298,7 @@ export class TransactionEngine {
       if (this.stores.sequencing === undefined) {
         throw this.fail(
           'DFR_CONFIGURATION_ERROR', requestId, record.chain,
-          '已签名的 blockhash 交易缺少 SequencingStore，拒绝广播',
+           'A signed blockhash transaction is missing its SequencingStore; broadcast refused',
           { capability: 'transaction.broadcast' },
         );
       }
@@ -1311,7 +1311,7 @@ export class TransactionEngine {
       if (consumed.kind !== 'updated' || consumed.lease.status !== 'consumed') {
         throw this.fail(
           'DFR_TRANSACTION_REJECTED', requestId, record.chain,
-          '已签名交易的排序租约不存在或已失效，拒绝广播',
+           'The signing lease for a signed transaction does not exist or has expired; broadcast refused',
           { reason: 'sequencing_lease_inactive' },
         );
       }
@@ -1331,7 +1331,7 @@ export class TransactionEngine {
         if (typeof this.deps.chain.isSequencingExpired !== 'function') {
           throw this.fail(
             'DFR_UNSUPPORTED_CAPABILITY', requestId, record.chain,
-            '签名广播未配置 Solana blockhash 有效性链高检查，拒绝发送',
+             'Solana blockhash validity chain-height check is not configured for signed broadcast; refusing to send',
             { capability: 'transaction.broadcast', reason: 'blockhash_expiry_missing' },
           );
         }
@@ -1345,7 +1345,7 @@ export class TransactionEngine {
         if (expired) {
           throw this.fail(
             'DFR_BLOCKHASH_EXPIRED', requestId, record.chain,
-            'Solana 已签名交易使用的 blockhash 已过期，必须重新 build 并外部签名',
+             'The blockhash used by this signed Solana transaction has expired; rebuild and sign externally',
             { reason: 'blockhash_expired_before_broadcast' },
           );
         }
@@ -1377,9 +1377,9 @@ export class TransactionEngine {
         }
         throw err;
       }
-      // 广播失败必须分类，不能一律停在 signed：ADR-019 要求
-      //   可证明不可自愈的拒绝 → failed（终态）
-      //   其余（超时/不可用/熔断/nonce 冲突/不可分类）→ unknown → 按观测解析
+       // A broadcast failure must be classified; it cannot simply stay signed: ADR-019 requires
+       //   a provably non-self-healing rejection → failed (terminal state)
+       //   everything else (timeout / unavailable / circuit breaker / nonce conflict / unclassifiable) → unknown → resolve by observation
       try {
         await this.handleBroadcastFailure(signedRecord, err, requestId, signal, trace);
       } catch {
@@ -1391,9 +1391,9 @@ export class TransactionEngine {
     }
 
     const txHash = broadcast.ref.kind === 'hash' ? broadcast.ref.hash : null;
-    // 首次广播：signed → broadcast（顺带写入 txHash）。
-    // 重播：`rebroadcast` 边**已经**把状态落到 `broadcast`，再走 `broadcast.accepted`
-    // 会是 `broadcast → broadcast`（无此边）。txHash 在首次广播时已落库，无需重写。
+     // First broadcast: signed → broadcast (also writing txHash).
+     // Rebroadcast: the `rebroadcast` edge **already** landed the state on `broadcast`, so taking `broadcast.accepted`
+     // again would be `broadcast → broadcast` (no such edge). txHash was already persisted on the first broadcast; no need to rewrite it.
     const advanced = rebroadcast
       ? signedRecord
       : await this.applyTransition(
@@ -1410,20 +1410,20 @@ export class TransactionEngine {
       accepted: broadcast.accepted,
       observedAt: broadcast.observedAt,
     };
-    // 是否重播由**引擎**判定（它知道本次请求是否要求重播），
-    // 而不是依赖 Adapter 在结果里回显 —— 任何 Adapter 忘记回显都会破坏契约。
-    // 保留对 Adapter 回显的兼容判断，但引擎的判断优先。
+     // Whether this is a rebroadcast is decided by the **engine** (it knows whether this request asked for one),
+     // not by the Adapter echoing it in its result — any Adapter that forgets to echo would break the contract.
+     // Compatibility with an Adapter echo is kept, but the engine's decision takes precedence.
     return rebroadcast || broadcast.rebroadcast === true
       ? { ...result, rebroadcast: true }
       : result;
   }
 
   /**
-   * 广播失败后的状态归属（ADR-019）。
+    * State attribution after a broadcast failure (ADR-019).
    *
-   * 本方法**不抛错**：原始错误必须原样上抛给调用方（唯一错误构造点），
-   * 这里只负责把状态写到诚实的落点。任何内部失败（观测不可用、Store 冲突）
-   * 都不得吞掉原始错误，也不得把交易推成终态。
+    * This method **never throws**: the original error must be rethrown verbatim to the caller (the single error-construction point),
+    * and this only writes the state to the honest landing spot. Any internal failure (observation unavailable, Store conflict)
+    * must neither swallow the original error nor push the transaction into a terminal state.
    */
   private async handleBroadcastFailure(
     signedRecord: TransactionRecord,
@@ -1443,7 +1443,7 @@ export class TransactionEngine {
       return;
     }
 
-    // 不确定：先落 unknown（唯一入边），再尝试用一次链上观测解析。
+     // Indeterminate: first land on unknown (the only inbound edge), then try to resolve it with one on-chain observation.
     const unknown = await this.applyTransition(
       signedRecord,
       'broadcast.indeterminate',
@@ -1453,11 +1453,11 @@ export class TransactionEngine {
   }
 
   /**
-   * 用一次链上观测解析 `unknown`（ADR-019 第 4 节）。
+    * Resolve `unknown` with one on-chain observation (ADR-019, section 4).
    *
-   * 解析不出结论、观测不可用、或部署未装配 `observe` 时**保持 `unknown`**：
-   * "此刻查不到"不等于"已丢弃"（mempool 传播异步），`dropped` 留给 M1-D03 的
-   * `dropTimeoutMs` 窗口判定。
+    * If the observation is inconclusive, observation is unavailable, or the deployment has no `observe` wired up, **stay `unknown`**:
+    * "not found right now" is not "dropped" (mempool propagation is asynchronous); `dropped` is left to M1-D03's
+    * `dropTimeoutMs` window decision.
    */
   private async tryResolveUnknown(
     unknown: TransactionRecord,
@@ -1465,15 +1465,15 @@ export class TransactionEngine {
     signal: AbortSignal,
     trace: { traceId?: string; spanId?: string } = {},
     /**
-     * 是否允许把"观测为 `absent` 且已超时"判为 `dropped`（ADR-023）。
+      * Whether "observed `absent` and already timed out" may be judged `dropped` (ADR-023).
      *
-     * **只有恢复/巡检的再次观测**才置 true。同一次广播请求内的观测必须保持保守
-     * （ADR-019 第 142 行："同请求内的 absent 观测不解析为 dropped"，因为 mempool
-     * 传播是异步的，此刻查不到可能只是还没传开）。
+      * Only a **re-observation by recovery/patrol** may set this true. An observation inside the same broadcast request must stay conservative
+      * (ADR-019, line 142: "an absent observation within the same request does not resolve to dropped", because mempool
+      * propagation is asynchronous — not finding it now may just mean it has not propagated yet).
      */
     allowDropTimeout = false,
   ): Promise<TransactionRecord | null> {
-    // 只对 unknown / dropped 生效（ADR-023）：其它状态由调用方在此之前过滤。
+     // Only applies to unknown / dropped (ADR-023): other states are filtered by the caller before this point.
     if (unknown.status !== 'unknown' && unknown.status !== 'dropped') return null;
     if (typeof this.deps.chain.observe !== 'function' || unknown.nonce === undefined) {
       return null;
@@ -1481,8 +1481,8 @@ export class TransactionEngine {
 
     let observation: ChainBroadcastObservation;
     try {
-      // 必须通过 this.deps.chain.observe(...) 调用：把方法取出再调用会丢接收者，
-      // 端口实现里的 this（观测记录、连接句柄）会变成 undefined。
+       // Must call through this.deps.chain.observe(...): pulling the method out and calling it loses its receiver,
+       // and `this` inside the port implementation (observation records, connection handles) would become undefined.
       observation = await this.deps.chain.observe({
         chain: unknown.chain,
         txHash: unknown.expectedHash ?? '',
@@ -1493,14 +1493,14 @@ export class TransactionEngine {
         signal,
       });
     } catch {
-      // 观测故障不得改变分类（仍是 unknown），也不得覆盖原始广播错误。
+       // An observation failure must not change the classification (still unknown), nor overwrite the original broadcast error.
       return null;
     }
 
     const event = resolveUnknownOutcome(observation);
     if (event === null) {
-      // `absent`（或无法归类）：**只有在 unknown 且已跨过 dropTimeoutMs 时**才判 dropped。
-      // ADR-023 的两个条件缺一不可——只凭一次"查不到"判丢弃会让调用方误以为可以重播。
+       // `absent` (or unclassifiable): only judge `dropped` when **in unknown and past dropTimeoutMs**.
+       // Both ADR-023 conditions are indispensable — judging dropped from a single "not found" would make callers think they can rebroadcast.
       if (
         allowDropTimeout &&
         observation.kind === 'absent' &&
@@ -1526,14 +1526,14 @@ export class TransactionEngine {
   }
 
   /**
-   * 显式解析一个 `unknown` 或 `dropped` 交易（M1-D03 恢复扫描与运维排查用）。
+    * Explicitly resolve one `unknown` or `dropped` transaction (for the M1-D03 recovery scan and ops troubleshooting).
    *
-   * - `unknown`：观测 → 按观测落点推进；观测为 `absent` 且已超过 `dropTimeoutMs`
-   *   才转 `dropped`（ADR-023）；
-   * - `dropped`：只做**收敛纠正**（included / pending / replaced），观测为 `absent`
-   *   时保持原状——`dropped` 是判断而非事实，缺这条会永久误报。
+    * - `unknown`: observe → advance to the observation's landing spot; if the observation is `absent` and `dropTimeoutMs` has passed,
+    *   then move to `dropped` (ADR-023);
+    * - `dropped`: only **convergence correction** (included / pending / replaced); when the observation is `absent`,
+    *   stay as-is — `dropped` is a judgment, not a fact; without this rule it would be permanently misreported.
    *
-   * 幂等：其它状态直接返回当前记录，不报错也不推进。
+    * Idempotent: other states return the current record directly, without error and without advancing.
    */
   async resolveIndeterminate(input: {
     readonly transactionId: TransactionId;
@@ -1548,23 +1548,23 @@ export class TransactionEngine {
         'DFR_TRANSACTION_NOT_FOUND',
         requestId,
         undefined,
-        `未知交易 ${input.transactionId}`,
+         `Unknown transaction ${input.transactionId}`,
         { transactionId: input.transactionId },
       );
     }
-    // unknown：观测 + 超时判定；dropped：只做收敛纠正（ADR-023）。
-    // 这里是"再次观测"，因此允许超时判定为 dropped。
+     // unknown: observe + timeout decision; dropped: convergence correction only (ADR-023).
+     // This is a "re-observation", so judging dropped on timeout is allowed here.
     if (record.status !== 'unknown' && record.status !== 'dropped') return record;
     const resolved = await this.tryResolveUnknown(record, requestId, signal, {}, true);
     return resolved ?? record;
   }
 
   /**
-   * 静默时长是否已超过 `dropTimeoutMs`（ADR-023）。
+    * Has the silence already exceeded `dropTimeoutMs` (ADR-023)?
    *
-   * 以 `updatedAt` 为起点：`transition()` 在进入 `unknown` 时写入它，因此它标记
-   * "进入 unknown 的时刻"。落库时钟与进程时钟可能略有偏差（Postgres 用
-   * `clock_timestamp()`），对 30 分钟量级的判定不构成影响。
+    * Measured from `updatedAt`: `transition()` writes it when entering `unknown`, so it marks
+    * "the moment it entered unknown". The store clock and the process clock may drift slightly (Postgres uses
+    * `clock_timestamp()`), which does not affect a decision at the 30-minute scale.
    */
   private dropTimeoutExceeded(record: TransactionRecord): boolean {
     const timeout = this.deps.dropTimeoutMs ?? DEFAULT_DROP_TIMEOUT_MS;
@@ -1574,7 +1574,7 @@ export class TransactionEngine {
     return now - since >= timeout;
   }
 
-  /** 只有 `simulated` 允许进入广播；失败原因用稳定 reason 区分（不泄漏内部状态机词汇）。 */
+   /** Only `simulated` may enter broadcast; the failure reason uses a stable reason (without leaking internal state-machine vocabulary). */
   private assertBroadcastable(record: TransactionRecord, requestId: RequestId): void {
     if (record.status === 'simulated') return;
     const reason =
@@ -1587,30 +1587,30 @@ export class TransactionEngine {
       'DFR_TRANSACTION_REJECTED',
       requestId,
       record.chain,
-      `交易当前状态 ${record.status} 不允许广播`,
+       `Transaction is in state ${record.status}; broadcast is not allowed`,
       { reason, fields: ['status'], status: record.status },
     );
   }
 
-  /* ------------------------------ 内部 ------------------------------ */
+   /* ------------------------------ internals ------------------------------ */
 
   /**
-   * 模拟一笔已 build 的交易（DFR-M1-B05）。
+    * Simulate an already-built transaction (DFR-M1-B05).
    *
-   * 顺序（每一步失败都不得推进状态）：
+    * Order (every step that fails must not advance the state):
    *
    * ```text
-   * 取记录 ─► 绑定校验（chain / payload / nonce） ─► 状态校验（built | simulated）
-   *        ─► 只读模拟
-   *             ├─ success ─► built 转 simulated / simulated 只更新观测
-   *             └─ failure ─► 转 reverted（终态，广播不可达）→ 抛 DFR_TRANSACTION_REVERTED
+    * Fetch the record ─► binding check (chain / payload / nonce) ─► state check (built | simulated)
+    *        ─► read-only simulation
+    *             ├─ success ─► built becomes simulated / simulated only updates the observation
+    *             └─ failure ─► move to reverted (terminal state, broadcast unreachable) → throw DFR_TRANSACTION_REVERTED
    * ```
    *
-   * 两个刻意的选择：
-   * - **失败抛错而不是返回结果**：链上回滚的错误构造点只有一个（gateway-spec 第 8 节
-   *   "错误只在其归属层构造一次"）。HTTP 层只做状态码映射（422），不需要重新分类；
-   * - **失败先落库再抛错**：状态必须先写成 `reverted` 才能保证"广播被封锁"这一安全属性，
-   *   即使调用方忽略错误也不会留下可广播的交易。
+    * Two deliberate choices:
+    * - **Failures throw instead of returning a result**: there is exactly one construction point for on-chain revert errors (gateway-spec section 8,
+    *   "each error is constructed exactly once, in the layer it belongs to"). The HTTP layer only maps the status code (422) and needs no re-classification;
+    * - **Failures are persisted before being thrown**: the state must first be written as `reverted` to guarantee the "broadcast is blocked" safety property,
+    *   so no broadcastable transaction is left behind even if the caller ignores the error.
    */
   async simulate(input: SimulateTransactionInput & ScopedTransactionRequest): Promise<SimulatedTransactionResult> {
     return this.measure(input.unsignedTransaction.chain, 'simulate', () =>
@@ -1635,7 +1635,7 @@ export class TransactionEngine {
         'DFR_TRANSACTION_NOT_FOUND',
         requestId,
         input.unsignedTransaction.chain,
-        `未知交易 ${input.transactionId}`,
+         `Unknown transaction ${input.transactionId}`,
         { transactionId: input.transactionId },
       );
     }
@@ -1648,7 +1648,7 @@ export class TransactionEngine {
         'DFR_VALIDATION_FAILED',
         requestId,
         record.chain,
-        `交易当前状态 ${record.status} 不允许模拟（只允许 ${SIMULATABLE_STATUSES.join(' / ')}）`,
+         `Transaction is in state ${record.status}; simulation is not allowed (only ${SIMULATABLE_STATUSES.join(' / ')})`,
         { fields: ['status'], status: record.status, allowed: [...SIMULATABLE_STATUSES] },
       );
     }
@@ -1664,17 +1664,17 @@ export class TransactionEngine {
 
     if (simulation.success) {
       if (record.status === 'simulated') {
-        // 重复调用：结果作为新观测返回，不推进状态（m1-api-contract 第 2 节）。
+         // Repeated calls: the result is returned as a new observation without advancing the state (m1-api-contract section 2).
         return { transactionId: record.transactionId, status: 'simulated', simulation };
       }
       const applied = await this.applyTransition(record, 'simulate.succeeded', requestId);
       return { transactionId: applied.transactionId, status: applied.status, simulation };
     }
 
-    // 模拟失败：必须先落库为终态 reverted，再抛错。
-    // 状态选择（不改状态机，只复用既有边）：
-    //   built → simulate.failed（规范第 3.1 节明确定义的边）
-    //   simulated → execution.failed（表内 `*` 行，唯一从 simulated 到 reverted 的边）
+     // Simulation failure: the terminal state reverted must be persisted first, then the error is thrown.
+     // State selection (no state-machine change, just reusing existing edges):
+     //   built → simulate.failed (the edge explicitly defined in spec section 3.1)
+     //   simulated → execution.failed (the `*` row in the table, the only edge from simulated to reverted)
     const event: TransactionEvent = record.status === 'built' ? 'simulate.failed' : 'execution.failed';
     const reverted = await this.applyTransition(record, event, requestId, {
       errorCode: 'DFR_TRANSACTION_REVERTED',
@@ -1696,11 +1696,11 @@ export class TransactionEngine {
       }
     }
 
-    const revertReason = simulation.revertReason ?? '模拟未通过，但节点未返回原因';
+     const revertReason = simulation.revertReason ?? 'Simulation failed, but the node returned no reason';
     throw createDfrError('DFR_TRANSACTION_REVERTED', {
       requestId,
       chain: record.chain,
-      message: '模拟失败：交易执行回滚，已阻止广播',
+       message: 'Simulation failed: the transaction execution reverted; broadcast has been blocked',
       details: {
         transactionId: record.transactionId,
         revertReason,
@@ -1711,7 +1711,7 @@ export class TransactionEngine {
     });
   }
 
-  /* ---------------------------- 内部辅助 ---------------------------- */
+   /* ---------------------------- internal helpers ---------------------------- */
 
   /**
    * A transactionId identifies persisted state but grants no authorization.
@@ -1727,16 +1727,16 @@ export class TransactionEngine {
       (input.authorizedChains !== undefined && input.authorizedChains !== '*' &&
        !input.authorizedChains.includes(record.chain))
     ) {
-      throw this.fail('DFR_PROJECT_SCOPE_DENIED', requestId, undefined, '无权访问该交易');
+       throw this.fail('DFR_PROJECT_SCOPE_DENIED', requestId, undefined, 'No permission to access this transaction');
     }
   }
 
   /**
-   * 绑定校验：simulate 的载荷必须就是 build 落库的那一份。
+    * Binding check: the payload simulate receives must be exactly the one build persisted.
    *
-   * 三处逐一比较：chain、payload 字节、以及载荷声明的 nonce 与租约 nonce。
-   * 任何不一致都 fail-closed，且**在调用链之前**完成——不给"用别人的载荷试探"
-   * 留下任何 RPC 观测面。
+    * Three comparisons, one by one: chain, payload bytes, and the nonce the payload declares vs. the leased nonce.
+    * Any mismatch fails closed, and it all happens **before the chain is called** — giving "probing with someone else's payload"
+    * no RPC observation surface at all.
    */
   private assertSimulationBinding(
     record: TransactionRecord,
@@ -1748,7 +1748,7 @@ export class TransactionEngine {
         'DFR_VALIDATION_FAILED',
         requestId,
         record.chain,
-        `载荷 chain ${unsigned.chain} 与记录 ${record.chain} 不一致`,
+         `Payload chain ${unsigned.chain} does not match record ${record.chain}`,
         { fields: ['unsignedTransaction.chain'] },
       );
     }
@@ -1757,7 +1757,7 @@ export class TransactionEngine {
         'DFR_INTERNAL_ERROR',
         requestId,
         record.chain,
-        `交易 ${record.transactionId} 没有落库未签名载荷，无法校验绑定`,
+         `Transaction ${record.transactionId} has no persisted unsigned payload; the binding cannot be verified`,
       );
     }
     if (unsigned.payload !== record.unsignedPayload) {
@@ -1765,7 +1765,7 @@ export class TransactionEngine {
         'DFR_VALIDATION_FAILED',
         requestId,
         record.chain,
-        '载荷与 build 结果不一致：只接受 build 返回的 unsigned payload',
+         'The payload does not match the build result: only the unsigned payload returned by build is accepted',
         { fields: ['unsignedTransaction.payload'] },
       );
     }
@@ -1774,17 +1774,17 @@ export class TransactionEngine {
         'DFR_VALIDATION_FAILED',
         requestId,
         record.chain,
-        '载荷声明的 nonce 与已分配租约不一致',
+         'The nonce declared by the payload does not match the allocated lease',
         { fields: ['unsignedTransaction.meta.requiresNonce'] },
       );
     }
   }
 
   /**
-   * 带 CAS 的状态迁移：冲突时重读记录并重新推导目标状态。
+    * State transition with CAS: on conflict, re-read the record and re-derive the target state.
    *
-   * 不允许 last-write-wins（development-plan 第 4.2 节）：每次写入都带上
-   * 读到的 `expectedStatus` + `expectedVersion`，Store 用它们做条件。
+    * No last-write-wins (development-plan section 4.2): every write carries the
+    * `expectedStatus` + `expectedVersion` it read; the Store uses them as conditions.
    */
   private async applyTransition(
     record: TransactionRecord,
@@ -1792,9 +1792,9 @@ export class TransactionEngine {
     requestId: RequestId,
     patch?: TransitionPatch,
     /**
-     * 状态机的额外输入。目前只有 `rebroadcast`：
-     * `dropped → broadcast` 这条边要求显式 `rebroadcast: true`，
-     * 否则 `transition()` 会以 `REBROADCAST_FLAG_REQUIRED` 拒绝。
+      * Extra state-machine input. Currently only `rebroadcast`:
+      * the `dropped → broadcast` edge requires an explicit `rebroadcast: true`,
+      * otherwise `transition()` rejects with `REBROADCAST_FLAG_REQUIRED`.
      */
     transitionOptions?: { readonly rebroadcast?: boolean },
   ): Promise<TransactionRecord> {
@@ -1808,12 +1808,12 @@ export class TransactionEngine {
           : {}),
       });
       if (!moved.ok) {
-        // 可达路径只有"并发执行者把状态改了"；按调用方可见的冲突处理，不报 500。
+         // The only reachable path is "a concurrent executor changed the state"; handle it as a caller-visible conflict, not a 500.
         throw this.fail(
           'DFR_VALIDATION_FAILED',
           requestId,
           current.chain,
-          `交易状态 ${current.status} 不接受事件 ${event}（${moved.reason}）`,
+           `Transaction state ${current.status} does not accept event ${event} (${moved.reason})`,
           { fields: ['status'], status: current.status, transitionReason: moved.reason },
         );
       }
@@ -1828,8 +1828,8 @@ export class TransactionEngine {
         ...(patch !== undefined ? { patch } : {}),
       });
       if (result.kind === 'applied') {
-        // 事务提交成功后才发布：订阅者看到的都是已持久化的事实。
-        // 汇点抛错被吞掉——事件投递失败不得改变业务结果。
+         // Publish only after the transaction commits: subscribers only ever see persisted facts.
+         // Sink errors are swallowed — a failed event delivery must not change the business outcome.
         try {
           this.deps.onTransition?.({
             transactionId: result.record.transactionId,
@@ -1841,7 +1841,7 @@ export class TransactionEngine {
             ...(result.record.txHash !== undefined ? { txHash: result.record.txHash } : {}),
           });
         } catch {
-          // 事件投递是尽力而为：汇点异常绝不能改变"状态已迁移"这一业务结果。
+           // Event delivery is best-effort: a sink exception must never change the business outcome "the state has transitioned".
         }
         return result.record;
       }
@@ -1850,17 +1850,17 @@ export class TransactionEngine {
           'DFR_INTERNAL_ERROR',
           requestId,
           current.chain,
-          `迁移时交易 ${current.transactionId} 已不存在`,
+           `Transaction ${current.transactionId} no longer exists at transition time`,
         );
       }
-      // version_conflict / status_conflict：以 Store 返回的最新记录重来。
+       // version_conflict / status_conflict: retry with the latest record returned by the Store.
       current = result.current;
     }
     throw this.fail(
       'DFR_INTERNAL_ERROR',
       requestId,
       record.chain,
-      `状态迁移连续 ${MAX_TRANSITION_ATTEMPTS} 次冲突，未能写入`,
+       `State transition hit ${MAX_TRANSITION_ATTEMPTS} consecutive conflicts and could not be written`,
       { transactionId: record.transactionId },
     );
   }
@@ -1898,7 +1898,7 @@ export class TransactionEngine {
     }
   }
 
-  /** 命中幂等记录：用落库记录重建结果，不重新执行、不消耗新 nonce。 */
+   /** Idempotent-record hit: rebuild the result from the persisted record without re-executing and without consuming a new nonce. */
   private async replay(
     transactionId: TransactionId | undefined,
     requestId: RequestId,
@@ -1909,7 +1909,7 @@ export class TransactionEngine {
         'DFR_INTERNAL_ERROR',
         requestId,
         chain,
-        '幂等记录标记为已完成但缺少 transactionId',
+         'Idempotent record is marked complete but has no transactionId',
       );
     }
     const record = await this.stores.transaction.get(transactionId);
@@ -1918,10 +1918,10 @@ export class TransactionEngine {
         'DFR_INTERNAL_ERROR',
         requestId,
         chain,
-        `幂等记录引用的交易 ${transactionId} 不存在`,
+         `Transaction ${transactionId} referenced by the idempotent record does not exist`,
       );
     }
-    // 重放需要记录里有排序前提（EVM=nonce，Solana=blockhash）与未签名载荷。
+     // Replay needs the ordering precondition (EVM=nonce, Solana=blockhash) and the unsigned payload in the record.
     const sequencingToken = record.sequencingRef ?? (record.nonce !== undefined
       ? { kind: 'nonce' as const, value: record.nonce }
       : undefined);
@@ -1930,7 +1930,7 @@ export class TransactionEngine {
         'DFR_INTERNAL_ERROR',
         requestId,
         chain,
-        `交易 ${transactionId} 缺少排序前提或未签名载荷，无法重放 build`,
+         `Transaction ${transactionId} is missing its ordering precondition or unsigned payload; build cannot be replayed`,
       );
     }
     return {
@@ -1956,11 +1956,11 @@ export class TransactionEngine {
   }
 
   /**
-   * 释放未签名 nonce 租约（补偿动作）。
+    * Release the unsigned nonce lease (compensating action).
    *
-   * 三种失败都必须吞掉：`not_found`（租约已过期被清理）、`forbidden`
-   * （同 nonce 已签名/广播，**绝不能**释放）以及 Store 自身异常。释放是补偿，
-   * 不能改变"这次 build 失败了"这个事实。
+    * All three failures must be swallowed: `not_found` (the lease already expired and was cleaned up), `forbidden`
+    * (the same nonce is already signed/broadcast — it must **never** be released), and Store errors of its own. A release is compensation;
+    * it cannot change the fact that "this build failed".
    */
   private async releaseQuietly(
     chain: ChainId,
@@ -1971,8 +1971,8 @@ export class TransactionEngine {
   ): Promise<void> {
     try {
       if (nonce !== undefined) {
-        // transactionId 是 ADR-030 的所有权证明：nonce 空洞可被回收复用，
-        // 没有它，迟到的释放可能落在别人的新租约上。
+         // transactionId is ADR-030's proof of ownership: a nonce gap can be reclaimed and reused,
+         // and without it, a late release could land on someone else's new lease.
         await this.stores.nonce.releaseIfSafe({ chain, account, nonce, transactionId });
         return;
       }
@@ -1985,7 +1985,7 @@ export class TransactionEngine {
         });
       }
     } catch {
-      // 故意忽略：见方法注释。
+       // Deliberately ignored: see the method comment.
     }
   }
 
@@ -2006,7 +2006,7 @@ export class TransactionEngine {
   private fail(
     code: Parameters<typeof createDfrError>[0],
     requestId: RequestId,
-    /** 记录不存在时无法得知链，此时省略 */
+     /** Omit when the record does not exist, since the chain is unknowable then */
     chain: ChainId | undefined,
     message: string,
     details?: Record<string, unknown>,

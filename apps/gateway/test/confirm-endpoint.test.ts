@@ -24,7 +24,7 @@ function context(confirm?: (input: unknown) => Promise<unknown>) {
 }
 
 describe('confirm endpoint', () => {
-  it('路由元数据保留 write 闸门与 transaction.read scope，并从 path 解出 txHash', () => {
+  it('route metadata keeps the write gate and transaction.read scope, and extracts txHash from the path', () => {
     expect(matchRoute('POST', `/v1/transactions/${txHash}/confirm`)).toEqual({
       handler: 'confirmTransaction',
       routeClass: 'write',
@@ -33,7 +33,7 @@ describe('confirm endpoint', () => {
     });
   });
 
-  it('限制 timeout 上界并将 txHash/requestId 传给引擎，返回 200 封套', async () => {
+  it('caps the timeout upper bound and passes txHash/requestId to the engine, returning a 200 envelope', async () => {
     let received: unknown;
     const result = await handleConfirmTransaction(
       txHash,
@@ -50,7 +50,7 @@ describe('confirm endpoint', () => {
     expect(result).toEqual({ status: 200, body: { confirmation, requestId } });
   });
 
-  it.each([0, 999, 600001, 1.5, Number.NaN])('拒绝非法 timeoutMs=%s', async (timeoutMs) => {
+  it.each([0, 999, 600001, 1.5, Number.NaN])('rejects illegal timeoutMs=%s', async (timeoutMs) => {
     await expect(handleConfirmTransaction(
       txHash,
       { chain: 'ethereum-sepolia', timeoutMs },
@@ -58,7 +58,7 @@ describe('confirm endpoint', () => {
     )).rejects.toMatchObject({ code: 'DFR_VALIDATION_FAILED' });
   });
 
-  it('拒绝非法 finality 目标与空哈希', async () => {
+  it('rejects an illegal finality target and an empty hash', async () => {
     await expect(handleConfirmTransaction(
       txHash,
       { chain: 'ethereum-sepolia', minFinality: 'unknown' },
@@ -71,7 +71,7 @@ describe('confirm endpoint', () => {
     )).rejects.toMatchObject({ code: 'DFR_VALIDATION_FAILED' });
   });
 
-  it('未装配交易引擎时 fail-closed', async () => {
+  it('fails closed when the transaction engine is not assembled', async () => {
     await expect(handleConfirmTransaction(
       txHash,
       { chain: 'ethereum-sepolia' },

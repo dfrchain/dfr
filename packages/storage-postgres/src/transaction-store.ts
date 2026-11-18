@@ -1,22 +1,22 @@
 /**
- * PostgresTransactionStore（DFR-M1-A09）。
+ * PostgresTransactionStore (DFR-M1-A09).
  *
- * 权威来源：docs/architecture/m1-storage-model.md 第 4/5 节、ADR-015 §5。
+ * Authoritative sources: docs/architecture/m1-storage-model.md sections 4/5, ADR-015 §5.
  *
- * 并发语义（全部落在 SQL 上，不靠应用层假设）：
- *   - `SELECT ... FOR UPDATE` 锁定交易行，使同一条交易的迁移串行；
- *   - `state_version` 作为乐观并发条件，写入时校验旧值（禁止 last-write-wins）；
- *   - 快照 UPDATE 与 transition INSERT 在**同一事务**提交，
- *     因此不会出现"状态已变但审计缺失"或反之；
- *   - 失败路径返回判别联合（not_found / version_conflict / status_conflict），
- *     不让调用方从 `undefined` 猜原因。
+ * Concurrency semantics (all pinned in SQL, not resting on application-layer assumptions):
+ *   - `SELECT ... FOR UPDATE` locks the transaction row, serializing transitions of the same transaction;
+ *   - `state_version` is the optimistic-concurrency condition; writes verify the old value (no last-write-wins);
+ *   - The snapshot UPDATE and the transition INSERT commit in the **same transaction**,
+ *     so "state changed but audit missing" (or the reverse) can never happen;
+ *   - Failure paths return a discriminated union (not_found / version_conflict / status_conflict),
+ *     so callers never have to guess the reason from `undefined`.
  *
- * 锁顺序遵循 m1-storage-model 第 4 节：建单时先锁 idempotency claim（若有），
- * 再锁 nonce account、nonce/排序租约，最后写入 transaction 行；状态迁移仅锁交易行。
- * TX-05 在同一事务内验证幂等执行者的 token/TTL 并绑定其创建的交易 ID。
+ * Lock order follows m1-storage-model section 4: when creating a record, lock the idempotency claim first (if any),
+ * then the nonce account and the nonce/sequencing leases, and finally write the transaction row; state transitions lock only the transaction row.
+ * TX-05 verifies the idempotent executor's token/TTL in the same transaction and binds the transaction ID it created.
  *
- * 边界：本文件只做行映射与一条业务事务；**不**校验状态机允许边
- * （那是 `@dfr/transaction` 的 state-machine 职责），也不发布事件。
+ * Boundary: this file only does row mapping and one business transaction; it does **not** validate allowed state-machine edges
+ * (that is `@dfr/transaction`'s state-machine job), and it publishes no events.
  */
 
 import type {
@@ -50,35 +50,35 @@ const SEQUENCING_LEASES = `${SCHEMA}.sequencing_leases`;
 const IDEMPOTENCY_RECORDS = `${SCHEMA}.idempotency_records`;
 
 /**
- * M1-C00（ADR-018）：nonce 租约先于交易行创建，0003 因此移除了
- * `nonce_leases.transaction_id` 的外键。这里补上等价的完整性校验：
+ * M1-C00 (ADR-018): nonce leases are created before the transaction row, so 0003 removed
+ * the `nonce_leases.transaction_id` foreign key. The equivalent integrity check is added here:
  *
- * 若该 `transactionId` 已有租约，其 chain/account 必须与记录一致；
- * 否则 fail-closed —— 不允许出现"交易记录指向 A、nonce 租约却属于 B"的静默不一致，
- * 那会让同一 nonce 被两个账户的语义同时引用。
+ * if that `transactionId` already has a lease, its chain/account must match the record;
+ * otherwise fail closed — a silent inconsistency like "the transaction record points at A while the nonce lease belongs to B" is not allowed,
+ * since it would let one nonce be referenced under two accounts' semantics at once.
  *
- * 这是**替代**被移除的 reserve 校验，不是放宽：校验点从 reserve 迁移到 create。
+ * This **replaces** the removed reserve check; it is not a relaxation: the check point moved from reserve to create.
  */
 /**
- * ADR-033：EVM 记录同时写 `nonce` 与 `sequencing_ref` 两个字段，二者必须自洽。
- * 只对 `kind='nonce'` 的引用校验——Solana 的 blockhash 引用没有对应的 `nonce` 列。
+ * ADR-033: EVM records write both the `nonce` and `sequencing_ref` fields, and the two must be consistent with each other.
+ * Only references with `kind='nonce'` are checked — Solana blockhash references have no corresponding `nonce` column.
  */
 function assertSequencingRefMatchesNonce(record: TransactionRecord): void {
   const ref = record.sequencingRef;
   // NEW-04: never permit a recorded EVM nonce without its matching
   // sequencing token. Otherwise the Store could bypass nonce lease checks.
   if (record.nonce !== undefined && ref?.kind !== 'nonce') {
-    throw new Error('create: 交易包含 nonce 时必须提供 sequencing_ref(kind=nonce)');
+    throw new Error('create: a transaction containing a nonce must provide sequencing_ref(kind=nonce)');
   }
   if (ref === undefined || ref.kind !== 'nonce') return;
   if (record.nonce === undefined) {
     throw new Error(
-      `create: 交易 ${record.transactionId} 的 sequencing_ref 是 nonce，但记录没有 nonce`,
+      `create: transaction ${record.transactionId} has a sequencing_ref of kind nonce but the record has no nonce`,
     );
   }
   if (ref.value !== record.nonce) {
     throw new Error(
-      `create: 交易 ${record.transactionId} 的 sequencing_ref.value 与 nonce 不一致`,
+      `create: transaction ${record.transactionId} has a sequencing_ref.value inconsistent with its nonce`,
     );
   }
 }
@@ -103,7 +103,7 @@ async function assertLeaseMatchesRecord(
       [record.chain, record.from.address],
     );
     if (account.rowCount !== 1) {
-      throw new Error('create: 缺少 nonce 账户租约水位，拒绝写入交易');
+      throw new Error('create: missing nonce account lease watermark; refusing to write the transaction');
     }
   }
 
@@ -122,7 +122,7 @@ async function assertLeaseMatchesRecord(
   );
   const lease = rows[0];
   if (lease === undefined && nonceBuild) {
-    throw new Error('create: nonce 租约不存在或已被重新分配，拒绝过期执行者');
+    throw new Error('create: nonce lease does not exist or was reassigned; refusing the expired executor');
   }
   if (lease !== undefined) {
     // A blockhash-only or unsigned record must never quietly adopt a nonce
@@ -132,10 +132,10 @@ async function assertLeaseMatchesRecord(
       lease.account_address !== record.from.address ||
       lease.nonce !== record.nonce
     ) {
-      throw new Error(`create: 交易 ${record.transactionId} 的 nonce 租约与记录不一致`);
+      throw new Error(`create: transaction ${record.transactionId} has a nonce lease inconsistent with the record`);
     }
     if (lease.status !== 'reserved' || !lease.unexpired) {
-      throw new Error('create: nonce 租约已释放、广播或过期，拒绝创建交易');
+      throw new Error('create: nonce lease was released, broadcast, or expired; refusing to create the transaction');
     }
   }
 
@@ -169,7 +169,7 @@ async function assertLeaseMatchesRecord(
         held.status !== 'reserved' ||
         !held.unexpired
     ) {
-      throw new Error('create: sequencing/blockhash 租约缺失、已过期或不属于此交易');
+      throw new Error('create: sequencing/blockhash lease is missing, expired, or does not belong to this transaction');
     }
     // The blockhash's chain-height expiry is Adapter-owned; this only checks
     // Store-level lease TTL and ownership, never assumes TTL means chain-valid.
@@ -177,10 +177,10 @@ async function assertLeaseMatchesRecord(
 }
 
 /**
- * 启动恢复需要扫描的非终态集合（m1-storage-model 第 6 节）。
+ * The non-terminal set the startup recovery scan needs (m1-storage-model section 6).
  *
- * `unknown` 在其中：广播结果不确定的交易必须被重新观察，
- * 而不是被当成终态丢下。
+ * `unknown` is included: transactions with an uncertain broadcast outcome must be re-observed,
+ * not dropped as if terminal.
  */
 export const RECOVERABLE_STATUSES: readonly TransactionStatus[] = [
   'broadcast',
@@ -190,7 +190,7 @@ export const RECOVERABLE_STATUSES: readonly TransactionStatus[] = [
   'unknown',
 ];
 
-/** 白名单：只有这些字段可以随状态迁移一起更新，防止顺手写入任意列。 */
+/** Allowlist: only these fields may be updated along with a state transition, preventing accidental writes to arbitrary columns. */
 const PATCH_COLUMNS: ReadonlyArray<readonly [keyof TransitionPatch, string]> = [
   ['txHash', 'tx_hash'],
   ['expectedHash', 'expected_hash'],
@@ -214,7 +214,7 @@ interface TransactionRow extends QueryResultRow {
   chain_id: string;
   request_fingerprint: string;
   status: string;
-  // bigint 由 pg 以字符串返回（避免 JS number 精度丢失），与 DecimalUint 契约一致。
+  // pg returns bigints as strings (avoiding JS number precision loss), consistent with the DecimalUint contract.
   state_version: string;
   from_address: string;
   to_address: string | null;
@@ -237,10 +237,10 @@ function toIso(value: Date | string): Iso8601 {
 }
 
 /**
- * 行 → 领域记录。
+ * Row → domain record.
  *
- * 用展开语法而不是给可选字段赋 `undefined`：`exactOptionalPropertyTypes` 下
- * `{ to: undefined }` 与"没有 to 字段"是两种类型，后者才是契约。
+ * Spread syntax is used instead of assigning `undefined` to optional fields: under `exactOptionalPropertyTypes`,
+ * `{ to: undefined }` and "no to field" are two different types, and the latter is the contract.
  */
 function rowToRecord(row: TransactionRow): TransactionRecord {
   const chainId = row.chain_id as ChainId;
@@ -386,7 +386,7 @@ export class PostgresTransactionStore implements TransactionStore {
         [record.transactionId],
       );
       if (existing.rows[0] === undefined) {
-        throw new Error(`create: 交易 ${record.transactionId} 冲突后读取不到既有记录`);
+        throw new Error(`create: existing record for transaction ${record.transactionId} not found after conflict`);
       }
       await client.query('COMMIT');
       return { kind: 'already_exists', record: rowToRecord(existing.rows[0]) };
@@ -481,7 +481,7 @@ export class PostgresTransactionStore implements TransactionStore {
       try {
         await client.query('ROLLBACK');
       } catch {
-        // 回滚失败不覆盖原始错误。
+        // A failed rollback must not mask the original error.
       }
       throw error;
     } finally {
@@ -496,7 +496,7 @@ export class PostgresTransactionStore implements TransactionStore {
         WHERE status = ANY($1::text[])
           AND ($2::text IS NULL OR id > $2)
           AND ($4::timestamptz IS NULL OR updated_at >= $4)
-          -- ADR-037 方案 C：自动作废窗口的上界（"早于"）。同样做进查询，保证游标可推进。
+          -- ADR-037 option C: the upper bound of the auto-void window ("earlier than"). Also folded into the query so the cursor can advance.
           AND ($5::timestamptz IS NULL OR updated_at <= $5)
         ORDER BY id
         LIMIT $3`,

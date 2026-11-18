@@ -1,12 +1,12 @@
 /**
- * 交易生命周期指标（DFR-M1-D06）。
+ * Transaction lifecycle metrics (DFR-M1-D06).
  *
- * 渲染与有界标签的机制在 `@dfr/metrics` 的 `MetricRegistry`（零依赖叶子包，
- * 与 Gateway 的 HTTP 指标共用同一实现）。本文件只负责**映射**：
- * 把生命周期阶段、finality、重组、租约这些领域输入翻译成有界标签的指标写入。
+ * The rendering and bounded-label mechanics live in `@dfr/metrics`' `MetricRegistry` (a zero-dependency leaf package,
+ * shared with the Gateway's HTTP metrics). This file only handles the **mapping**:
+ * translating domain inputs — lifecycle stage, finality, reorgs, leases — into bounded-label metric writes.
  *
- * 标签取值全部来自有界枚举（chain / stage / status / level / depth_bucket / outcome /
- * DFR 错误码），因此不存在高基数风险；`MetricRegistry` 仍会做一层值与基数兜底。
+ * Label values all come from bounded enums (chain / stage / status / level / depth_bucket / outcome /
+ * DFR error codes), so there is no high-cardinality risk; `MetricRegistry` still applies a value-and-cardinality safety net.
  */
 import { MetricRegistry, type MetricRegistryOptions } from '@dfr/metrics';
 import type { ChainId, FinalityLevel } from '@dfr/types';
@@ -16,7 +16,7 @@ export type TransactionStageStatus = 'success' | 'error' | 'timeout' | 'pending'
 export type TrackerLeaseOutcome = 'acquired' | 'held_by_other' | 'renewed' | 'lost' | 'released';
 export type ReorgDepthBucket = '1-2' | '3-5' | '6+' | 'unknown';
 
-/** 与 `@dfr/metrics` 的选项一致（从 D06 起就是这个形状）。 */
+/** Consistent with `@dfr/metrics`' options (this has been the shape since D06). */
 export type TransactionMetricsOptions = MetricRegistryOptions;
 
 export interface TransactionMetricsSink {
@@ -36,7 +36,7 @@ export interface TransactionMetricsSink {
   recordLease(input: { readonly chain: ChainId | string; readonly outcome: TrackerLeaseOutcome }): void;
 }
 
-/** 关联字段（trace/span）；指标本身不使用它们，但注入点需要统一形状。 */
+/** Correlation fields (trace/span); the metrics themselves do not use them, but the injection point needs a uniform shape. */
 export interface TraceContext {
   readonly traceId?: string;
   readonly spanId?: string;
@@ -48,7 +48,7 @@ const FINALITY_WAIT = 'dfr_transaction_finality_wait_seconds';
 const REORG_TOTAL = 'dfr_transaction_reorg_total';
 const LEASE_TOTAL = 'dfr_transaction_tracker_lease_total';
 
-/** 进程内、有界的 Prometheus 指标注册表（M1 交易生命周期）。 */
+/** In-process, bounded Prometheus metric registry (M1 transaction lifecycle). */
 export class TransactionMetrics implements TransactionMetricsSink {
   private readonly registry: MetricRegistry;
 
@@ -68,7 +68,7 @@ export class TransactionMetrics implements TransactionMetricsSink {
   }
 
   recordStage(input: Parameters<TransactionMetricsSink['recordStage']>[0]): void {
-    // 标签顺序固定为 chain → stage → status → error_code：既有渲染测试按此顺序断言。
+    // Label order is fixed as chain → stage → status → error_code: existing rendering tests assert on this order.
     this.registry.increment(STAGE_TOTAL, {
       chain: String(input.chain),
       stage: input.stage,

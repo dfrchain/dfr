@@ -1,5 +1,5 @@
-// Span 上下文与父子派生（M5 E6）。
-// 这条是 E6 的核心：子 span 的父**由执行结构决定**，而不是由时间戳或调用顺序猜。
+// Span context and parent/child derivation (M5 E6).
+// This is the core of E6: a child span's parent is **decided by the execution structure**, not guessed from timestamps or call order.
 import { describe, expect, it } from 'vitest';
 import {
   activeTraceId,
@@ -9,14 +9,14 @@ import {
   runInSpan,
 } from '../src/context.js';
 
-describe('无上下文时', () => {
-  it('currentSpan / parentSpanId / activeTraceId 都为 undefined', () => {
+  describe('With no context', () => {
+    it('currentSpan / parentSpanId / activeTraceId are all undefined', () => {
     expect(currentSpan()).toBeUndefined();
     expect(parentSpanId()).toBeUndefined();
     expect(activeTraceId()).toBeUndefined();
   });
 
-  it('childSpanContext 新建一条 trace，且不带父', () => {
+    it('childSpanContext starts a new trace, with no parent', () => {
     const { context, parentSpanId: parent } = childSpanContext();
     expect(context.traceId).toMatch(/^[0-9a-f]{32}$/u);
     expect(context.spanId).toMatch(/^[0-9a-f]{16}$/u);
@@ -24,20 +24,20 @@ describe('无上下文时', () => {
   });
 });
 
-describe('在 span 内', () => {
-  it('子 span 继承 trace，父为当前 span', () => {
+  describe('Inside a span', () => {
+    it('a child span inherits the trace, parent is the current span', () => {
     const root = { traceId: 'a'.repeat(32), spanId: 'b'.repeat(16) };
     runInSpan(root, () => {
       expect(activeTraceId()).toBe(root.traceId);
       expect(parentSpanId()).toBe(root.spanId);
       const { context, parentSpanId: parent } = childSpanContext();
       expect(context.traceId).toBe(root.traceId);
-      expect(context.spanId).not.toBe(root.spanId); // 独立 spanId
+      expect(context.spanId).not.toBe(root.spanId); // Independent spanId
       expect(parent).toBe(root.spanId);
     });
   });
 
-  it('嵌套两层的父是直接父，不是根', () => {
+    it('a two-level nesting's parent is the direct parent, not the root', () => {
     const root = { traceId: 'a'.repeat(32), spanId: 'b'.repeat(16) };
     runInSpan(root, () => {
       const mid = childSpanContext().context;
@@ -48,10 +48,10 @@ describe('在 span 内', () => {
     });
   });
 
-  it('退出 span 后上下文恢复（不泄漏）', () => {
+    it('context is restored after leaving the span (no leak)', () => {
     const root = { traceId: 'a'.repeat(32), spanId: 'b'.repeat(16) };
     runInSpan(root, () => {
-      /* 离开作用域 */
+      /* Leaving the scope */
     });
     expect(currentSpan()).toBeUndefined();
   });

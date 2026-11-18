@@ -1,8 +1,8 @@
 /**
- * PostgresNonceStore 契约测试（DFR-M1-A11）。
+ * PostgresNonceStore contract test (DFR-M1-A11).
  *
- * 默认跳过；`pnpm test:db` 会提供迁移身份 DSN。
- * 测试使用独立数据库，真实验证 PostgreSQL 行锁而不是进程内互斥。
+ * Skipped by default; `pnpm test:db` provides the migration-identity DSN.
+ * Tests use a separate database, genuinely verifying PostgreSQL row locks rather than in-process mutexes.
  */
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -49,9 +49,9 @@ function runtimeDsnFor(database: string): string {
 }
 
 async function reset(): Promise<void> {
-  // M1-C00 起 nonce_leases 不再有指向 transactions 的外键（ADR-018），
-  // 因此 CASCADE 不会再连带清理它 —— 必须显式列出，否则上一个用例的
-  // 租约会被下一个用例当成"同 transactionId 重放"读到。
+  // Since M1-C00, nonce_leases no longer has a foreign key to transactions (ADR-018),
+  // so CASCADE no longer cleans it up along the way — it must be listed explicitly, or the previous case's
+  // lease would be read by the next case as a "replay with the same transactionId".
   await inspector.query(
     `TRUNCATE ${SCHEMA}.nonce_leases, ${SCHEMA}.transactions, ${SCHEMA}.nonce_accounts CASCADE`,
   );
@@ -90,7 +90,7 @@ beforeAll(async () => {
   await admin.connect();
   const { rows } = await admin.query<{ db: string }>('SELECT current_database() AS db');
   if (!/_test$/u.test(rows[0]!.db)) {
-    throw new Error(`拒绝在非测试库 "${rows[0]!.db}" 上执行（库名必须以 _test 结尾）`);
+    throw new Error(`refusing to run against non-test database "${rows[0]!.db}" (database name must end with _test)`);
   }
 
   await admin.query(`DROP DATABASE IF EXISTS ${PRIVATE_DB} WITH (FORCE)`);
@@ -112,9 +112,9 @@ afterAll(async () => {
   if (inspector) await inspector.end();
   if (pool) await pool.end();
   if (admin) {
-    // Store 池使用最小权限 dfr_runtime；migrator 无权终止另一角色。
-    // pool.end() 后服务端可能要数毫秒才移除 backend，因此只读轮询到连接归零，
-    // 再由数据库 owner 普通 DROP；不扩大测试角色权限。
+    // The Store pool uses the least-privilege dfr_runtime role; the migrator may not terminate another role.
+    // After pool.end(), the server may take a few milliseconds to remove backends, so poll read-only until connections reach zero,
+    // then let the database owner DROP normally; do not widen test-role permissions.
     for (let attempt = 0; attempt < 50; attempt += 1) {
       const { rows } = await admin.query<{ count: string }>(
         `SELECT count(*)::text AS count FROM pg_stat_activity WHERE datname = $1`,
@@ -128,8 +128,8 @@ afterAll(async () => {
   }
 }, 60_000);
 
-describe.skipIf(!ENABLED)('PostgresNonceStore（DFR-M1-A11）', () => {
-  it('首次 reserve 取 max(chain pending, 本地水位)，并只返回十进制字符串', async () => {
+describe.skipIf(!ENABLED)('PostgresNonceStore (DFR-M1-A11)', () => {
+  it('the first reserve takes max(chain pending, local watermark) and returns only decimal strings', async () => {
     await reset();
     const transactionId = await createTransaction('txn_nonce_first');
     const result = await reserve(transactionId, '9007199254740993' as DecimalUint);
@@ -152,9 +152,9 @@ describe.skipIf(!ENABLED)('PostgresNonceStore（DFR-M1-A11）', () => {
     expect(rows[0]!.next_nonce).toBe('9007199254740994');
   });
 
-  it('20 个独立连接并发 reserve，同账户 nonce 不重复且连续', async () => {
+  it('20 independent connections reserve concurrently: nonces for the same account are unique and consecutive', async () => {
     await reset();
-    // 父交易只负责准备数据，顺序写入，避免在同一个 pg.Client 上并发 query。
+    // The parent transaction only prepares data, written sequentially, to avoid concurrent queries on the same pg.Client.
     const ids: TransactionId[] = [];
     for (let index = 0; index < 20; index += 1) {
       ids.push(await createTransaction(`txn_nonce_c_${index}`));
@@ -167,7 +167,7 @@ describe.skipIf(!ENABLED)('PostgresNonceStore（DFR-M1-A11）', () => {
     expect(new Set(nonces.map(String)).size).toBe(20);
   });
 
-  it('同一 transactionId 并发重放只保留一条租约，不递增 nonce', async () => {
+  it('concurrent replays with the same transactionId keep only one lease and do not increment the nonce', async () => {
     await reset();
     const transactionId = await createTransaction('txn_nonce_replay');
     const results = await Promise.all(Array.from({ length: 8 }, () => reserve(transactionId)));
@@ -231,7 +231,7 @@ describe.skipIf(!ENABLED)('PostgresNonceStore（DFR-M1-A11）', () => {
     expect(replay).toMatchObject({ kind: 'conflict', lease: { account } });
   });
 
-  it('本地水位异常指向已占用 nonce 时返回 conflict，且不覆盖原租约', async () => {
+  it('when the local watermark wrongly points at a taken nonce, returns conflict without overwriting the original lease', async () => {
     await reset();
     const ownerId = await createTransaction('txn_nonce_conflict_owner');
     const contenderId = await createTransaction('txn_nonce_conflict_contender');
@@ -260,25 +260,25 @@ describe.skipIf(!ENABLED)('PostgresNonceStore（DFR-M1-A11）', () => {
     expect(rows[0]!.transaction_id).toBe(ownerId);
   });
 
-  it('reserve 不再读取交易行 chain/from（ADR-018）：该校验已迁到 create', async () => {
+  it('reserve no longer reads the transaction row chain/from (ADR-018): that check moved to create', async () => {
     await reset();
-    // 旧行为：reserve 先锁交易行并要求 from 匹配。该前置条件与引擎顺序
-    // （reserve → chain.build → create）矛盾，真实部署每次 build 都会失败，
-    // 已在 DFR-M1-C00 移除。
-    // 契约没有变松：租约账户 ↔ 交易记录 from 的一致性由
-    // PostgresTransactionStore.create fail-closed 强制；
-    // 对应负对照见 transaction-store.test.ts
-    // "create 时同 transactionId 的既有租约 chain/from 不一致 → fail-closed"。
+    // Old behavior: reserve locked the transaction row first and required from to match. That precondition contradicted the engine order
+    // (reserve → chain.build → create): every build in a real deployment would fail,
+    // so it was removed in DFR-M1-C00.
+    // The contract did not loosen: lease-account ↔ transaction-record from consistency is enforced fail-closed by
+    // PostgresTransactionStore.create;
+    // see the negative case in transaction-store.test.ts
+    // "create with an existing lease for the same transactionId whose chain/from mismatch → fail-closed".
     const transactionId = await createTransaction('txn_nonce_row_mismatch', 'built', '0xother');
     const result = await reserve(transactionId);
     expect(result.kind).toBe('reserved');
     expect(result.lease.nonce).toBe('0');
   });
 
-  it('交易行尚未创建时仍可分配 nonce（DFR-M1-C00：reserve 先于 create）', async () => {
+  it('a nonce can still be allocated before the transaction row is created (DFR-M1-C00: reserve precedes create)', async () => {
     await reset();
-    // 引擎顺序是 reserve → chain.build → create。若 reserve 要求交易行先存在，
-    // 真实部署的每一次 build 都会失败；本用例锁定该顺序契约。
+    // The engine order is reserve → chain.build → create. If reserve required the transaction row to exist first,
+    // every build in a real deployment would fail; this case pins that ordering contract.
     const result = await reserve('txn_c00_no_row_yet' as TransactionId, '7' as DecimalUint);
     expect(result.kind).toBe('reserved');
     expect(result.lease.nonce).toBe('7');
@@ -288,7 +288,7 @@ describe.skipIf(!ENABLED)('PostgresNonceStore（DFR-M1-A11）', () => {
     );
     expect(leases.rows).toEqual([{ transaction_id: 'txn_c00_no_row_yet', nonce: '7' }]);
 
-    // 交易行仍不存在：分配 nonce 不依赖它。
+    // The transaction row still does not exist: nonce allocation does not depend on it.
     const tx = await inspector.query(
       `SELECT 1 FROM ${SCHEMA}.transactions WHERE id = $1`,
       ['txn_c00_no_row_yet'],
@@ -296,10 +296,10 @@ describe.skipIf(!ENABLED)('PostgresNonceStore（DFR-M1-A11）', () => {
     expect(tx.rowCount).toBe(0);
   });
 
-  it('交易行尚未创建时租约仍可安全释放（build 失败于 create 之前）', async () => {
+  it('a lease can still be safely released before the transaction row is created (build failed before create)', async () => {
     await reset();
-    // ADR-018 之后 reserve 先于 create，因此"build 失败 → 释放未签名租约"这条
-    // 路径会在交易行不存在时执行。不释放就会留下永远无法回收的孤儿租约。
+    // Since ADR-018, reserve precedes create, so the "build fails → release the unsigned lease" path
+    // runs when the transaction row does not exist. Not releasing would leave an orphaned lease that can never be reclaimed.
     const reserved = await reserve('txn_c00_release_before_create' as TransactionId, '3' as DecimalUint);
     expect(reserved.kind).toBe('reserved');
 
@@ -311,18 +311,18 @@ describe.skipIf(!ENABLED)('PostgresNonceStore（DFR-M1-A11）', () => {
     });
     expect(released).toMatchObject({ kind: 'released', lease: { status: 'released' } });
 
-    // ADR-030：无交易行的 released 租约**从未签名**，可以安全复用；
-    // 水位回退到该 nonce，下一次 reserve 重新拿到 '3'。
-    // （修复前这里期望 '4'，那正是真实链上留下永久空洞的行为。）
+    // ADR-030: a released lease with no transaction row was **never signed** and can be safely reused;
+    // the watermark falls back to that nonce, and the next reserve gets '3' again.
+    // (Before the fix this expected '4' — exactly the behavior that left a permanent gap on the real chain.)
     const next = await reserve('txn_c00_after_release' as TransactionId, '3' as DecimalUint);
     expect(next.lease.nonce).toBe('3');
     expect(next.lease.transactionId).toBe('txn_c00_after_release');
   });
 
-  it('ADR-030：build 失败释放未签名 nonce 后，下一次 build 复用同一 nonce（不留空洞）', async () => {
+  it('ADR-030: after a failed build releases an unsigned nonce, the next build reuses the same nonce (no gap left)', async () => {
     await reset();
-    // 真实链上 E03 踩到的序列：reserve(0) → chain.build 失败 → release → reserve 得到 1，
-    // 于是 nonce 0 成为永久空洞，后续交易卡在 mempool 的 queued 区且无法自愈。
+    // The sequence E03 hit on the real chain: reserve(0) → chain.build fails → release → reserve gets 1,
+    // leaving nonce 0 as a permanent gap, with later transactions stuck in the mempool's queued zone and unable to heal.
     const first = await store.reserve({
       chain,
       account,
@@ -346,7 +346,7 @@ describe.skipIf(!ENABLED)('PostgresNonceStore（DFR-M1-A11）', () => {
     expect(second.lease.transactionId).toBe('txn_gap_second');
   });
 
-  it('ADR-030：已有交易行的 released 租约不复用（保守，避免同 nonce 重复广播）', async () => {
+  it('ADR-030: a released lease with a transaction row is not reused (conservative, avoids broadcasting the same nonce twice)', async () => {
     await reset();
     const firstId = await createTransaction('txn_gap_row_1');
     const first = await reserve(firstId);
@@ -355,7 +355,7 @@ describe.skipIf(!ENABLED)('PostgresNonceStore（DFR-M1-A11）', () => {
       transactionId: firstId });
     expect(released.kind).toBe('released');
 
-    // 交易行存在（built）——即便被释放，也不能复用它的 nonce：该记录仍可能被广播。
+    // The transaction row exists (built) — even though released, its nonce cannot be reused: the record may still be broadcast.
     const secondId = await createTransaction('txn_gap_row_2');
     const second = await reserve(secondId);
     expect(second.lease.nonce).toBe('1');
@@ -445,7 +445,7 @@ describe.skipIf(!ENABLED)('PostgresNonceStore（DFR-M1-A11）', () => {
       .toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
   });
 
-  it('ADR-030：重启恢复回收的未签名孤儿也不会留下永久空洞', async () => {
+  it('ADR-030: unsigned orphans reclaimed by restart recovery also leave no permanent gap', async () => {
     await reset();
     const orphan = await store.reserve({
       chain,
@@ -468,7 +468,7 @@ describe.skipIf(!ENABLED)('PostgresNonceStore（DFR-M1-A11）', () => {
     expect(next).toMatchObject({ kind: 'reserved', lease: { nonce: '0' } });
   });
 
-  it('恢复回收已过期且无交易行的 reserved 租约（ADR-030 起该 nonce 可被复用）', async () => {
+  it('recovery reclaims an expired reserved lease with no transaction row (since ADR-030, that nonce may be reused)', async () => {
     await reset();
     const orphan = await store.reserve({
       chain,
@@ -486,14 +486,14 @@ describe.skipIf(!ENABLED)('PostgresNonceStore（DFR-M1-A11）', () => {
     );
     expect(rows[0]!.status).toBe('released');
 
-    // ADR-030：从未签名、且无交易行的孤儿 nonce 不再造成永久空洞，
-    // 下一次 reserve 会复用它（旧期望是 '1'，那正是真实链上的空洞缺陷）。
+    // ADR-030: a never-signed orphan nonce with no transaction row no longer causes a permanent gap;
+    // the next reserve reuses it (the old expectation was '1' — exactly the gap defect on the real chain).
     const next = await reserve('txn_d03_after_orphan' as TransactionId, '0' as DecimalUint);
     expect(next.lease.nonce).toBe('0');
     expect(next.lease.transactionId).toBe('txn_d03_after_orphan');
   });
 
-  it('built 租约可安全释放，但 M1 水位保持单调且不回收旧 nonce', async () => {
+  it('a built lease can be safely released, but the M1 watermark stays monotonic and never reclaims old nonces', async () => {
     await reset();
     const firstId = await createTransaction('txn_nonce_release_1');
     const first = await reserve(firstId);
@@ -707,7 +707,7 @@ describe.skipIf(!ENABLED)('PostgresNonceStore（DFR-M1-A11）', () => {
     expect(rows[0]?.status).toBe('expired');
   });
 
-  it('交易已 signed 时拒绝自动释放，nonce 不会被后续交易复用', async () => {
+  it('once a transaction is signed, automatic release is refused and the nonce is not reused by later transactions', async () => {
     await reset();
     const signedId = await createTransaction('txn_nonce_signed');
     const signedLease = await reserve(signedId);
@@ -725,7 +725,7 @@ describe.skipIf(!ENABLED)('PostgresNonceStore（DFR-M1-A11）', () => {
     expect(next.lease.nonce).toBe('1');
   });
 
-  it('租约已 broadcast 时即使交易快照仍是 built 也拒绝释放与复用', async () => {
+  it('once a lease is broadcast, release and reuse are refused even if the transaction snapshot is still built', async () => {
     await reset();
     const transactionId = await createTransaction('txn_nonce_broadcast');
     const original = await reserve(transactionId);
@@ -742,7 +742,7 @@ describe.skipIf(!ENABLED)('PostgresNonceStore（DFR-M1-A11）', () => {
     expect(next.lease.nonce).toBe('1');
   });
 
-  it('releaseIfSafe 与迟到 broadcast 并发时，最终状态不会停在 released', async () => {
+  it('when releaseIfSafe races a late broadcast, the final state never rests at released', async () => {
     await reset();
     const transactionId = await createTransaction('txn_nonce_release_race');
     const original = await reserve(transactionId);
@@ -763,7 +763,7 @@ describe.skipIf(!ENABLED)('PostgresNonceStore（DFR-M1-A11）', () => {
     expect(rows[0]!.status).toBe('broadcast');
   });
 
-  it('markConsumed 单调推进且重复调用保持幂等，不会降级回 broadcast', async () => {
+  it('markConsumed advances monotonically and repeated calls stay idempotent, never downgrading back to broadcast', async () => {
     await reset();
     const transactionId = await createTransaction('txn_nonce_consumed');
     const original = await reserve(transactionId);
@@ -813,9 +813,9 @@ describe.skipIf(!ENABLED)('PostgresNonceStore（DFR-M1-A11）', () => {
     }
   });
 
-  it('ADR-030 ABA 负对照：迟到的释放/推进不得影响已复用的 nonce 新租约', async () => {
+  it('ADR-030 ABA negative case: a late release/advance must not affect the new lease of a reused nonce', async () => {
     await reset();
-    // 1) 交易 A 拿到 nonce 0，随后 build 失败并释放（无交易行）。
+    // 1) Transaction A gets nonce 0, then build fails and it releases (no transaction row).
     const a = await store.reserve({
       chain, account, transactionId: 'txn_aba_a' as TransactionId,
       chainPendingNonce: '0' as DecimalUint, leaseTtlMs: 60_000,
@@ -823,7 +823,7 @@ describe.skipIf(!ENABLED)('PostgresNonceStore（DFR-M1-A11）', () => {
     expect(a).toMatchObject({ kind: 'reserved', lease: { nonce: '0' } });
     await store.releaseIfSafe({ chain, account, nonce: '0' as DecimalUint, transactionId: 'txn_aba_a' as TransactionId });
 
-    // 2) ADR-030：交易 B 复用了 nonce 0。
+    // 2) ADR-030: transaction B reuses nonce 0.
     const b = await store.reserve({
       chain, account, transactionId: 'txn_aba_b' as TransactionId,
       chainPendingNonce: '0' as DecimalUint, leaseTtlMs: 60_000,
@@ -831,7 +831,7 @@ describe.skipIf(!ENABLED)('PostgresNonceStore（DFR-M1-A11）', () => {
     expect(b).toMatchObject({ kind: 'reserved', lease: { nonce: '0' } });
     expect(b.lease.transactionId).toBe('txn_aba_b');
 
-    // 3) 迟到的 A 用**旧**引用再释放/推进：必须被拒，且 B 的租约不受影响。
+    // 3) Late A releases/advances again with its **stale** reference: it must be refused, and B's lease is unaffected.
     const staleRelease = await store.releaseIfSafe({
       chain, account, nonce: '0' as DecimalUint, transactionId: 'txn_aba_a' as TransactionId,
     });
@@ -850,7 +850,7 @@ describe.skipIf(!ENABLED)('PostgresNonceStore（DFR-M1-A11）', () => {
     expect(rows[0]).toEqual({ transaction_id: 'txn_aba_b', status: 'reserved' });
   });
 
-  it('ADR-030：水位之下的 released 空洞被复用后，水位不推进（保持单调上界）', async () => {
+  it('ADR-030: after a released gap below the watermark is reused, the watermark does not advance (it stays a monotonic upper bound)', async () => {
     await reset();
     await store.reserve({
       chain, account, transactionId: 'txn_wm_first' as TransactionId,
@@ -867,11 +867,11 @@ describe.skipIf(!ENABLED)('PostgresNonceStore（DFR-M1-A11）', () => {
         WHERE chain_id=$1 AND account_address=$2`,
       [chain, account.address],
     );
-    // 复用不推进水位：它仍是 1（第一次 reserve 推进的上界），空洞被填平。
+    // Reuse does not advance the watermark: it stays 1 (the upper bound from the first reserve), and the gap is filled.
     expect(rows[0]!.next_nonce).toBe('1');
   });
 
-  it('未知租约的推进与释放稳定返回 not_found', async () => {
+  it('advancing or releasing an unknown lease stably returns not_found', async () => {
     await reset();
     const ref = { chain, account, nonce: '404' as DecimalUint,
       transactionId: 'txn_not_exist' as TransactionId };

@@ -1,7 +1,7 @@
 /**
- * @dfr/registry —— Chain Registry 加载、校验与投影（DFR-005）。
+ * @dfr/registry — Chain Registry loading, validation, and projection (DFR-005).
  *
- * 规范来源：ADR-003、packages/registry/config/README.md
+ * Normative sources: ADR-003, packages/registry/config/README.md
  */
 export {
   ChainRegistry,

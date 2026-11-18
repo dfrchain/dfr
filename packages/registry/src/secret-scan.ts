@@ -1,12 +1,12 @@
 /**
- * 注册表密钥扫描（见 packages/registry/config/README.md 校验规则第 4 条）。
+ * Registry secret scanning (see validation rule 4 in packages/registry/config/README.md).
  *
- * 与 scripts/check-secrets.sh 的关系：脚本扫描**仓库文件**，本模块扫描
- * **运行时的注册表内容**（可能来自本地覆盖文件或未来的远端配置）。
- * 两者覆盖不同输入来源，不能互相替代。
+ * Relationship to scripts/check-secrets.sh: the script scans **repository files**, while this module scans
+ * **runtime registry content** (which may come from a local override file or future remote configuration).
+ * The two cover different input sources and cannot substitute for each other.
  */
 
-/** 与仓库脚本保持同一组模式，避免两套规则漂移。 */
+/** Keep the same pattern set as the repository script, so the two rule sets cannot drift. */
 const KEY_PATTERNS: readonly { name: string; re: RegExp }[] = [
   { name: 'hex-64-private-key', re: /0x[0-9a-fA-F]{64}\b/ },
   { name: 'openai-style-key', re: /\bsk-[A-Za-z0-9_-]{20,}\b/ },
@@ -17,14 +17,14 @@ const KEY_PATTERNS: readonly { name: string; re: RegExp }[] = [
 ];
 
 export interface SecretFinding {
-  /** 命中位置的 JSON 路径，例如 `chains.ethereum-sepolia.displayName`。 */
+  /** JSON path of the hit, e.g. `chains.ethereum-sepolia.displayName`. */
   path: string;
   pattern: string;
-  /** 只保留前若干字符，避免把疑似密钥本体写进日志。 */
+  /** Keep only the first few characters, so a suspected secret itself is never written to logs. */
   excerpt: string;
 }
 
-/** 递归扫描任意结构中的字符串值。 */
+/** Recursively scan string values in any structure. */
 export function scanForSecrets(value: unknown, path = '$'): SecretFinding[] {
   const findings: SecretFinding[] = [];
 

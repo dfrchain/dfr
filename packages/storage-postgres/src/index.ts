@@ -1,20 +1,20 @@
 /**
- * @dfr/storage-postgres —— M1 Store 端口的 PostgreSQL 实现（ADR-015）。
+ * @dfr/storage-postgres — PostgreSQL implementation of the M1 Store ports (ADR-015).
  *
- * 责任：用 `pg` + 显式参数化 SQL 实现 `@dfr/transaction` 的四个 Store 端口，
- * 并把并发语义（行锁、乐观版本、租约、唯一约束）固定在 SQL 层。
+ * Responsibility: implement `@dfr/transaction`'s four Store ports with `pg` + explicit parameterized SQL,
+ * pinning the concurrency semantics (row locks, optimistic versions, leases, unique constraints) in the SQL layer.
  *
- * 不负责：状态机语义、HTTP、Provider、链 RPC。
+ * Not responsible for: state-machine semantics, HTTP, Providers, chain RPC.
  *
- * 依赖方向：本包 → `@dfr/transaction`（端口）→ `@dfr/types`。
- * 反向依赖（Transaction/Core 依赖本包或 `pg`）被禁止，并由
- * tests/contract/module-boundaries.test.ts 守卫。
+ * Dependency direction: this package → `@dfr/transaction` (ports) → `@dfr/types`.
+ * Reverse dependencies (Transaction/Core depending on this package or on `pg`) are forbidden, and are guarded by
+ * tests/contract/module-boundaries.test.ts.
  *
- * 状态：DFR-M1-A07 只建立包骨架与第一版迁移；Store 实现见 A09–A12，
- * 迁移运行器见 A08。
+ * Status: DFR-M1-A07 only set up the package skeleton and the first migration; the Store implementations are A09–A12,
+ * and the migration runner is A08.
  */
 
-/** 迁移文件所在目录（相对包根）。A08 的迁移运行器按文件名顺序执行。 */
+/** Directory holding the migration files (relative to the package root). A08's migration runner executes them in filename order. */
 export const MIGRATIONS_DIR = 'migrations' as const;
 
 export {

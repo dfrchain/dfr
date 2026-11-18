@@ -1,14 +1,14 @@
 /**
- * M4 故障 / 回退演练（离线可复现）。
+ * M4 fault / fallback drills (reproducible offline).
  *
- * 权威来源：M4 任务书完成门"故障演练、回退演练"、ADR-008、`docs/runbooks/m4-bex-integration.md`。
+ * Authoritative sources: the M4 taskbook completion gates "fault drills, fallback drills", ADR-008, `docs/runbooks/m4-bex-integration.md`.
  *
- * 全部用 stub provider + 真实 Gateway/Core/引擎驱动，**不依赖公网、不需要资金**，
- * 因此可进默认离线门禁。覆盖 BEX 接入时最需要提前确认的四类场景：
- *   1. Provider 掉线 → 切换到备用端点（BEX 用 DFR 后不再自建切换）；
- *   2. 票据失效/不匹配 → `DFR_INVALID_TICKET`（不枚举原因）；
- *   3. 确认超时 → 200 + `reached:false`（不是错误，不重写记录）；
- *   4. 回退演练：同一笔结算**只**由 DFR 广播一次（绝不双路广播）。
+ * All driven by stub providers + the real Gateway/Core/engine, **no public network, no funds needed**,
+ * so it can run in the default offline gate. It covers the four scenarios BEX most needs confirmed before integration:
+ *   1. Provider goes down → switch to the backup endpoint (once BEX uses DFR it no longer builds its own failover);
+ *   2. ticket invalid/mismatched → `DFR_INVALID_TICKET` (without enumerating the reason);
+ *   3. confirmation timeout → 200 + `reached:false` (not an error, the record is not rewritten);
+ *   4. fallback drill: one settlement is broadcast **only** once by DFR (never broadcast on two paths).
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import type { AddressInfo } from 'node:net';
@@ -49,9 +49,9 @@ afterEach(async () => {
 });
 
 interface HarnessOptions {
-  /** 主 Provider 的应答行为（默认正常）。 */
+  /** Response behavior of the primary Provider (normal by default). */
   primary?: 'ok' | 'http-503';
-  /** confirm 轮询时交易是否可见。 */
+  /** Whether the transaction is visible while confirm polls. */
   confirmVisible?: boolean;
 }
 
@@ -101,7 +101,7 @@ function harness(options: HarnessOptions = {}) {
     registry,
     adapters: [{ id: 'evm', version: '0.1.0', create: (chain: Chain) => new EvmAdapter({ chain }) }],
     milestone: 'M1',
-    random: () => 0, // 固定先选主 Provider，否则"切换"会退化成"直接成功"
+    random: () => 0, // Always pick the primary Provider first, otherwise "failover" degrades into "direct success"
     fetchImpl: stub,
     transactionStores: stores,
   });
@@ -151,23 +151,23 @@ async function json(url: string, init?: RequestInit) {
   return { status: res.status, body: (await res.json()) as Record<string, unknown> };
 }
 
-describe('M4 故障/回退演练（离线）', () => {
-  it('Provider 掉线：主端点 5xx 时切到备用并返回结果', async () => {
+describe('M4 fault/fallback drills (offline)', () => {
+  it('Provider down: when the primary endpoint returns 5xx, switch to the backup and return a result', async () => {
     const h = harness({ primary: 'http-503' });
     const base = await baseUrl(h.server);
     const { status, body } = await json(`${base}/v1/chains/${CHAIN}`);
-    // 主 Provider 5xx → 管理切换 → 备用返回 eth_chainId/eth_blockNumber → 200。
+    // Primary Provider 5xx → managed failover → backup returns eth_chainId/eth_blockNumber → 200.
     expect(status).toBe(200);
     expect(h.called.some((c) => c.providerId.includes('primary'))).toBe(true);
     expect(h.called.some((c) => c.providerId.includes('secondary'))).toBe(true);
     expect(body['chain']).toBe(CHAIN);
   }, 20_000);
 
-  it('票据失效：用另一组 filter 消费票据 → DFR_INVALID_TICKET（不枚举原因）', async () => {
+  it('ticket invalid: consuming the ticket with a different filter set → DFR_INVALID_TICKET (without enumerating the reason)', async () => {
     const h = harness();
     const base = await baseUrl(h.server);
     const issued = h.tickets.issue({ projectId: 'm4-drills', apiKeyId: KEY_ID, ip: '127.0.0.1', filter: { chain: CHAIN as never } })!;
-    // 用**不同** filter（多加一个 types）消费：摘要不符 → 401。
+    // Consume with a **different** filter (one extra types): digest mismatch → 401.
     const res = await fetch(
       `${base}/v1/events/subscribe?chain=${CHAIN}&types=tx.finalized&ticket=${encodeURIComponent(issued.ticket)}`,
     );
@@ -175,17 +175,17 @@ describe('M4 故障/回退演练（离线）', () => {
     expect(((await res.json()) as { dfr_code?: string }).dfr_code).toBe('DFR_INVALID_TICKET');
   }, 20_000);
 
-  it('交易尚不可见：对未知 hash 调 confirm → 200 pending（内部轮询至 timeoutMs，不伪造终局）', async () => {
+  it('transaction not yet visible: calling confirm for an unknown hash → 200 pending (polls internally until timeoutMs, without fabricating a final outcome)', async () => {
     const h = harness({ confirmVisible: false });
     const base = await baseUrl(h.server);
     const { status, body } = await json(`${base}/v1/transactions/0x${'ab'.repeat(32)}/confirm`, {
       method: 'POST',
       body: JSON.stringify({ chain: CHAIN, minFinality: 'finalized', timeoutMs: 1000 }),
     });
-    // 链上还查不到这笔：confirm 在调用方给定的 timeoutMs 内内部轮询（F-2），
-    // 截止仍不可见则如实返回 pending / reached=false 并转后台续跟，
-    // **不**伪造 confirmed/failed，也不再 fail-fast 抛 404。
-    // BEX 侧按 runbook：pending 是"尚未可见"，有界轮询即可，不当作错误重试广播。
+    // The transaction is not yet visible on-chain: confirm polls internally within the caller-supplied timeoutMs (F-2),
+    // and if it is still not visible at the deadline, honestly returns pending / reached=false and hands over to background tracking,
+    // **without** fabricating confirmed/failed, and without fail-fast throwing 404.
+    // Per the runbook, the BEX side treats pending as "not yet visible": bounded polling is enough, do not retry the broadcast as if it were an error.
     expect(status).toBe(200);
     const confirmation = body['confirmation'] as { status?: string; finality?: string; reached?: boolean };
     expect(confirmation.status).toBe('pending');
@@ -193,7 +193,7 @@ describe('M4 故障/回退演练（离线）', () => {
     expect(confirmation.reached).toBe(false);
   }, 20_000);
 
-  it('回退演练：一笔结算只广播一次，绝不双路广播', async () => {
+  it('fallback drill: one settlement is broadcast only once, never on two paths', async () => {
     const h = harness();
     const base = await baseUrl(h.server);
     const built = await json(`${base}/v1/transactions/build`, {
@@ -202,7 +202,7 @@ describe('M4 故障/回退演练（离线）', () => {
     });
     const txid = built.body['transactionId'] as string;
     const unsigned = built.body['unsignedTransaction'] as Record<string, unknown>;
-    // 用桩签名（EIP-1559 形状）——绑定校验要求 payload 与记录一致，这里直接用记录里的 payload。
+    // Use a stub signature (EIP-1559 shape) -- binding validation requires the payload to match the record, so use the payload from the record directly.
     const payload = unsigned['payload'] as string;
     const signed = {
       schemaVersion: '1', chain: CHAIN, unsigned,
@@ -213,8 +213,8 @@ describe('M4 故障/回退演练（离线）', () => {
       headers: { 'x-dfr-key': KEY, 'content-type': 'application/json', 'idempotency-key': 'drill-idem-0001' },
       body: JSON.stringify({ transactionId: txid, signedTransaction: signed }),
     });
-    expect([200, 422]).toContain(res.status); // 桩签名可能未通过绑定 → 422，且不广播
-    // **核心断言**：无论成功与否，广播调用至多一次（绝不重试/双路）。
+    expect([200, 422]).toContain(res.status); // the stub signature may fail binding → 422, and nothing is broadcast
+    // **Core assertion**: whether it succeeds or not, the broadcast is called at most once (never retried / sent on two paths).
     expect(h.rawSends.length).toBeLessThanOrEqual(1);
     if (res.status === 200) {
       expect((res.body['broadcast'] as { accepted: boolean }).accepted).toBe(true);

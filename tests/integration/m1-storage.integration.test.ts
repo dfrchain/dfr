@@ -1,8 +1,8 @@
 /**
- * M1-A 批次集成验收（DFR-M1-A14）。
+ * M1-A batch integration acceptance (DFR-M1-A14).
  *
- * 前置：`pnpm test:db` 先用迁移/schema 测试建立空库契约，
- * 再单独运行本文件，避免 Vitest 跨文件并行 DROP SCHEMA。
+ * Prerequisite: `pnpm test:db` first establishes the empty-database contract with migration/schema tests,
+ * then run this file separately to avoid Vitest dropping schemas in parallel across files.
  */
 import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -34,8 +34,8 @@ afterEach(async () => {
   }
 });
 
-describe.skipIf(!ENABLED)('M1-A PostgreSQL 批次集成（DFR-M1-A14）', () => {
-  it('composition 工厂装配四个 Store（含 E5 配额 Store），close 可重复调用', async () => {
+describe.skipIf(!ENABLED)('M1-A PostgreSQL batch integration (DFR-M1-A14)', () => {
+  it('the composition factory assembles four Stores (including the E5 quota Store), close can be called repeatedly', async () => {
     const runtime = await openRuntime();
 
     expect(runtime.stores.transaction).toBeTruthy();
@@ -50,7 +50,7 @@ describe.skipIf(!ENABLED)('M1-A PostgreSQL 批次集成（DFR-M1-A14）', () => 
     await expect(runtime.close()).resolves.toBeUndefined();
   });
 
-  it('E5：两个独立运行时共享 Provider 日配额，额度 3 时 8 路并发恰好 3 次成功', async () => {
+  it('E5: two independent runtimes share the Provider daily quota; with a quota of 3, 8-way concurrency yields exactly 3 successes', async () => {
     const first = await openRuntime();
     const second = await openRuntime();
     const input = {
@@ -71,7 +71,7 @@ describe.skipIf(!ENABLED)('M1-A PostgreSQL 批次集成（DFR-M1-A14）', () => 
     expect(await second.stores.providerQuota.usage(input)).toBe(3);
   });
 
-  it('经 composition 工厂共享的 Store 仍保持并发幂等 single-winner', async () => {
+  it('Stores shared via the composition factory still keep concurrent idempotent single-winner behavior', async () => {
     const runtime = await openRuntime();
     const key = `a14-${randomUUID()}`;
     const scope = { projectId: 'default', chain: CHAIN, key };
@@ -91,7 +91,7 @@ describe.skipIf(!ENABLED)('M1-A PostgreSQL 批次集成（DFR-M1-A14）', () => 
     expect(results.filter((result) => result.kind === 'in_flight')).toHaveLength(11);
   });
 
-  it('关闭并重建 Pool 后，非终态交易与 tracker 恢复查询仍可见', async () => {
+  it('after closing and rebuilding the Pool, non-terminal transactions and tracker recovery queries are still visible', async () => {
     const suffix = randomUUID().replaceAll('-', '');
     const transactionId = `txn_a14_${suffix}` as TransactionId;
     const txHash = `0x${suffix.padEnd(64, '0')}`;
@@ -118,7 +118,7 @@ describe.skipIf(!ENABLED)('M1-A PostgreSQL 批次集成（DFR-M1-A14）', () => 
         chain: CHAIN,
         txHash,
         ownerToken: `tracker-${suffix}`,
-        // 重启恢复只能接管已过期租约；有效租约必须继续 single-flight。
+        // Restart recovery can only take over expired leases; valid leases must keep single-flight.
         leaseTtlMs: -1,
       }),
     ).toMatchObject({ kind: 'acquired' });

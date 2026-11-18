@@ -1,10 +1,10 @@
--- E5：Provider 日配额的跨实例原子计数。
+-- E5: cross-instance atomic counting of the Provider daily quota.
 --
--- 为什么不能只保留进程内 Map：重启会归零，多实例各自计数会低估，
--- 结果是上游额度被打爆；这类错误在单实例测试里看不出来。
+-- Why an in-process Map alone is not enough: restarts reset it to zero, and multiple instances counting separately would underestimate usage,
+-- so the upstream quota would be blown; this kind of bug is invisible in single-instance tests.
 --
--- 计数表放在交易数据面：它服务的是运行时 Provider 调用，不是租户控制面；
--- 不依赖额外基础设施，复用同一 PostgreSQL 连接池。
+-- The counting table lives in the transaction data plane: it serves runtime Provider calls, not the tenant control plane;
+-- it needs no extra infrastructure and reuses the same PostgreSQL connection pool.
 
 CREATE TABLE transaction_data.provider_quota_daily (
   provider_id  text NOT NULL,
@@ -16,6 +16,6 @@ CREATE TABLE transaction_data.provider_quota_daily (
   PRIMARY KEY (provider_id, chain_id, day)
 );
 
--- 运维查询按链/日期聚合；主键已覆盖单 Provider 精确查询。
+-- Operations queries aggregate by chain/date; the primary key already covers exact single-Provider lookups.
 CREATE INDEX provider_quota_daily_chain_day_idx
   ON transaction_data.provider_quota_daily (chain_id, day);

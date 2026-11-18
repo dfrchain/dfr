@@ -1,4 +1,4 @@
-/** 链 scope 必须覆盖 JSON body 中的真实目标链，而不只覆盖 query 参数。 */
+/** Chain scope must cover the real target chain in the JSON body, not just query parameters. */
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -48,7 +48,7 @@ async function post(path: string, body: unknown, headers: Record<string, string>
 }
 
 describe('JSON body chain scope', () => {
-  it('build、preflight、simulate、broadcast 与事件票据都在业务处理前拒绝未授权链', async () => {
+  it('build, preflight, simulate, broadcast, and event tickets all reject unauthorized chains before business processing', async () => {
     await start();
     const unsigned = { schemaVersion: '1', chain: FORBIDDEN_CHAIN, payload: '0x00', meta: {} };
     const cases = [

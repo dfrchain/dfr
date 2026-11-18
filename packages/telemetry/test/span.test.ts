@@ -1,11 +1,11 @@
-// Span 身份不变量（M5 E6）。
-// 重点：W3C 把"全零"定义为非法，因此生成器必须**不可能**产出全零——
-// 这条用真实随机源跑了多轮，而不是只测一次。
+// Span identity invariants (M5 E6).
+// Focus: W3C defines "all-zero" as illegal, so the generator must **never** produce all-zero —
+// this case runs several rounds with the real random source, not just once.
 import { describe, expect, it } from 'vitest';
 import { isValidSpanId, isValidTraceId, newSpanId, newTraceId, nowUnixNano } from '../src/span.js';
 
-describe('id 生成', () => {
-  it('trace id 是 32 位十六进制且合法', () => {
+  describe('id generation', () => {
+    it('a trace id is 32 hex chars and valid', () => {
     for (let i = 0; i < 200; i += 1) {
       const id = newTraceId();
       expect(id).toMatch(/^[0-9a-f]{32}$/u);
@@ -13,7 +13,7 @@ describe('id 生成', () => {
     }
   });
 
-  it('span id 是 16 位十六进制且合法', () => {
+    it('a span id is 16 hex chars and valid', () => {
     for (let i = 0; i < 200; i += 1) {
       const id = newSpanId();
       expect(id).toMatch(/^[0-9a-f]{16}$/u);
@@ -21,20 +21,20 @@ describe('id 生成', () => {
     }
   });
 
-  it('id 不重复（抽样 500 对）', () => {
+    it('ids do not repeat (sampling 500 pairs)', () => {
     const seen = new Set<string>();
     for (let i = 0; i < 500; i += 1) seen.add(newSpanId());
     expect(seen.size).toBe(500);
   });
 });
 
-describe('合法性校验', () => {
-  it('拒绝全零（W3C 显式非法）', () => {
+  describe('validity checks', () => {
+    it('rejects all-zero (explicitly illegal in W3C)', () => {
     expect(isValidTraceId('0'.repeat(32))).toBe(false);
     expect(isValidSpanId('0'.repeat(16))).toBe(false);
   });
 
-  it('拒绝长度/字符集错误', () => {
+    it('rejects wrong length/charset', () => {
     expect(isValidTraceId('abc')).toBe(false);
     expect(isValidTraceId('Z'.repeat(32))).toBe(false);
     expect(isValidSpanId('1234567890abcde')).toBe(false);
@@ -42,8 +42,8 @@ describe('合法性校验', () => {
 });
 
 describe('nowUnixNano', () => {
-  it('使用 BigInt，不丢精度', () => {
-    // 1_700_000_000_000 ms → 1.7e18 ns，超出 Number 安全整数（9.007e15）
+    it('uses BigInt, no precision loss', () => {
+    // 1_700_000_000_000 ms -> 1.7e18 ns, beyond the Number safe integer (9.007e15)
     expect(nowUnixNano(() => 1_700_000_000_000)).toBe('1700000000000000000');
   });
 });

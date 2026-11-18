@@ -1,20 +1,20 @@
 /**
- * 迁移运行器契约测试（DFR-M1-A08）。
+ * Migration runner contract test (DFR-M1-A08).
  *
- * 权威来源：ADR-015 §3、docs/architecture/m1-storage-model.md。
+ * Authoritative sources: ADR-015 §3, docs/architecture/m1-storage-model.md.
  *
- * 默认**跳过**；显式开启：
+ * Skipped by **default**; enable explicitly:
  *
  *   DFR_TRANSACTION_RUNNER_DATABASE_URL=postgres://dfr_migrator:...@127.0.0.1:55432/dfr_m1_runner_test \
  *   pnpm vitest run packages/storage-postgres/test/migrations.test.ts
  *
- * 或直接 `pnpm test:db`（脚本会导出全部所需 DSN）。
+ * or run `pnpm test:db` directly (the script exports all required DSNs).
  *
- * 该库是**独立**的（`dfr_m1_runner_test`）：schema 契约测试会在自己的库上
- * DROP SCHEMA，两个测试文件若共用同一数据库会互相破坏。
+ * This database is **separate** (`dfr_m1_runner_test`): the schema contract test DROPs schemas in its own database,
+ * so the two test files would break each other if they shared one database.
  *
- * 覆盖任务卡要求的四种情形：首次应用、重复运行、checksum 改变、半途失败回滚。
- * 另加三类防御性边界：已应用迁移缺失、事务控制语句、迁移名重复。
+ * Covers the four scenarios the task card requires: first application, re-run, checksum change, mid-way failure rollback.
+ * Plus three defensive boundaries: applied migration missing, transaction-control statements, duplicate migration names.
  */
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -35,7 +35,7 @@ const realMigrationsDir = resolve(packageRoot, 'migrations');
 const RUNNER_DSN = process.env['DFR_TRANSACTION_RUNNER_DATABASE_URL'];
 const ENABLED = typeof RUNNER_DSN === 'string' && RUNNER_DSN.length > 0;
 
-/** 合成迁移使用的 scratch schema，刻意与 transaction_data 分开。 */
+/** Scratch schema used by synthetic migrations, deliberately separate from transaction_data. */
 const SCRATCH = 'mig_probe';
 
 const M1: MigrationFile = {
@@ -46,21 +46,21 @@ const M2: MigrationFile = {
   name: '0002_probe_more.sql',
   sql: `ALTER TABLE ${SCRATCH}.base ADD COLUMN note text;\n`,
 };
-/** 先建表再故意报错：用于验证"半途失败整体回滚"。 */
+/** Create a table and then deliberately error: used to verify "mid-way failure rolls back everything". */
 const M_FAIL: MigrationFile = {
   name: '0003_probe_fail.sql',
   sql: `CREATE TABLE ${SCRATCH}.half (i int);\nSELECT 1 / 0;\n`,
 };
 
 /**
- * 迁移 SQL 自身成功，但**版本行写入失败**。
+ * The migration SQL itself succeeds, but the **version-row write fails**.
  *
- * 这是唯一能区分"运行器是否显式管理事务"的场景：
- * PostgreSQL 会把单条多语句查询放进隐式事务，所以「迁移 SQL 内部报错」
- * 不依赖运行器也会回滚。但版本行由运行器在**另一条** query 中写入，
- * 只有显式 BEGIN/COMMIT 才能让"迁移已执行的 DDL"与"版本行"同生共死。
+ * This is the only scenario that can distinguish "does the runner manage transactions explicitly":
+ * PostgreSQL puts a single multi-statement query into an implicit transaction, so an "error inside the migration SQL"
+ * rolls back even without the runner. But the version row is written by the runner in a **separate** query,
+ * so only an explicit BEGIN/COMMIT makes "the migration's executed DDL" and "the version row" live or die together.
  *
- * 这里让迁移 SQL 抢先插入一条同名版本行，使运行器随后的 INSERT 触发主键冲突。
+ * Here the migration SQL pre-inserts a version row with the same name, so the runner's subsequent INSERT hits a primary-key conflict.
  */
 const M_COLLIDE: MigrationFile = {
   name: '0004_probe_collide.sql',
@@ -99,9 +99,9 @@ beforeAll(async () => {
   await client.connect();
   const { rows } = await client.query<{ db: string }>('SELECT current_database() AS db');
   const db = rows[0]!.db;
-  // 安全护栏：只允许对测试库操作（本文件会 DROP SCHEMA）。
+  // Safety guard: only test databases may be touched (this file DROPs schemas).
   if (!/_test$/u.test(db)) {
-    throw new Error(`拒绝在非测试库 "${db}" 上执行迁移测试（库名必须以 _test 结尾）`);
+    throw new Error(`refusing to run migration tests against non-test database "${db}" (database name must end with _test)`);
   }
   await resetSchemas();
 }, 60_000);
@@ -110,8 +110,8 @@ afterAll(async () => {
   if (ENABLED && client) await client.end();
 });
 
-describe.skipIf(!ENABLED)('迁移运行器（DFR-M1-A08）', () => {
-  it('仓库中 D04 migration 只扩展 nullable anchor 列（0004）', () => {
+describe.skipIf(!ENABLED)('migration runner (DFR-M1-A08)', () => {
+  it('the in-repo D04 migration only extends nullable anchor columns (0004)', async () => {
     const migrations = loadMigrations(realMigrationsDir);
     const d04 = migrations.find((m) => m.name === '0004_transaction_canonical_block_hash.sql');
     expect(d04).toBeDefined();
@@ -119,7 +119,7 @@ describe.skipIf(!ENABLED)('迁移运行器（DFR-M1-A08）', () => {
     expect(d04?.sql).not.toMatch(/DROP\s+(COLUMN|TABLE)|ALTER\s+COLUMN\s+.*\s+TYPE/iu);
   });
 
-  it('仓库迁移按文件名严格升序且无重复，0005 只放宽 state_version 下界', () => {
+  it('in-repo migrations are strictly ascending by filename with no duplicates, and 0005 only relaxes the state_version lower bound', () => {
     const migrations = loadMigrations(realMigrationsDir);
     const names = migrations.map((m) => m.name);
     expect(names).toEqual([...names].sort());
@@ -127,22 +127,22 @@ describe.skipIf(!ENABLED)('迁移运行器（DFR-M1-A08）', () => {
 
     const d07 = migrations.find((m) => m.name === '0005_transaction_state_version_zero.sql');
     expect(d07).toBeDefined();
-    // 只允许放宽 state_version 约束，不得顺手改列类型或删数据。
+    // Only relaxing the state_version constraint is allowed; column types must not be changed and data must not be deleted on the side.
     expect(d07?.sql).toMatch(/CHECK\s*\(state_version\s*>=\s*0\)/u);
     expect(d07?.sql).not.toMatch(/DROP\s+(COLUMN|TABLE)|ALTER\s+COLUMN\s+.*\s+TYPE|DELETE\s+FROM/iu);
   });
 
-  it('仓库迁移 0006 只新增 sequencing 表与索引（ADR-032，不动历史表）', () => {
+  it('in-repo migration 0006 only adds sequencing tables and indexes (ADR-032, historical tables untouched)', () => {
     const migrations = loadMigrations(realMigrationsDir);
     const seq = migrations.find((m) => m.name === '0006_sequencing_leases.sql');
     expect(seq).toBeDefined();
     expect(seq?.sql).toMatch(/CREATE TABLE transaction_data\.sequencing_leases/u);
     expect(seq?.sql).toMatch(/UNIQUE \(transaction_id\)/u);
-    // 不得改列类型 / 删数据 / 删历史表。
+    // Column types must not be changed, data must not be deleted, historical tables must not be dropped.
     expect(seq?.sql).not.toMatch(/DROP\s+(COLUMN|TABLE)|ALTER\s+COLUMN\s+.*\s+TYPE|DELETE\s+FROM/iu);
   });
 
-  it('仓库迁移 0007 只新增 sequencing_ref 列与形状约束（ADR-033，不动历史表）', () => {
+  it('in-repo migration 0007 only adds the sequencing_ref column and shape constraints (ADR-033, historical tables untouched)', () => {
     const migrations = loadMigrations(realMigrationsDir);
     const ref = migrations.find((m) => m.name === '0007_transaction_sequencing_ref.sql');
     expect(ref).toBeDefined();
@@ -151,7 +151,7 @@ describe.skipIf(!ENABLED)('迁移运行器（DFR-M1-A08）', () => {
     expect(ref?.sql).not.toMatch(/DROP\s+(COLUMN|TABLE)|ALTER\s+COLUMN\s+.*\s+TYPE|DELETE\s+FROM/iu);
   });
 
-  it('仓库迁移 0009 只新增 Provider 日配额表与索引（E5，不动历史表）', () => {
+  it('in-repo migration 0009 only adds the Provider daily-quota table and indexes (E5, historical tables untouched)', () => {
     const migrations = loadMigrations(realMigrationsDir);
     const quota = migrations.find((m) => m.name === '0009_provider_quota_daily.sql');
     expect(quota).toBeDefined();
@@ -160,77 +160,77 @@ describe.skipIf(!ENABLED)('迁移运行器（DFR-M1-A08）', () => {
     expect(quota?.sql).not.toMatch(/DROP\s+(COLUMN|TABLE)|ALTER\s+COLUMN\s+.*\s+TYPE|DELETE\s+FROM/iu);
   });
 
-  it('首次应用：按文件名顺序执行并写入版本表', async () => {
+  it('first application: executes in filename order and writes the version table', async () => {
     await resetSchemas();
-    const result = await runMigrations({ client, migrations: [M2, M1] }); // 故意乱序传入
+    const result = await runMigrations({ client, migrations: [M2, M1] }); // Deliberately passed out of order
 
-    // 运行器必须自己排序，而不是依赖调用方顺序。
+    // The runner must sort by itself, not depend on caller order.
     expect(result.applied).toEqual([M1.name, M2.name]);
     expect(result.skipped).toEqual([]);
     expect(await tableExists(SCRATCH, 'base')).toBe(true);
     expect(await appliedNames()).toEqual([M1.name, M2.name]);
   });
 
-  it('重复运行：已应用且 checksum 一致时全部跳过，不重复执行', async () => {
+  it('re-run: everything already applied with matching checksum is skipped, nothing re-executes', async () => {
     const result = await runMigrations({ client, migrations: [M1, M2] });
     expect(result.applied).toEqual([]);
     expect(result.skipped).toEqual([M1.name, M2.name]);
   });
 
-  it('checksum 改变：已应用迁移被修改时拒绝执行', async () => {
-    const tampered: MigrationFile = { ...M2, sql: `${M2.sql}-- 事后修改\n` };
+  it('checksum change: refuses to run when an applied migration was modified', async () => {
+    const tampered: MigrationFile = { ...M2, sql: `${M2.sql}-- modified afterwards\n` };
     await expect(runMigrations({ client, migrations: [M1, tampered] })).rejects.toMatchObject({
       name: 'MigrationError',
       reason: 'checksum_mismatch',
       migrationName: M2.name,
     });
-    // 版本表内容不得被污染。
+    // The version-table contents must not be polluted.
     expect(await appliedNames()).toEqual([M1.name, M2.name]);
   });
 
-  it('半途失败回滚：迁移内已执行的 DDL 与版本行一并回滚', async () => {
+  it('mid-way failure rollback: DDL already executed inside the migration rolls back together with the version row', async () => {
     await expect(
       runMigrations({ client, migrations: [M1, M2, M_FAIL] }),
-    ).rejects.toThrow(/division by zero|除以零/iu);
+    ).rejects.toThrow(/division by zero/iu);
 
-    // 失败迁移建的表必须不存在（DDL 也回滚）。
+    // Tables created by the failed migration must not exist (DDL rolls back too).
     expect(await tableExists(SCRATCH, 'half')).toBe(false);
-    // 失败迁移不得留下版本行。
+    // The failed migration must leave no version row.
     expect(await appliedNames()).toEqual([M1.name, M2.name]);
-    // 之前已提交的迁移不受影响。
+    // Previously committed migrations are unaffected.
     expect(await tableExists(SCRATCH, 'base')).toBe(true);
   });
 
-  it('应用一个合法迁移后，同一批中的后续迁移失败不回退前者', async () => {
+  it('after one valid migration is applied, a later failing migration in the same batch does not roll back the former', async () => {
     await resetSchemas();
     const ok: MigrationFile = { name: '0001_probe_base.sql', sql: M1.sql };
     await expect(
       runMigrations({ client, migrations: [ok, M2, M_FAIL] }),
-    ).rejects.toThrow(/division by zero|除以零/iu);
+    ).rejects.toThrow(/division by zero/iu);
     expect(await appliedNames()).toEqual([M1.name, M2.name]);
   });
 
-  it('已应用迁移在本次列表缺失时拒绝执行（防止删除迁移文件）', async () => {
+  it('refuses to run when an applied migration is missing from this run's list (prevents deleting migration files)', async () => {
     await expect(runMigrations({ client, migrations: [M1] })).rejects.toMatchObject({
       reason: 'applied_migration_missing',
       migrationName: M2.name,
     });
   });
 
-  it('迁移 DDL 与版本行原子：版本行写入失败时迁移的 DDL 也被回滚', async () => {
+  it('migration DDL and version row are atomic: when the version-row write fails, the migration's DDL is also rolled back', async () => {
     await resetSchemas();
     await expect(
       runMigrations({ client, migrations: [{ ...M1 }, M_COLLIDE] }),
-    ).rejects.toThrow(/duplicate key|already exists|唯一|重复/iu);
+    ).rejects.toThrow(/duplicate key|already exists/iu);
 
-    // 关键断言：迁移里已经执行成功的 CREATE TABLE 必须一并回滚。
-    // 若运行器不显式开事务，这条会失败（DDL 会随隐式事务提交）。
+    // Key assertion: a CREATE TABLE already executed inside the migration must roll back too.
+    // If the runner does not open a transaction explicitly, this fails (the DDL would commit with the implicit transaction).
     expect(await tableExists(SCRATCH, 'collide')).toBe(false);
-    // 版本表里不得留下迁移 SQL 抢先写入的占位行。
+    // No placeholder row pre-written by the migration SQL may remain in the version table.
     expect(await appliedNames()).toEqual([M1.name]);
   });
 
-  it('迁移 SQL 含事务控制语句时拒绝执行（避免破坏回滚保证）', async () => {
+  it('refuses to run migration SQL containing transaction-control statements (to protect the rollback guarantee)', async () => {
     await resetSchemas();
     const withBegin: MigrationFile = {
       name: '0001_probe_begin.sql',
@@ -241,14 +241,14 @@ describe.skipIf(!ENABLED)('迁移运行器（DFR-M1-A08）', () => {
     });
   });
 
-  it('迁移名重复时拒绝执行', async () => {
+  it('refuses to run when migration names are duplicated', async () => {
     await resetSchemas();
     await expect(
       runMigrations({ client, migrations: [M1, { ...M1, sql: 'SELECT 1;' }] }),
     ).rejects.toMatchObject({ reason: 'duplicate_migration_name' });
   });
 
-  it('schema / 表名非法时拒绝执行（防注入）', async () => {
+  it('refuses to run when the schema / table name is invalid (injection guard)', async () => {
     await expect(
       runMigrations({ client, migrations: [M1], migrationsSchema: 'bad; DROP SCHEMA public' }),
     ).rejects.toMatchObject({ reason: 'invalid_identifier' });
@@ -258,8 +258,8 @@ describe.skipIf(!ENABLED)('迁移运行器（DFR-M1-A08）', () => {
   });
 });
 
-describe.skipIf(!ENABLED)('真实迁移目录（DFR-M1-A08）', () => {
-  it('loadMigrations 按文件名升序返回，且以 0001 开头', () => {
+describe.skipIf(!ENABLED)('real migration directory (DFR-M1-A08)', () => {
+  it('loadMigrations returns migrations in ascending filename order, starting with 0001', () => {
     const migrations = loadMigrations(realMigrationsDir);
     expect(migrations.length).toBeGreaterThan(0);
     expect(migrations[0]!.name).toBe('0001_transaction_data.sql');
@@ -267,14 +267,14 @@ describe.skipIf(!ENABLED)('真实迁移目录（DFR-M1-A08）', () => {
     expect([...names]).toEqual([...names].sort());
   });
 
-  it('checksum 对同一内容稳定、对空白改动敏感', () => {
+  it('checksums are stable for identical content and sensitive to whitespace changes', () => {
     const migrations = loadMigrations(realMigrationsDir);
     const first = migrations[0]!;
     expect(checksumOf(first.sql)).toBe(checksumOf(first.sql));
     expect(checksumOf(first.sql)).not.toBe(checksumOf(`${first.sql}\n`));
   });
 
-  it('真实迁移端到端：从零应用，再次运行全部跳过', async () => {
+  it('real migrations end to end: apply from scratch, then skip everything on the second run', async () => {
     await resetSchemas();
     await client.query('DROP SCHEMA IF EXISTS transaction_data CASCADE');
 
@@ -283,7 +283,7 @@ describe.skipIf(!ENABLED)('真实迁移目录（DFR-M1-A08）', () => {
     expect(first.applied).toEqual(migrations.map((m) => m.name));
     expect(first.skipped).toEqual([]);
 
-    // 八张业务表就位，且版本表不混进业务 schema。
+    // The eight business tables are in place, and the version table does not mix into the business schema.
     const { rows } = await client.query<{ table_name: string }>(
       `SELECT table_name FROM information_schema.tables
         WHERE table_schema = 'transaction_data' AND table_type = 'BASE TABLE'

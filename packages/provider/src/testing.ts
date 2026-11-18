@@ -1,10 +1,10 @@
 /**
- * 测试替身（评审修正 R-11）。
+ * Test doubles (review fix R-11).
  *
- * "主 Provider 掉线可自愈"这类验收项不能用公网端点确定性复现，必须由
- * **可编程失败的 Provider 替身**驱动。本文件同时提供：
- * - ProgrammableProvider：按脚本返回成功/失败/超时；
- * - createStubFetch：拦截 fetch 调用，供 JsonRpcHttpProvider 走完整传输路径。
+ * Acceptance items like "the primary Provider going down heals itself" cannot be deterministically reproduced with public endpoints; they must be driven by
+ * **programmable-failure Provider doubles**. This file also provides:
+ * - ProgrammableProvider: returns success/failure/timeout by script;
+ * - createStubFetch: intercepts fetch calls, so JsonRpcHttpProvider takes the full transport path.
  */
 import type { ProviderDescriptor, ProviderId, ChainId, NetworkId, ProviderKind } from '@dfr/types';
 
@@ -22,19 +22,19 @@ export interface StubCall {
 }
 
 export interface StubFetchOptions {
-  /** 按 providerId 分组的调用序列；用尽后复用最后一项。 */
+  /** The call sequence grouped by providerId; the last item is reused after exhaustion. */
   behaviors?: Record<string, StubBehavior[]>;
-  /** 按 method 决定应答；与 behaviors 二选一（resolve 优先）。 */
+  /** Decide the response by method; either this or behaviors (resolve wins). */
   resolve?: (call: StubCall & { callIndex: number }) => StubBehavior;
-  /** 每次调用记录，供断言"广播没有被重试"等。 */
+  /** Every call is recorded, for assertions like "broadcast was not retried". */
   onCall?: (call: StubCall) => void;
 }
 
 /**
- * 构造一个可编程的 fetch 实现。
+ * Construct a programmable fetch implementation.
  *
- * `behaviors` 按 providerId 分组；每个数组是该 Provider 的调用序列，
- * 用尽后复用最后一项（便于表达"一直失败"）。
+ * `behaviors` are grouped by providerId; each array is that Provider's call sequence,
+ * reused after exhaustion (handy for expressing "always failing").
  */
 export function createStubFetch(options: StubFetchOptions): typeof fetch {
   const cursors = new Map<string, number>();
@@ -72,7 +72,7 @@ export function createStubFetch(options: StubFetchOptions): typeof fetch {
         throw new TypeError(behavior.message ?? 'network error');
       case 'timeout':
         return await new Promise<Response>((_resolve, reject) => {
-          // 由调用方的 AbortSignal 触发；这里只保证永不主动 resolve。
+          // Triggered by the caller's AbortSignal; here it only guarantees never resolving on its own.
           init?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
         });
       default:
@@ -98,13 +98,13 @@ function jsonResponse(payload: unknown): Response {
   });
 }
 
-/** 约定：stub URL 形如 `https://stub.local/<providerId>`。 */
+/** Convention: a stub URL looks like `https://stub.local/<providerId>`. */
 function providerIdFromUrl(url: string): string {
   const match = /stub\.local\/([^/?#]+)/.exec(url);
   return match?.[1] ?? 'unknown';
 }
 
-/** 构造测试用 ProviderDescriptor。 */
+/** Construct a test ProviderDescriptor. */
 export function stubDescriptor(
   id: string,
   chain: ChainId,

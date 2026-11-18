@@ -1,15 +1,15 @@
 /**
- * DFR API Gateway（DFR-009）。
+ * DFR API Gateway (DFR-009).
  *
- * 处理顺序严格按 gateway-spec 第 3 章：
- *   请求 ID → 鉴权 → 限流 → 配额 → 幂等（写操作）→ 契约校验 → 路由 → Core → 归一化
+ * Processing order strictly follows gateway-spec chapter 3:
+ *   Request ID → authentication → rate limiting → quota → idempotency (write operations) → contract validation → routing → Core → normalization
  *
- * 两条不能颠倒的顺序：
- * - 鉴权先于限流：否则无效凭证可绕过限流；
- * - 幂等先于契约校验：否则重放请求可因结构差异绕过幂等。
+ * Two orderings that must not be swapped:
+ * - Authentication before rate limiting: otherwise invalid credentials could bypass rate limiting;
+ * - Idempotency before contract validation: otherwise replayed requests could bypass idempotency through structural differences.
  *
- * 用 node:http 实现，不引入 Web 框架：M0 只有 5 条只读路由，
- * 少一个依赖就少一份供应链风险。
+ * Implemented with node:http, no Web framework: M0 has only 5 read-only routes,
+ * and one fewer dependency means one less supply-chain risk.
  */
 import { randomBytes } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
@@ -65,82 +65,82 @@ export interface GatewayOptions {
   auth: StaticApiKeyConfig;
   limiter?: TokenBucketLimiter;
   logger?: GatewayLogger;
-  /** 只读路径超时，默认 10s（gateway-spec 第 9 章）。 */
+   /** Read-path timeout, default 10s (gateway-spec chapter 9). */
   readTimeoutMs?: number;
-  /** 请求体上限，默认 256 KiB。 */
+   /** Request body limit, default 256 KiB. */
   maxBodyBytes?: number;
   /**
-   * 是否启用写端点（build / simulate）。
+    * Whether write endpoints (build / simulate) are enabled.
    *
-   * 默认 `false`：M0 部署不提供写路径，即使 Key 的 scope 允许写也会被
-   * `DFR_UNSUPPORTED_CAPABILITY` 拒绝（fail-closed）。`main.ts` 在
-   * `DFR_M1_ALLOW_WRITE=true` 且数据库就绪时传 `true`。
+    * Default `false`: M0 deployments offer no write path, and even a Key whose scope allows writes is rejected with
+    * `DFR_UNSUPPORTED_CAPABILITY` (fail-closed). `main.ts` passes `true` when
+    * `DFR_M1_ALLOW_WRITE=true` and the database is ready.
    */
   allowWrite?: boolean;
   /**
-   * M1 交易引擎（build / simulate 的业务编排）。
+    * M1 transaction engine (business orchestration for build / simulate).
    *
-   * 未装配时写端点返回 `DFR_UNSUPPORTED_CAPABILITY`（422），**不是** 500：
-   * 部署没有交易引擎是配置状态，不是服务故障。`main.ts` 仅在
-   * `DFR_M1_ALLOW_WRITE=true` 且数据库就绪时装配它。
+    * When not assembled, write endpoints return `DFR_UNSUPPORTED_CAPABILITY` (422), **not** 500:
+    * a deployment without a transaction engine is a configuration state, not a service failure. `main.ts` only assembles it when
+    * `DFR_M1_ALLOW_WRITE=true` and the database is ready.
    */
   transactions?: TransactionEngine;
   /**
-   * 低基数 M1 **交易**指标；`/metrics` 需要有效 API Key。
+    * Low-cardinality M1 **transaction** metrics; `/metrics` requires a valid API Key.
    *
-   * 从 D06 起本字段一直叫 `metrics`；在加入 Gateway HTTP 指标（§5.1）后，
-   * 这个含糊的名字会让人分不清是"哪一类指标"，故显式改名为 `transactionMetrics`。
+    * This field has been called `metrics` since D06; after Gateway HTTP metrics (§5.1) were added,
+    * the vague name made it unclear "which kind of metrics" it was, so it was explicitly renamed `transactionMetrics`.
    */
   transactionMetrics?: TransactionMetrics;
-  /** Gateway HTTP 指标（§5.1：请求量/延迟/鉴权失败/限流/幂等/在途）。 */
+    /** Gateway HTTP metrics (§5.1: request volume / latency / auth failures / rate limiting / idempotency / in-flight). */
   gatewayMetrics?: GatewayMetrics;
-  /** Core 指标（§5.2）。 */
+    /** Core metrics (§5.2). */
   coreMetrics?: CoreMetrics;
-  /** Adapter 指标（§5.3）。 */
+    /** Adapter metrics (§5.3). */
   adapterMetrics?: AdapterMetrics;
-  /** Provider 指标（§5.4）。 */
+    /** Provider metrics (§5.4). */
   providerMetrics?: ProviderMetrics;
   /**
-   * 网关级幂等协调器（DFR-M1-C04，TODO-013 起真正装配）。
+    * Gateway-level idempotency coordinator (DFR-M1-C04, actually assembled starting from TODO-013).
    *
-   * 只作用于**广播**：build 的幂等在引擎内（按请求体指纹）。
-   * 未装配时广播仍要求 `Idempotency-Key`，但**没有重放保证** —— 这是显式行为，
-   * 不是静默降级（有测试锁定该差异）。
+    * Only applies to **broadcast**: build idempotency lives inside the engine (by request-body fingerprint).
+    * When not assembled, broadcast still requires `Idempotency-Key`, but with **no replay guarantee** — this is explicit behavior,
+    * not silent degradation (a test locks in this difference).
    */
   idempotency?: GatewayIdempotencyCoordinator;
   /**
-   * SSE 一次性票据存储（M2-C02，ADR-029）。未装配时票据端点返回 404（该部署无 SSE）。
-   * 只在内存中；不落库、不落盘。
+    * SSE single-use ticket store (M2-C02, ADR-029). When not assembled, ticket endpoints return 404 (this deployment has no SSE).
+    * In memory only; never persisted, never written to disk.
    */
   sseTickets?: SseTicketStore;
   /**
-   * 进程内事件总线（M2-C01）。未装配时 `/v1/events/subscribe` 返回 404（该部署无事件流）。
+    * In-process event bus (M2-C01). When not assembled, `/v1/events/subscribe` returns 404 (this deployment has no event stream).
    */
   eventBus?: EventBus;
   /** Max simultaneous SSE streams per Gateway process; defaults to 100. */
   maxSseConnections?: number;
   /**
-   * 可信代理地址列表（ADR-029 第 5 点）。为空时**不信任** `X-Forwarded-For`，
-   * 一律取直连对端地址（否则该头可被伪造绕过 IP 绑定）。
+    * Trusted-proxy address list (ADR-029 point 5). When empty, `X-Forwarded-For` is **not trusted**,
+    * and the direct peer address is always used (otherwise the header could be forged to bypass IP binding).
    */
   trustedProxies?: readonly string[];
   /**
-   * 可选依赖就绪探针（DFR-M1-E02）：例如 M1 事务数据库的 `SELECT 1`。
+    * Optional dependency readiness probe (DFR-M1-E02): e.g. the M1 transaction database's `SELECT 1`.
    *
-   * 返回 resolve = 依赖可用；抛错/返回 rejected = 依赖不可用 → `/readyz` 503。
-   * 错误原文**不会**回显到响应或日志（可能含 DSN 或口令）。
-   * 未配置时按 `not_configured` 处理：M0 只读部署没有事务存储，不因此不可就绪。
+    * Resolving = dependency available; throwing / returning rejected = dependency unavailable → `/readyz` 503.
+    * Raw error text is **never** echoed into responses or logs (it may contain a DSN or password).
+    * When unconfigured, handled as `not_configured`: M0 read-only deployments have no transaction store, and are not unready because of it.
    */
   readyCheck?: () => Promise<void>;
   /**
-   * 可选的**主动**就绪探测（DFR-M1-E02 观测补充，opt-in）。
+    * Optional **active** readiness probing (DFR-M1-E02 observability supplement, opt-in).
    *
-   * 未配置时 `/readyz` 用 `core.readiness()`：只读已有熔断/健康状态，因此冷启动的
-   * Provider（尚未被任何探针观测，health=unknown）会被计为可用。配置后改用
-   * `core.probeReadiness()`：当场探一次，`available` 表示"刚才真的应答了"。
+    * When unconfigured, `/readyz` uses `core.readiness()`: it only reads existing circuit-breaker / health state, so a cold-started
+    * Provider (not yet observed by any probe, health=unknown) counts as available. Once configured, it switches to
+    * `core.probeReadiness()`: probe once on the spot, where `available` means "it really just answered".
    *
-   * 代价是就绪路径会发 RPC，因此只在 `DFR_READY_ACTIVE_PROBE=true` 时装配；
-   * Core 侧有 TTL 缓存、单飞与短超时兜底。
+    * The cost is that the readiness path issues RPC, so it is only assembled when `DFR_READY_ACTIVE_PROBE=true`;
+    * the Core side has a TTL cache, single-flight, and a short-timeout fallback.
    */
   readyProbe?: () => Promise<CoreReadiness>;
 }
@@ -149,7 +149,7 @@ const DEFAULT_READ_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_BODY_BYTES = 256 * 1024;
 const BLOCK_REF_RE = /^(number:[0-9]+|hash:0x[0-9a-fA-F]+|slot:[0-9]+|tag:(latest|safe|finalized))$/;
 
-/** 创建 HTTP 服务；测试可直接传入 fetch 风格调用而不监听端口。 */
+/** Create the HTTP service; tests can pass fetch-style calls directly without listening on a port. */
 export function createGatewayServer(options: GatewayOptions): Server {
   const limiter = options.limiter ?? new TokenBucketLimiter();
   const logger = options.logger ?? silentLogger();
@@ -168,9 +168,9 @@ export function createGatewayServer(options: GatewayOptions): Server {
       activeStreams -= 1;
     };
   };
-  // Per-key SSE 准入登记：进程级上限仍由上面的 reserveStream 管理，这里只补
-  // 单 Key 维度。总上限与 maxStreams 对齐，保证两套机制不会互相矛盾
-  // （reserveStream 先行校验，注册表的总上限永远不会先于它触发）。
+   // Per-key SSE admission registry: the process-level cap is still managed by reserveStream above; this only adds
+   // the per-Key dimension. The total cap aligns with maxStreams, so the two mechanisms never contradict each other
+   // (reserveStream validates first, so the registry's total cap never triggers before it).
   const sseConnections = new SseConnectionRegistry(SSE_MAX_CONNECTIONS_PER_KEY, maxStreams);
 
   return createServer((req, res) => {
@@ -205,25 +205,25 @@ async function handle(
     options.coreMetrics !== undefined ||
     options.adapterMetrics !== undefined ||
     options.providerMetrics !== undefined;
-  // 请求级指标标签：必须在 try 之外声明，才能在 finally 里记录。
-  // `route` 用 handler id（有界枚举）而不是原始 path——后者会把交易哈希变成标签。
+   // Request-level metric labels: must be declared outside try so they can be recorded in finally.
+   // `route` uses the handler id (a bounded enum), not the raw path — the latter would turn transaction hashes into labels.
   let routeLabel = 'unmatched';
   let routeClassLabel: GatewayRouteClass | undefined;
   let chainLabel: string | undefined;
   let inflightEntered = false;
 
   try {
-    // 1. 运维健康检查（不属于公开 API，不需要鉴权，也不进入限流桶）。
+     // 1. Operations health check (not part of the public API; no auth required, and it does not enter the rate-limit bucket).
     if (path === '/healthz' && req.method === 'GET') {
       status = 200;
       return sendJson(res, 200, { status: 'ok', requestId });
     }
 
-    // 1b. 就绪探针（DFR-M1-E02）。与 /healthz 分离：依赖故障时进程存活但不接流量。
-    //     与 /healthz 一样不鉴权（探针不应被 API Key 挡住），但只暴露粗粒度状态，
-    //     不含端点、凭证、高基数字段。
+     // 1b. Readiness probe (DFR-M1-E02). Separate from /healthz: when a dependency fails, the process stays alive but accepts no traffic.
+     //     Like /healthz, unauthenticated (a probe should not be blocked by an API Key), but exposing only coarse-grained state,
+     //     with no endpoints, credentials, or high-cardinality fields.
     if (path === '/readyz' && req.method === 'GET') {
-      // 主动探测（若配置）失败不得让就绪端点 500：视为"探测不可用"，交由下面的判定处理。
+       // A failed active probe (if configured) must not make the readiness endpoint 500: treat it as "probe unavailable" and let the judgment below handle it.
       let readiness: CoreReadiness;
       if (options.readyProbe !== undefined) {
         try {
@@ -240,7 +240,7 @@ async function handle(
           await options.readyCheck();
           stores = 'ok';
         } catch {
-          // 刻意吞掉原文：依赖错误可能包含 DSN/口令。
+           // Deliberately swallow the raw text: dependency errors may contain a DSN/password.
           stores = 'unavailable';
         }
       }
@@ -254,17 +254,17 @@ async function handle(
       });
     }
 
-    // 1.5 SSE 订阅：**先于**标准 header 鉴权处理。
+     // 1.5 SSE subscription: handled **before** standard header authentication.
     //
-    // 原因（ADR-029）：浏览器 `EventSource` 无法设置 header，因此该端点支持
-    // `?ticket=` 票据鉴权。票据本身就是一次性的凭证，走标准鉴权路径会要求
-    // `X-DFR-Key`，把浏览器场景排除掉。票据的消费逻辑在这里完成。
+     // Reason (ADR-029): browser `EventSource` cannot set headers, so this endpoint supports
+     // `?ticket=` ticket authentication. The ticket is itself a single-use credential; the standard auth path would require
+     // `X-DFR-Key`, excluding the browser scenario. Ticket consumption logic completes here.
     if (req.method === 'GET' && path === '/v1/events/subscribe') {
       await handleSubscribe(req, res, url, options, limiter, requestId, reserveStream, sseConnections);
       return;
     }
 
-    // 2. 鉴权（先于限流计数）。
+     // 2. Authentication (before rate-limit counting).
     const authHeader = headerValue(req.headers['x-dfr-key']);
     const auth = verifyApiKey(authHeader, options.auth);
     if (!auth.ok) {
@@ -273,13 +273,13 @@ async function handle(
         requestId,
         message:
           auth.reason === 'missing'
-            ? '缺少 X-DFR-Key 请求头'
-            : 'API Key 无效',
+             ? 'Missing X-DFR-Key request header'
+             : 'Invalid API Key',
       });
     }
 
-    // ApiKeyScope 的 IP 约束必须在任何已鉴权业务端点之前执行。X-Forwarded-For
-    // 的可信边界与 SSE ticket 绑定共用 clientIp：只有直连对端是配置过的可信代理时才采信。
+     // ApiKeyScope's IP constraint must run before any authenticated business endpoint. X-Forwarded-For
+     // shares clientIp with the SSE ticket binding for its trust boundary: it is only trusted when the direct peer is a configured trusted proxy.
     const peerIp = clientIp({
       remoteAddress: req.socket.remoteAddress,
       forwardedFor: headerValue(req.headers['x-forwarded-for']),
@@ -295,11 +295,11 @@ async function handle(
         options.gatewayMetrics?.recordRateLimited('read');
         throw createDfrError('DFR_RATE_LIMITED', {
           requestId,
-          message: '超出速率限制',
+           message: 'Rate limit exceeded',
           details: { retryAfterMs: decision.retryAfterMs },
         });
       }
-      // 任一指标族装配即认为端点可用；全部未装配才 404（保持既有 fail-closed 语义）。
+       // Any assembled metric family means the endpoint is available; 404 only when none are assembled (keeping the existing fail-closed semantics).
       const rendered = [
         options.gatewayMetrics,
         options.transactionMetrics,
@@ -311,27 +311,27 @@ async function handle(
         .map((m) => m.renderPrometheus())
         .join('');
       if (rendered === '' && !hasAnyMetrics) {
-        throw createDfrError('DFR_NOT_FOUND', { requestId, message: '指标端点未启用' });
+         throw createDfrError('DFR_NOT_FOUND', { requestId, message: 'Metrics endpoint is not enabled' });
       }
       status = 200;
       res.statusCode = 200;
       res.setHeader('content-type', 'text/plain; version=0.0.4; charset=utf-8');
-      // 各族指标名互不重叠，Prometheus 文本可直接相连。
+       // Metric names do not overlap across families, so Prometheus text can be concatenated directly.
       res.end(rendered);
       return;
     }
 
-    // 3. 路由匹配。只为拿到路由类（限流桶与写闸门都依赖它），不是"路由到 Core"。
+     // 3. Route matching. Only to obtain the route class (rate-limit buckets and the write gate both depend on it), not "route to Core".
     const route = matchRoute(req.method ?? 'GET', path);
     if (route === null) {
-      throw createDfrError('DFR_NOT_FOUND', { requestId, message: `未知路由 ${path}` });
+       throw createDfrError('DFR_NOT_FOUND', { requestId, message: `Unknown route ${path}` });
     }
     routeLabel = route.handler;
 
-    // M1 部署有持久化依赖时，/readyz=503 不能只是一个观测信号：
-    // 依赖已经不可达就拒绝新的业务请求，避免在 Store 故障期间产生不可恢复的半状态。
-    // healthz/readyz 在上方已提前返回，故进程存活与就绪诊断仍可用；恢复后每次请求重新
-    // 探测，依赖恢复即可自动放行，不需要重启 Gateway。
+     // When an M1 deployment has durable dependencies, /readyz=503 must not be just an observability signal:
+     // when a dependency is already unreachable, reject new business requests to avoid unrecoverable half-states during a Store outage.
+     // healthz/readyz already returned early above, so process liveness and readiness diagnostics stay available; after recovery, each request re-
+     // probes, and traffic is automatically admitted once the dependency recovers — no Gateway restart needed.
     if (options.readyCheck !== undefined) {
       try {
         await options.readyCheck();
@@ -339,17 +339,17 @@ async function handle(
         options.gatewayMetrics?.recordDependencyRejected(route.routeClass);
         throw createDfrError('DFR_PROVIDER_UNAVAILABLE', {
           requestId,
-          message: '事务存储暂不可用，已拒绝业务请求',
+           message: 'Transaction store temporarily unavailable; business request rejected',
         });
       }
     }
 
-    // 4. 限流（按 projectId + keyId + 路由类）。
+     // 4. Rate limiting (by projectId + keyId + route class).
     const routeClass: RouteClass = route.routeClass;
     routeClassLabel = routeClass;
     chainLabel =
       route.handler === 'getChain' ? route.chainId : (url.searchParams.get('chain') ?? undefined);
-    // 在途请求只统计"已匹配路由"的 API 调用：healthz/readyz/metrics 是运维端点，不占业务容量。
+     // In-flight requests only count API calls with a "matched route": healthz/readyz/metrics are operations endpoints and do not consume business capacity.
     options.gatewayMetrics?.changeInflight(routeClass, 1);
     inflightEntered = true;
     const decision = limiter.check(`${auth.projectId}:${auth.keyId}`, routeClass);
@@ -359,25 +359,25 @@ async function handle(
       options.gatewayMetrics?.recordRateLimited(routeClass);
       throw createDfrError('DFR_RATE_LIMITED', {
         requestId,
-        message: '超出速率限制',
+         message: 'Rate limit exceeded',
         details: { retryAfterMs: decision.retryAfterMs },
       });
     }
 
-    // 5. 作用域检查（链 / 能力 / 写权限）。写权限是**两道独立闸门**：
-    //    Key 的 scope（调用方权限）与 Gateway 部署开关（本进程是否服务写路径）。
+     // 5. Scope checks (chain / capability / write permission). Write permission has **two independent gates**:
+     //    the Key's scope (caller permission) and the Gateway deployment switch (whether this process serves the write path).
     if (route.routeClass === 'write') {
       if (auth.scope.allowWrite !== true) {
         throw createDfrError('DFR_PROJECT_SCOPE_DENIED', {
           requestId,
-          message: '该 API Key 未开放写权限',
+           message: 'This API Key does not have write permission',
           details: { routeClass },
         });
       }
       if (options.allowWrite !== true) {
         throw createDfrError('DFR_UNSUPPORTED_CAPABILITY', {
           requestId,
-          message: '本部署未启用写路径（DFR_M1_ALLOW_WRITE 未开启）',
+           message: 'The write path is not enabled on this deployment (DFR_M1_ALLOW_WRITE is not on)',
           details: { capability: route.capability },
         });
       }
@@ -388,14 +388,14 @@ async function handle(
     if (requestedChain !== undefined && !scopeAllows(auth.scope, { chain: requestedChain })) {
       throw createDfrError('DFR_PROJECT_SCOPE_DENIED', {
         requestId,
-        message: `API Key 无权访问链 ${requestedChain}`,
+         message: `API Key is not authorized to access chain ${requestedChain}`,
         chain: requestedChain as ChainId,
       });
     }
     if (route.capability !== undefined && !scopeAllows(auth.scope, { capability: route.capability })) {
       throw createDfrError('DFR_PROJECT_SCOPE_DENIED', {
         requestId,
-        message: `API Key 无权使用能力 ${route.capability}`,
+         message: `API Key is not authorized to use capability ${route.capability}`,
         details: { capability: route.capability },
       });
     }
@@ -405,18 +405,18 @@ async function handle(
       : options.readTimeoutMs ?? DEFAULT_READ_TIMEOUT_MS;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(new Error('gateway-timeout')), timeoutMs);
-    // 票据端点需要签发者身份与客户端 IP（ADR-029 的绑定维度）。
+     // Ticket endpoints need the issuer identity and client IP (ADR-029's binding dimensions).
     const ctx = { requestId, signal: controller.signal, traceId, spanId, apiKeyId: auth.keyId, clientIp: peerIp };
 
     try {
-      // 6. 契约校验：写路由才读 body（只读路由不消费请求流）。
+       // 6. Contract validation: only write routes read the body (read-only routes do not consume the request stream).
       const body =
         route.routeClass === 'write' ||
           route.handler === 'createEventTicket' ||
-          // `POST /v1/logs`（ADR-034）与 `POST /v1/contracts/read`（ADR-035）是读类但带请求体。
+           // `POST /v1/logs` (ADR-034) and `POST /v1/contracts/read` (ADR-035) are read-class but carry a request body.
           route.handler === 'getLogs' ||
           route.handler === 'readContract' ||
-          // `POST /v1/transactions/preflight`（ADR-037 方案 B）：读类（不占 nonce、不落库）但带请求体。
+           // `POST /v1/transactions/preflight` (ADR-037 option B): read-class (no nonce consumed, nothing persisted) but carries a request body.
           route.handler === 'preflightTransaction'
           ? await readJsonBody(req, {
               maxBytes: options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES,
@@ -439,21 +439,21 @@ async function handle(
       for (const chain of assertedChains) {
         if (chain !== undefined && !scopeAllows(auth.scope, { chain })) {
           throw createDfrError('DFR_PROJECT_SCOPE_DENIED', {
-            requestId, message: `API Key 无权访问链 ${chain}`, chain: chain as ChainId,
+             requestId, message: `API Key is not authorized to access chain ${chain}`, chain: chain as ChainId,
           });
         }
       }
       // A chain-restricted key cannot obtain a global event ticket.
       if (route.handler === 'createEventTicket' && auth.scope.chains !== '*' && bodyChain === undefined) {
         throw createDfrError('DFR_PROJECT_SCOPE_DENIED', {
-          requestId, message: '受限 API Key 必须指定授权事件链',
+           requestId, message: 'A restricted API Key must specify an authorized event chain',
         });
       }
 
-      // 7. 路由到 Core / handler。
-      // 用 ALS 把**请求 span** 设为当前 span（observability-spec §4「进程内
-      // AsyncLocalStorage 承载当前 span」）。这样各层 span 发射器（E6）能在不改
-      // 任何端口签名的前提下，把子 span 挂到正确的父上。
+       // 7. Route to Core / handler.
+       // Use ALS to set the **request span** as the current span (observability-spec §4 "in-process
+       // AsyncLocalStorage carries the current span"). This lets each layer's span emitters (E6) attach child spans to the right parent without changing
+       // any port signature.
       const result = await runInSpan({ traceId, spanId }, () =>
         dispatch(
           route,
@@ -468,7 +468,7 @@ async function handle(
         ),
       );
       status = result.status;
-      // 幂等重放等场景需要额外响应头（例如 Idempotency-Replayed）。
+       // Scenarios such as idempotent replays need extra response headers (e.g. Idempotency-Replayed).
       for (const [name, value] of Object.entries(result.headers ?? {})) res.setHeader(name, value);
       return sendJson(res, result.status, result.body);
     } finally {
@@ -477,14 +477,14 @@ async function handle(
   } catch (err) {
     const error = isDfrError(err) ? err : toDfrError(err, { requestId });
     status = error.httpStatus;
-    // 幂等冲突在错误路径上唯一可观测；`replayed` 由 write handler 通过同一出口上报。
+     // Idempotency conflicts are only observable on the error path; `replayed` is reported by the write handler through the same outlet.
     if (error.code === 'DFR_IDEMPOTENCY_CONFLICT') {
       options.gatewayMetrics?.recordIdempotencyOutcome('conflict');
     }
     for (const [k, v] of Object.entries(errorHeaders(error))) res.setHeader(k, v);
     return sendJson(res, error.httpStatus, toErrorResponse(error, path));
   } finally {
-    // 指标先于日志：日志可能因 I/O 阻塞，指标不应被它拖累。
+     // Metrics before logs: logs may block on I/O, and metrics should not be dragged down by them.
     if (inflightEntered && routeClassLabel !== undefined) {
       options.gatewayMetrics?.changeInflight(routeClassLabel, -1);
     }
@@ -508,14 +508,14 @@ async function handle(
 }
 
 /**
- * `GET /v1/events/subscribe`（M2-C03，ADR-029）。
+  * `GET /v1/events/subscribe` (M2-C03, ADR-029).
  *
- * 两条鉴权路径二选一：
- *   1. `?ticket=`：一次性票据（浏览器 `EventSource` 可用）——**消费即失效**，
- *      并校验 apiKeyId / IP / filter 三项绑定；
- *   2. `X-DFR-Key`：服务端/桌面客户端可直接用 header（等价于其它只读端点）。
+  * Two authentication paths, choose one:
+  *   1. `?ticket=`: single-use ticket (usable by browser `EventSource`) — **consumed on use**,
+  *      validating the apiKeyId / IP / filter bindings;
+  *   2. `X-DFR-Key`: server / desktop clients can use the header directly (equivalent to other read-only endpoints).
  *
- * filter 只能来自**票据**（票据已绑定它）；header 路径从 query 构造。
+  * filter may only come from a **ticket** (the ticket has bound it); the header path constructs it from the query.
  */
 async function handleSubscribe(
   req: IncomingMessage,
@@ -529,10 +529,10 @@ async function handleSubscribe(
 ): Promise<void> {
   const bus = options.eventBus;
   if (bus === undefined) {
-    throw createDfrError('DFR_NOT_FOUND', { requestId, message: '本部署未启用事件订阅' });
+     throw createDfrError('DFR_NOT_FOUND', { requestId, message: 'Event subscription is not enabled on this deployment' });
   }
 
-  // 从 query 构造 filter（ticket 路径会用它做绑定校验；header 路径直接用它）。
+   // Construct the filter from the query (the ticket path uses it for binding validation; the header path uses it directly).
   const filter = filterFromQuery(url);
   const ip = clientIp({
     remoteAddress: req.socket.remoteAddress,
@@ -545,10 +545,10 @@ async function handleSubscribe(
   if (ticket !== null) {
     const store = options.sseTickets;
     if (store === undefined) {
-      throw createDfrError('DFR_NOT_FOUND', { requestId, message: '本部署未启用票据鉴权' });
+       throw createDfrError('DFR_NOT_FOUND', { requestId, message: 'Ticket authentication is not enabled on this deployment' });
     }
-    // 若调用方同时带了 header，Key 必须与签发者一致（不能用一个 Key 的权限消费
-    // 另一个 Key 的票据）；纯浏览器场景只有票据，票据即唯一凭证，apiKeyId 传 undefined。
+     // If the caller also carries a header, the Key must match the issuer (one Key's permissions may not consume
+     // another Key's ticket); in pure-browser scenarios there is only a ticket, the ticket is the sole credential, and apiKeyId is passed as undefined.
     const suppliedKey = headerValue(req.headers['x-dfr-key']);
     const headerAuth = verifyApiKey(suppliedKey, options.auth);
     const consumed = store.consume({
@@ -558,7 +558,7 @@ async function handleSubscribe(
       ip,
       filter,
     });
-    // 票据仅代理签发时的 Key 权限；消费时按当前配置复核，覆盖 Key 轮换与范围收窄。
+     // A ticket only proxies the issuing Key's permissions; consumption re-checks against the current configuration, covering Key rotation and scope narrowing.
     const liveKey = consumed.kind === 'ok' && (
       consumed.ticket.apiKeyId === options.auth.keyId ||
       (consumed.ticket.apiKeyId === options.auth.previousKeyId &&
@@ -566,10 +566,10 @@ async function handleSubscribe(
     );
     if (consumed.kind !== 'ok' || !liveKey || (suppliedKey !== undefined && !headerAuth.ok) ||
         !eventFilterScopeAllows(options.auth.scope, filter)) {
-      // 统一 `DFR_INVALID_TICKET`：过期/已用/未找到/绑定不匹配**不区分原因**（避免枚举）。
+       // Unified `DFR_INVALID_TICKET`: expired / used / not found / binding mismatch are **not distinguished by cause** (to avoid enumeration).
       throw createDfrError('DFR_INVALID_TICKET', {
         requestId,
-        message: 'SSE 票据无效或已使用',
+         message: 'SSE ticket is invalid or already used',
       });
     }
     // A ticket can outlive a key revocation or come from a shared ticket
@@ -579,24 +579,24 @@ async function handleSubscribe(
     const previousKey = keyId === options.auth.previousKeyId &&
       options.auth.previousHash !== undefined && options.auth.previousHash !== '';
     if (!currentKey && !previousKey) {
-      throw createDfrError('DFR_INVALID_TICKET', { requestId, message: 'SSE 票据无效或已使用' });
+       throw createDfrError('DFR_INVALID_TICKET', { requestId, message: 'SSE ticket is invalid or already used' });
     }
     assertIpAllowed(options.auth.scope, ip, requestId);
     limiterKey = `${options.auth.projectId}:${consumed.ticket.apiKeyId}`;
     if (options.auth.scope.chains !== '*' &&
         (filter.chain === undefined || !scopeAllows(options.auth.scope, { chain: filter.chain }))) {
       throw createDfrError('DFR_PROJECT_SCOPE_DENIED', {
-        requestId, message: '该 API Key 不允许全链或跨链事件票据',
+         requestId, message: 'This API Key does not allow all-chain or cross-chain event tickets',
       });
     }
   } else {
-    // header 路径：与其它端点一致的完整鉴权。
+     // Header path: full authentication consistent with other endpoints.
     const auth = verifyApiKey(headerValue(req.headers['x-dfr-key']), options.auth);
     if (!auth.ok) {
       options.gatewayMetrics?.recordAuthFailure(auth.reason);
       throw createDfrError('DFR_UNAUTHENTICATED', {
         requestId,
-        message: auth.reason === 'missing' ? '缺少 X-DFR-Key 请求头' : 'API Key 无效',
+         message: auth.reason === 'missing' ? 'Missing X-DFR-Key request header' : 'Invalid API Key',
       });
     }
     assertIpAllowed(auth.scope, ip, requestId);
@@ -604,7 +604,7 @@ async function handleSubscribe(
     if (!eventFilterScopeAllows(auth.scope, filter)) {
       throw createDfrError('DFR_PROJECT_SCOPE_DENIED', {
         requestId,
-        message: 'API Key 无权访问该事件过滤范围',
+         message: 'API Key is not authorized to access this event filter scope',
         ...(filter.chain !== undefined ? { chain: filter.chain as ChainId } : {}),
       });
     }
@@ -618,7 +618,7 @@ async function handleSubscribe(
   if (!decision.allowed) {
     options.gatewayMetrics?.recordRateLimited('stream');
     throw createDfrError('DFR_RATE_LIMITED', {
-      requestId, message: '事件订阅速率超过限制',
+       requestId, message: 'Event subscription rate limit exceeded',
       details: { retryAfterMs: decision.retryAfterMs },
     });
   }
@@ -626,18 +626,18 @@ async function handleSubscribe(
   if (releaseStream === undefined) {
     options.gatewayMetrics?.recordRateLimited('stream');
     throw createDfrError('DFR_RATE_LIMITED', {
-      requestId, message: '事件订阅连接数超过限制',
+       requestId, message: 'Event subscription connection limit exceeded',
       details: { retryAfterMs: 1000 },
     });
   }
-  // 进程级上限之外再卡单 Key 并发：票据与 header 两条路径共用同一个
-  // limiterKey，因此票据不能绕过单 Key 上限。拒绝时先归还进程级槽位。
+   // Beyond the process-level cap, also cap per-Key concurrency: the ticket and header paths share the same
+   // limiterKey, so tickets cannot bypass the per-Key cap. On rejection, return the process-level slot first.
   const releaseKeySlot = sseConnections.acquire(limiterKey);
   if (releaseKeySlot === null) {
     releaseStream();
     options.gatewayMetrics?.recordRateLimited('stream');
     throw createDfrError('DFR_RATE_LIMITED', {
-      requestId, message: '单个 API Key 的事件订阅连接数超过限制',
+       requestId, message: 'Per-API-Key event subscription connection limit exceeded',
       details: { retryAfterMs: 1000 },
     });
   }
@@ -647,33 +647,33 @@ async function handleSubscribe(
   res.once('close', releaseKeySlot);
   res.once('error', releaseKeySlot);
   res.writeHead(200, sseHeaders());
-  // 必须显式 flush：Node 会缓冲响应头直到首次写入，而 SSE 可能在数十秒内没有事件。
-  // 不 flush 的话客户端（以及 `fetch`）会一直等不到 200，表现为"连不上"。
+   // Must explicitly flush: Node buffers response headers until the first write, while SSE may have no events for tens of seconds.
+   // Without a flush, clients (and `fetch`) keep waiting for the 200, which looks like "cannot connect".
   res.flushHeaders();
   const writer = createSseWriter(res);
   const session = new SseSession({ bus, filter, writer });
   res.on('close', () => session.stop());
 }
 
-/** 无 chain 即全局事件范围，只能由全链 Key 订阅。 */
+/** No chain means a global event scope, subscribable only by an all-chain Key. */
 function eventFilterScopeAllows(scope: ApiKeyScope, filter: EventFilter): boolean {
   if (filter.chain === undefined) return scope.chains === '*';
   return scopeAllows(scope, { chain: filter.chain });
 }
 
-/** 空白名单表示不限制；非空名单必须精确匹配可信代理规则计算出的来源地址。 */
+/** An empty allowlist means no restriction; a non-empty allowlist must exactly match the source address computed by the trusted-proxy rules. */
 function assertIpAllowed(scope: ApiKeyScope, ip: string, requestId: RequestId): void {
   const ipAllowlist = scope.ipAllowlist;
   if (ipAllowlist === undefined || ipAllowlist.length === 0 || ipAllowlist.includes(ip)) return;
   throw createDfrError('DFR_IP_NOT_ALLOWED', {
     requestId,
-    message: '该 API Key 不允许此来源地址',
+     message: 'This API Key does not allow this source address',
   });
 }
 
 /**
- * 提取会实际决定链访问的 JSON body 字段，用于在进入 handler / Engine 前执行 scope。
- * 返回 undefined 时由各 handler 的结构校验给出输入错误；这里不复制其领域校验。
+  * Extract the JSON body fields that actually decide chain access, to enforce scope before entering the handler / Engine.
+  * When undefined is returned, each handler's structural validation reports the input error; domain validation is not duplicated here.
  */
 function scopedBodyChain(handler: RouteHandlerId, body: Record<string, unknown> | undefined): string | undefined {
   if (body === undefined) return undefined;
@@ -699,7 +699,7 @@ function nestedString(value: unknown, key: string): string | undefined {
   return typeof candidate === 'string' ? candidate : undefined;
 }
 
-/** 从 query 构造订阅 filter（OpenAPI 的 chain / types / afterCursor）。 */
+/** Build the subscription filter from the query (OpenAPI's chain / types / afterCursor). */
 function filterFromQuery(url: URL): EventFilter {
   const chain = url.searchParams.get('chain');
   const types = url.searchParams.getAll('types');
@@ -737,10 +737,10 @@ async function dispatch(
       return { status: 200, body: { items: core.listChains(), requestId } };
 
     case 'subscribeEvents':
-      // SSE 在 handleSubscribe 中处理（长连接，不走 dispatch）。走到这里说明路由分派有 bug。
+       // SSE is handled in handleSubscribe (a long-lived connection, not via dispatch). Reaching here means the route dispatch has a bug.
       throw createDfrError('DFR_INTERNAL_ERROR', {
         requestId,
-        message: 'subscribeEvents 不应经由 dispatch 处理',
+         message: 'subscribeEvents must not be handled via dispatch',
       });
 
     case 'createEventTicket': {
@@ -748,14 +748,14 @@ async function dispatch(
       if (store === undefined) {
         throw createDfrError('DFR_NOT_FOUND', {
           requestId,
-          message: '本部署未启用事件订阅（无票据存储）',
+           message: 'Event subscription is not enabled on this deployment (no ticket store)',
         });
       }
       const filter = (body?.['filter'] ?? {}) as Record<string, unknown>;
       if (typeof filter !== 'object' || filter === null || Array.isArray(filter)) {
         throw createDfrError('DFR_VALIDATION_FAILED', {
           requestId,
-          message: 'filter 必须是对象',
+           message: 'filter must be an object',
           details: { fields: ['filter'] },
         });
       }
@@ -763,11 +763,11 @@ async function dispatch(
       if (ttlRaw !== undefined && (!Number.isInteger(ttlRaw) || (ttlRaw as number) > SSE_TICKET_MAX_TTL_MS || (ttlRaw as number) < 1)) {
         throw createDfrError('DFR_VALIDATION_FAILED', {
           requestId,
-          message: `ttlMs 必须是 1..${SSE_TICKET_MAX_TTL_MS} 的整数`,
+           message: `ttlMs must be an integer in 1..${SSE_TICKET_MAX_TTL_MS}`,
           details: { fields: ['ttlMs'] },
         });
       }
-      // clientIp 需要 remoteAddress；dispatch 不直接持有 req，改由调用方传入（见下）。
+      // clientIp needs remoteAddress; dispatch does not hold req directly, so the caller passes it in (see below).
       const issued = store.issue({
         projectId,
         apiKeyId: ctx.apiKeyId,
@@ -778,7 +778,7 @@ async function dispatch(
       if (issued === null) {
         throw createDfrError('DFR_RATE_LIMITED', {
           requestId,
-          message: '未消费票据数超出上限',
+           message: 'Unconsumed ticket count exceeds the limit',
         });
       }
       return { status: 201, body: { ticket: issued.ticket, expiresAt: issued.expiresAt, requestId } };
@@ -829,7 +829,7 @@ async function dispatch(
       if (block === null) {
         throw createDfrError('DFR_NOT_FOUND', {
           requestId,
-          message: '区块不存在',
+           message: 'Block does not exist',
           chain: chain as ChainId,
         });
       }
@@ -845,7 +845,7 @@ async function dispatch(
       if (transaction === null) {
         throw createDfrError('DFR_TRANSACTION_NOT_FOUND', {
           requestId,
-          message: '交易不存在或尚不可见',
+           message: 'Transaction does not exist or is not yet visible',
           chain: chain as ChainId,
         });
       }
@@ -912,8 +912,8 @@ async function dispatch(
 }
 
 /**
- * 写 handler 的上下文：把已经穿过全部横切闸门的请求信息收拢成一份。
- * `engine` 未装配 = 本部署未开放写路径。
+  * Write handler context: gathers the request information that has passed through all cross-cutting gates into one place.
+  * `engine` not assembled = this deployment does not expose the write path.
  */
 function writeContext(
   options: GatewayOptions,
@@ -932,7 +932,7 @@ function writeContext(
     ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
     ...(options.transactions !== undefined ? { engine: options.transactions } : {}),
     ...(options.idempotency !== undefined ? { idempotency: options.idempotency } : {}),
-    // 幂等"重放"只有引擎知道（`BuiltTransactionResult.replayed`），由 handler 上报。
+     // Only the engine knows about an idempotent "replay" (`BuiltTransactionResult.replayed`); the handler reports it.
     ...(options.gatewayMetrics !== undefined
       ? {
           onIdempotencyOutcome: (outcome: IdempotencyOutcome) =>
@@ -960,7 +960,7 @@ function requireQuery(url: URL, name: string, requestId: RequestId): string {
   if (value === null || value === '') {
     throw createDfrError('DFR_VALIDATION_FAILED', {
       requestId,
-      message: `缺少必填查询参数 ${name}`,
+       message: `Missing required query parameter ${name}`,
       details: { fields: [name] },
     });
   }
@@ -975,17 +975,17 @@ function parseConsistency(
   if (value === 'best-effort' || value === 'at-block' || value === 'finalized') return value;
   throw createDfrError('DFR_VALIDATION_FAILED', {
     requestId,
-    message: `consistency 取值非法：${value}`,
+     message: `Invalid consistency value: ${value}`,
     details: { fields: ['consistency'] },
   });
 }
 
-/** 带标签的区块引用语法（评审修正 R-20）。 */
+/** Tagged block reference syntax (review fix R-20). */
 export function parseBlockRef(value: string, requestId: RequestId): BlockRef {
   if (!BLOCK_REF_RE.test(value)) {
     throw createDfrError('DFR_VALIDATION_FAILED', {
       requestId,
-      message: 'blockRef 语法非法（期望 number:<uint> | hash:0x… | slot:<uint> | tag:latest|safe|finalized）',
+       message: 'Invalid blockRef syntax (expected number:<uint> | hash:0x… | slot:<uint> | tag:latest|safe|finalized)',
       details: { fields: ['blockRef'] },
     });
   }
@@ -1004,67 +1004,67 @@ export function parseBlockRef(value: string, requestId: RequestId): BlockRef {
   }
 }
 
-/** 解析 `POST /v1/logs` 的请求体（ADR-034）。所有字段校验 fail-closed。 */
+/** Parse the `POST /v1/logs` request body (ADR-034). All field validation is fail-closed. */
 function parseLogsBody(body: Record<string, unknown> | undefined, requestId: RequestId): ContractLogsRequest {
   if (body === undefined) {
-    throw createDfrError('DFR_VALIDATION_FAILED', { requestId, message: '缺少请求体' });
+     throw createDfrError('DFR_VALIDATION_FAILED', { requestId, message: 'Missing request body' });
   }
   const fromBlock = parseBlockRefBody(body['fromBlock'], requestId, 'fromBlock');
   const toBlock = parseBlockRefBody(body['toBlock'], requestId, 'toBlock');
   const req: ContractLogsRequest = { fromBlock, toBlock };
   if (typeof body['address'] === 'string') (req as { address?: string }).address = body['address'];
   else if (body['address'] !== undefined) {
-    throw createDfrError('DFR_VALIDATION_FAILED', { requestId, message: 'address 必须是字符串', details: { fields: ['address'] } });
+     throw createDfrError('DFR_VALIDATION_FAILED', { requestId, message: 'address must be a string', details: { fields: ['address'] } });
   }
   if (body['topics'] !== undefined) {
     if (!Array.isArray(body['topics'])) {
-      throw createDfrError('DFR_VALIDATION_FAILED', { requestId, message: 'topics 必须是数组', details: { fields: ['topics'] } });
+       throw createDfrError('DFR_VALIDATION_FAILED', { requestId, message: 'topics must be an array', details: { fields: ['topics'] } });
     }
     (req as { topics?: unknown }).topics = body['topics'];
   }
   if (body['limit'] !== undefined) {
     if (!Number.isInteger(body['limit']) || (body['limit'] as number) < 1) {
-      throw createDfrError('DFR_VALIDATION_FAILED', { requestId, message: 'limit 必须是正整数', details: { fields: ['limit'] } });
+       throw createDfrError('DFR_VALIDATION_FAILED', { requestId, message: 'limit must be a positive integer', details: { fields: ['limit'] } });
     }
     (req as { limit?: number }).limit = body['limit'] as number;
   }
   return req;
 }
 
-/** 解析 `POST /v1/contracts/read` 的请求体（ADR-035）。 */
+/** Parse the `POST /v1/contracts/read` request body (ADR-035). */
 function parseContractReadBody(body: Record<string, unknown> | undefined, requestId: RequestId): ContractReadRequest {
   if (body === undefined) {
-    throw createDfrError('DFR_VALIDATION_FAILED', { requestId, message: '缺少请求体' });
+     throw createDfrError('DFR_VALIDATION_FAILED', { requestId, message: 'Missing request body' });
   }
   if (typeof body['contract'] !== 'string' || body['contract'] === '') {
-    throw createDfrError('DFR_VALIDATION_FAILED', { requestId, message: 'contract 必填', details: { fields: ['contract'] } });
+     throw createDfrError('DFR_VALIDATION_FAILED', { requestId, message: 'contract is required', details: { fields: ['contract'] } });
   }
   const req: ContractReadRequest = { contract: body['contract'] };
   const withField = req as { data?: string; abi?: unknown; method?: string; args?: unknown };
   if (body['data'] !== undefined) {
-    if (typeof body['data'] !== 'string') throw createDfrError('DFR_VALIDATION_FAILED', { requestId, message: 'data 必须是字符串', details: { fields: ['data'] } });
+     if (typeof body['data'] !== 'string') throw createDfrError('DFR_VALIDATION_FAILED', { requestId, message: 'data must be a string', details: { fields: ['data'] } });
     withField.data = body['data'];
   }
   if (body['abi'] !== undefined) {
-    if (!Array.isArray(body['abi'])) throw createDfrError('DFR_VALIDATION_FAILED', { requestId, message: 'abi 必须是数组', details: { fields: ['abi'] } });
+     if (!Array.isArray(body['abi'])) throw createDfrError('DFR_VALIDATION_FAILED', { requestId, message: 'abi must be an array', details: { fields: ['abi'] } });
     withField.abi = body['abi'];
   }
   if (body['method'] !== undefined) {
-    if (typeof body['method'] !== 'string') throw createDfrError('DFR_VALIDATION_FAILED', { requestId, message: 'method 必须是字符串', details: { fields: ['method'] } });
+     if (typeof body['method'] !== 'string') throw createDfrError('DFR_VALIDATION_FAILED', { requestId, message: 'method must be a string', details: { fields: ['method'] } });
     withField.method = body['method'];
   }
   if (body['args'] !== undefined) {
-    if (!Array.isArray(body['args'])) throw createDfrError('DFR_VALIDATION_FAILED', { requestId, message: 'args 必须是数组', details: { fields: ['args'] } });
+     if (!Array.isArray(body['args'])) throw createDfrError('DFR_VALIDATION_FAILED', { requestId, message: 'args must be an array', details: { fields: ['args'] } });
     withField.args = body['args'];
   }
   return req;
 }
 
-/** 只接受显式的区块号（number）；tag/hash 不能用于日志区间。 */
+/** Only explicit block numbers (number) are accepted; tag/hash cannot be used for log ranges. */
 function parseBlockRefBody(value: unknown, requestId: RequestId, field: string): BlockRef {
   const number = typeof value === 'string' ? value : typeof value === 'number' ? String(value) : undefined;
   if (number === undefined || !/^[0-9]+$/u.test(number)) {
-    throw createDfrError('DFR_VALIDATION_FAILED', { requestId, message: `${field} 必须是十进制区块号字符串`, details: { fields: [field] } });
+     throw createDfrError('DFR_VALIDATION_FAILED', { requestId, message: `${field} must be a decimal block-number string`, details: { fields: [field] } });
   }
   return { kind: 'number', number: number as DecimalUint };
 }
@@ -1087,9 +1087,9 @@ function silentLogger(): GatewayLogger {
 }
 
 /**
- * M0 只读路由的能力常量（保留导出以兼容既有引用）。
+ * Capability constants for M0 read-only routes (kept exported for compatibility with existing references).
  *
- * 完整路由能力清单见 `routes.ts` 的 `ROUTE_CAPABILITIES`（B06 起含写能力）。
+ * The full route capability list is in `routes.ts`'s `ROUTE_CAPABILITIES` (write capabilities included from B06).
  */
 export const M0_ROUTE_CAPABILITIES: readonly CapabilityId[] = [
   'account.balance',

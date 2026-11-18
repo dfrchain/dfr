@@ -1,9 +1,9 @@
-// Gateway HTTP 指标契约测试（observability-spec §5.1/§5.6）。
+// Gateway HTTP metrics contract test (observability-spec §5.1/§5.6).
 //
-// §5.6 把"API success rate"与"API latency"列为需求第 14 章的**最低指标**，
-// 而在本模块之前两者都未实现。这里同时验证：
-//   1. 单元语义（计数器/直方图/gauge、有界标签、路由标签不得是原始 path）；
-//   2. 真实 composition root 接线（一次请求、一次 401、`/metrics` 能看到两族指标）。
+// §5.6 lists "API success rate" and "API latency" as the **minimum metrics** of requirements chapter 14,
+// and neither was implemented before this module. This verifies both:
+//   1. unit semantics (counters / histograms / gauges, bounded labels, route labels must not be the raw path);
+//   2. real composition-root wiring (one request, one 401, `/metrics` exposes both metric families).
 import { describe, expect, it, vi } from 'vitest';
 import { TransactionMetrics } from '@dfr/transaction';
 import type { DfrCore } from '@dfr/core';
@@ -11,7 +11,7 @@ import { GatewayMetrics } from '../src/gateway-metrics.js';
 import { createGatewayServer, hashSecret } from '../src/index.js';
 import { startGateway } from '../src/main.js';
 
-const KEY_ID = 'GwMetKey'; // 恰好 8 位 [A-Za-z0-9]
+const KEY_ID = 'GwMetKey'; // exactly 8 [A-Za-z0-9] characters
 const SECRET = 'gatewayMetricsSecret0123456789ab';
 const PEPPER = 'gw-metrics-pepper';
 
@@ -19,8 +19,8 @@ function metrics(): GatewayMetrics {
   return new GatewayMetrics();
 }
 
-describe('GatewayMetrics 单元语义（§5.1）', () => {
-  it('请求计数与延迟直方图使用有界标签，且标签顺序稳定', () => {
+describe('GatewayMetrics unit semantics (§5.1)', () => {
+  it('request counts and latency histograms use bounded labels, with stable label ordering', () => {
     const m = metrics();
     m.recordRequest({
       route: 'listChains',
@@ -44,9 +44,9 @@ describe('GatewayMetrics 单元语义（§5.1）', () => {
     expect(out).toContain('dfr_gateway_request_duration_seconds_bucket{route="listChains",method="GET",le="+Inf"} 2');
   });
 
-  it('原始 path 作为 route 标签会被折叠为 other（防交易哈希变成标签）', () => {
+  it('a raw path used as the route label is folded to other (so transaction hashes never become labels)', () => {
     const m = metrics();
-    // 模拟"直接把 path 当标签"的错误用法：含 `/` 与 0x 地址。
+    // Simulate the wrong usage of "using the path directly as a label": contains `/` and a 0x address.
     m.recordRequest({
       route: `/v1/transactions/0x${'aa'.repeat(32)}/confirm`,
       method: 'POST',
@@ -59,7 +59,7 @@ describe('GatewayMetrics 单元语义（§5.1）', () => {
     expect(out).toContain('route="other"');
   });
 
-  it('鉴权失败 / 限流 / 幂等结果各自计数', () => {
+  it('auth failures / rate limiting / idempotency outcomes are each counted', () => {
     const m = metrics();
     m.recordAuthFailure('missing');
     m.recordAuthFailure('mismatch');
@@ -78,7 +78,7 @@ describe('GatewayMetrics 单元语义（§5.1）', () => {
     expect(out).toContain('dfr_gateway_idempotency_hits_total{outcome="conflict"} 1');
   });
 
-  it('在途请求 gauge 可增可减，且不会降到负数', () => {
+  it('the in-flight request gauge can rise and fall, and never drops below zero', () => {
     const m = metrics();
     m.changeInflight('read', 1);
     m.changeInflight('read', 1);
@@ -90,13 +90,13 @@ describe('GatewayMetrics 单元语义（§5.1）', () => {
     expect(m.renderPrometheus()).toContain('dfr_gateway_inflight_requests{route_class="read"} 0');
   });
 
-  it('无数据时不渲染任何指标', () => {
+  it('renders no metrics when there is no data', () => {
     expect(metrics().renderPrometheus()).toBe('');
   });
 });
 
-describe('Gateway 指标端到端接线（真实 startGateway）', () => {
-  it('成功请求与鉴权失败都被计数，且 /metrics 同时暴露 Gateway 与交易指标族', async () => {
+describe('Gateway metrics end-to-end wiring (real startGateway)', () => {
+  it('successful requests and auth failures are both counted, and /metrics exposes both Gateway and transaction metric families', async () => {
     const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     let app: Awaited<ReturnType<typeof startGateway>> | undefined;
@@ -110,15 +110,15 @@ describe('Gateway 指标端到端接线（真实 startGateway）', () => {
       const base = `http://127.0.0.1:${app.port}`;
       const key = `dfr_${KEY_ID}_${SECRET}`;
 
-      // 成功请求（M0 无链，返回空列表）。
+      // Successful request (M0 has no chains, returns an empty list).
       const ok = await fetch(`${base}/v1/chains`, { headers: { 'x-dfr-key': key } });
       expect(ok.status).toBe(200);
 
-      // 鉴权失败：无 Key。
+      // Auth failure: no Key.
       const unauth = await fetch(`${base}/v1/chains`);
       expect(unauth.status).toBe(401);
 
-      // 未知路由：route 标签应为 unmatched（而不是回显 path）。
+      // Unknown route: the route label should be unmatched (not an echoed path).
       const notFound = await fetch(`${base}/v1/nope`, { headers: { 'x-dfr-key': key } });
       expect(notFound.status).toBe(404);
 
@@ -132,10 +132,10 @@ describe('Gateway 指标端到端接线（真实 startGateway）', () => {
       expect(text).toContain('route="unmatched",method="GET",status_code="404"');
       expect(text).toContain('dfr_gateway_auth_failures_total{reason_code="missing"} 1');
       expect(text).toContain('dfr_gateway_request_duration_seconds_count');
-      // 回显 path 会泄漏路由细节与（更糟的）路径参数，必须不出现。
+      // Echoing the path would leak route details and (worse) path parameters, and must not appear.
       expect(text).not.toContain('/v1/nope');
       expect(text).not.toContain('path=');
-      // 交易指标族此时无数据（M0 不走事务引擎），但指标名不应因此报错。
+      // The transaction metric family has no data at this point (M0 does not go through the transaction engine), but metric names must not error because of it.
       expect(text).not.toContain('dfr_transaction_stage_total');
     } finally {
       await app?.close();
@@ -144,7 +144,7 @@ describe('Gateway 指标端到端接线（真实 startGateway）', () => {
     }
   }, 20_000);
 
-  it('/metrics 在需要鉴权，且无 Key 时返回 401（不泄漏指标）', async () => {
+  it('/metrics requires auth, and returns 401 without a Key (no metrics leaked)', async () => {
     const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     let app: Awaited<ReturnType<typeof startGateway>> | undefined;
@@ -167,8 +167,8 @@ describe('Gateway 指标端到端接线（真实 startGateway）', () => {
   }, 20_000);
 });
 
-describe('/metrics 两族指标拼接', () => {
-  it('依赖故障拒绝业务请求后，/metrics 暴露专用计数器', async () => {
+describe('/metrics two-family metric concatenation', () => {
+  it('after a dependency failure rejects business requests, /metrics exposes a dedicated counter', async () => {
     const gatewayMetrics = new GatewayMetrics();
     const server = createGatewayServer({
       core: {
@@ -193,8 +193,8 @@ describe('/metrics 两族指标拼接', () => {
     }
   });
 
-  it('同时装配 Gateway 与交易指标时，两类都以 Prometheus 文本暴露', async () => {
-    // 这是本模块新增的核心拼接逻辑：两族指标名不重叠，文本可直接相连。
+  it('when both Gateway and transaction metrics are assembled, both are exposed as Prometheus text', async () => {
+    // This is the core concatenation logic added by this module: the two families' metric names do not overlap, so the text can be joined directly.
     const gatewayMetrics = new GatewayMetrics();
     gatewayMetrics.recordRequest({ route: 'listChains', method: 'GET', statusCode: 200, durationSeconds: 0.01 });
     const transactionMetrics = new TransactionMetrics();
@@ -227,7 +227,7 @@ describe('/metrics 两族指标拼接', () => {
       const text = await response.text();
       expect(text).toContain('dfr_gateway_requests_total');
       expect(text).toContain('dfr_transaction_stage_total');
-      // 拼接不得破坏文本格式：每个非空行要么是注释/HELP/TYPE，要么是样本。
+      // Concatenation must not break the text format: every non-empty line is either a comment/HELP/TYPE or a sample.
       for (const line of text.trimEnd().split('\n')) {
         expect(line.length).toBeGreaterThan(0);
       }
@@ -236,7 +236,7 @@ describe('/metrics 两族指标拼接', () => {
     }
   }, 20_000);
 
-  it('两类指标都未装配时 /metrics 返回 404（保持既有 fail-closed 语义）', async () => {
+  it('when neither metric family is assembled, /metrics returns 404 (keeping the existing fail-closed semantics)', async () => {
     const server = createGatewayServer({
       core: {
         listChains: () => [],

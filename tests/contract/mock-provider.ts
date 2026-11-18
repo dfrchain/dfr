@@ -1,8 +1,9 @@
 /**
- * 契约测试用的 mock ProviderRouter。
+ * mock ProviderRouter for contract tests.
  *
- * 评审修正 R-08：Adapter 契约测试是 **M0 交付物**，必须用 mock Provider 离线运行，
- * 不依赖公网端点。M2 的 Solana Adapter 必须通过**同一套**测试，不允许为它改测试。
+ * Review fix R-08: Adapter contract tests are an **M0 deliverable** and must run offline against a mock Provider,
+ * without depending on any public endpoint. The M2 Solana Adapter must pass the **same** tests; the tests may not
+ * be changed for it.
  */
 import { createDfrError } from '@dfr/errors';
 import type {
@@ -20,10 +21,11 @@ export interface MockRouterOptions {
   chain: ChainId;
   handlers: Record<string, Handler>;
   /**
-   * 记录调用顺序，供断言"未声明的能力没有被静默降级"。
+   * Records call order, for asserting that an "undeclared capability was not silently downgraded".
    *
-   * 第二个参数是完整调用，供广播类断言"标记为 non-idempotent-write 且只调用一次"；
-   * 只关心方法名的既有调用方可以忽略它（TS 允许少参数回调）。
+   * The second parameter is the full call, for broadcast assertions that it is "marked non-idempotent-write and
+   * called exactly once"; existing callers that only care about the method name can ignore it
+   * (TS allows callbacks with fewer parameters).
    */
   onCall?: (method: string, call: ProviderCall) => void;
 }
@@ -39,7 +41,7 @@ export function createMockProviderRouter(options: MockRouterOptions): ProviderRo
       if (handler === undefined) {
         throw createDfrError('DFR_PROVIDER_UNAVAILABLE', {
           requestId: 'req_01J8Z6W3Q2K9M4ABCDEFGHJKMN' as never,
-          message: `mock 未实现方法 ${call.method}`,
+          message: `mock has not implemented method ${call.method}`,
           chain: options.chain,
         });
       }

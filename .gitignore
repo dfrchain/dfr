@@ -7,15 +7,15 @@ dist/
 apps/docs/public-dist/
 build/
 out/
-# 生成的 SBOM 属构建产物（可由 scripts/image-supply-chain.sh 复现），不入库。
+# Generated SBOMs are build artifacts (reproducible via scripts/image-supply-chain.sh); do not commit them.
 infrastructure/docker/sbom/
 *.tsbuildinfo
 coverage/
-# 探针产物（log-volume / read-latency 等）：可由对应 `pnpm probe:*` 复现，不入库。
+# Probe artifacts (log-volume / read-latency, etc.): reproducible via the matching `pnpm probe:*`; do not commit them.
 artifacts/
 
 # ---- Secrets (SECURITY CRITICAL) ----
-# 任何形式的密钥文件都不得进入版本库（见 docs/adr/ADR-007-signing-model.md）
+# No key file of any form may enter the repository (see docs/adr/ADR-007-signing-model.md)
 .env
 .env.*
 !.env.example
@@ -57,6 +57,6 @@ tmp/
 .turbo/
 
 # ---- Local registry overrides ----
-# 本地 Provider 凭证只存在于 .env（600），绝不入库
+# Local Provider credentials live only in .env (600); never commit them
 packages/registry/config/local.*.yaml
 coverage-check-verify/

@@ -1,11 +1,11 @@
 /**
- * Provider 健康与延迟窗口（见 docs/architecture/provider-spec-v0.1.md 第 4–5 章）。
+ * Provider health and latency window (see docs/architecture/provider-spec-v0.1.md, chapters 4–5).
  *
- * 只使用滑动窗口，不允许"上次成功就永远优先"的粘滞策略。
+ * Uses only a sliding window; a sticky policy like "last success wins forever" is not allowed.
  */
 import type { ProviderHealth, ProviderStatus } from '@dfr/types';
 
-/** 滑动窗口容量。 */
+/** Sliding-window capacity. */
 const WINDOW_SIZE = 100;
 
 export class HealthTracker {
@@ -91,7 +91,7 @@ export class HealthTracker {
     return health;
   }
 
-  /** 健康检查周期：healthy 60s / degraded 15s / unhealthy 5s（指数退避上限 60s）。 */
+  /** Health-check period: healthy 60s / degraded 15s / unhealthy 5s (exponential backoff capped at 60s). */
   probeIntervalMs(): number {
     if (this.status === 'healthy') return 60_000;
     if (this.status === 'degraded') return 15_000;
@@ -99,7 +99,7 @@ export class HealthTracker {
     return Math.min(60_000, base * Math.max(1, this.consecutiveFailures));
   }
 
-  /** 距下次允许探测的剩余毫秒数；<=0 表示可以探测。 */
+  /** Milliseconds until the next probe is allowed; <=0 means a probe may run. */
   msUntilProbe(now: number): number {
     return Math.max(this.lastCheckedAtMs + this.probeIntervalMs() - now, 0);
   }

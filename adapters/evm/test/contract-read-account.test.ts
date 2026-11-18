@@ -1,5 +1,5 @@
 /**
- * EVM Adapter `readContract`（ADR-035）与 `getAccount`（ADR-036）单元测试。
+ * EVM Adapter `readContract` (ADR-035) and `getAccount` (ADR-036) unit tests.
  */
 import { describe, expect, it } from 'vitest';
 import { EvmAdapter } from '../src/adapter.js';
@@ -30,30 +30,30 @@ function ctxWith(handlers: Record<string, unknown>, onCall?: (m: string, params:
 // balanceOf(address) returns (uint256)
 const ABI = ['function balanceOf(address) view returns (uint256)'];
 
-describe('EVM Adapter readContract（ADR-035）', () => {
+describe('EVM Adapter readContract (ADR-035)', () => {
   const adapter = new EvmAdapter({ chain });
 
-  it('声明 contract.read；abi+method 路径编码并解码返回', async () => {
+  it('declares contract.read; the abi+method path encodes and returns the decoded result', async () => {
     expect(adapter.capabilities().capabilities).toContain('contract.read');
     const calls: Array<{ m: string; params: readonly unknown[] }> = [];
     // balanceOf → uint256 = 42
-    // uint256 = 42 → 32 字节（64 hex），即 62 个 0 + 2a
+    // uint256 = 42 → 32 bytes (64 hex), i.e. 62 zeros + 2a
     const ctx = ctxWith(
       { eth_call: () => `0x${'0'.repeat(62)}2a` },
       (m, params) => calls.push({ m, params }),
     );
     const result = await adapter.readContract(ctx, { chain: CHAIN, contract: ADDRESS, abi: ABI, method: 'balanceOf', args: [ADDRESS] });
-    // bigint 被归一化为十进制字符串（HTTP/JSON 安全，符合禁 number 契约）。
+    // bigint is normalized to a decimal string (HTTP/JSON-safe, per the no-number rule).
     expect(result.decoded).toBe('42');
     expect(result.data).toBe(`0x${'0'.repeat(62)}2a`);
     const call = calls.find((c) => c.m === 'eth_call')!;
     const param = (call.params[0]) as { to: string; data: string };
     expect(param.to).toBe(ADDRESS);
-    // balanceOf 选择器 0x70a08231
+    // balanceOf selector 0x70a08231
     expect(param.data.startsWith('0x70a08231')).toBe(true);
   });
 
-  it('data 路径：直接调用并返回原始 hex（不解码）', async () => {
+  it('data path: calls directly and returns the raw hex (no decoding)', async () => {
     const calls: string[] = [];
     const ctx = ctxWith({ eth_call: () => '0xabc' }, (m) => calls.push(m));
     const result = await adapter.readContract(ctx, { chain: CHAIN, contract: ADDRESS, data: '0xdeadbeef' });
@@ -62,19 +62,19 @@ describe('EVM Adapter readContract（ADR-035）', () => {
     expect(calls).toContain('eth_call');
   });
 
-  it('data 与 abi 同时给出 → DFR_VALIDATION_FAILED（不猜）', async () => {
+  it('data and abi given together → DFR_VALIDATION_FAILED (no guessing)', async () => {
     const ctx = ctxWith({ eth_call: () => '0x' });
     await expect(
       adapter.readContract(ctx, { chain: CHAIN, contract: ADDRESS, data: '0xdeadbeef', abi: ABI, method: 'balanceOf' }),
     ).rejects.toMatchObject({ code: 'DFR_VALIDATION_FAILED' });
   });
 
-  it('两者都不给 → DFR_VALIDATION_FAILED', async () => {
+  it('neither given → DFR_VALIDATION_FAILED', async () => {
     const ctx = ctxWith({ eth_call: () => '0x' });
     await expect(adapter.readContract(ctx, { chain: CHAIN, contract: ADDRESS })).rejects.toMatchObject({ code: 'DFR_VALIDATION_FAILED' });
   });
 
-  it('ABI 里没有该方法 → DFR_VALIDATION_FAILED（不发出 eth_call）', async () => {
+  it('method missing from the ABI → DFR_VALIDATION_FAILED (no eth_call sent)', async () => {
     const calls: string[] = [];
     const ctx = ctxWith({ eth_call: () => '0x' }, (m) => calls.push(m));
     await expect(
@@ -84,10 +84,10 @@ describe('EVM Adapter readContract（ADR-035）', () => {
   });
 });
 
-describe('EVM Adapter getAccount（ADR-036）', () => {
+describe('EVM Adapter getAccount (ADR-036)', () => {
   const adapter = new EvmAdapter({ chain });
 
-  it('code 非空 → kind=contract，exists=true，返回 nonce', async () => {
+  it('non-empty code → kind=contract, exists=true, returns the nonce', async () => {
     expect(adapter.capabilities().capabilities).toContain('account.code');
     const ctx = ctxWith({ eth_getCode: () => '0x60806040', eth_getTransactionCount: () => '0x0', eth_getBalance: () => '0x0' });
     const account = await adapter.getAccount(ctx, { chain: CHAIN, address: ADDRESS });
@@ -96,14 +96,14 @@ describe('EVM Adapter getAccount（ADR-036）', () => {
     expect(account.nonce).toBe('0');
   });
 
-  it('code 为空、nonce=0、余额=0 → kind=externally-owned，exists=false（启发式）', async () => {
+  it('empty code, nonce=0, balance=0 → kind=externally-owned, exists=false (heuristic)', async () => {
     const ctx = ctxWith({ eth_getCode: () => '0x', eth_getTransactionCount: () => '0x0', eth_getBalance: () => '0x0' });
     const account = await adapter.getAccount(ctx, { chain: CHAIN, address: ADDRESS });
     expect(account.kind).toBe('externally-owned');
     expect(account.exists).toBe(false);
   });
 
-  it('code 为空但有余额 → EOA 且 exists=true', async () => {
+  it('empty code but non-zero balance → EOA with exists=true', async () => {
     const ctx = ctxWith({ eth_getCode: () => '0x', eth_getTransactionCount: () => '0x0', eth_getBalance: () => '0x2a' });
     const account = await adapter.getAccount(ctx, { chain: CHAIN, address: ADDRESS });
     expect(account.kind).toBe('externally-owned');

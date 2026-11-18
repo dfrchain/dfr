@@ -105,7 +105,7 @@ function harness(options: {
 }
 
 describe('ReorgReconciler', () => {
-  it('canonical hash 改变时以 CAS 回退 included→pending 并发布 chain.reorg', async () => {
+  it('when the canonical hash changes, roll back included→pending with CAS and publish chain.reorg', async () => {
     const h = harness();
     await expect(h.reconciler.run({ limit: 10 })).resolves.toBe(1);
     expect(h.transitions).toHaveLength(1);
@@ -131,21 +131,21 @@ describe('ReorgReconciler', () => {
     });
   });
 
-  it('canonical hash 一致时不改状态也不发事件', async () => {
+  it('when the canonical hash agrees, change no state and emit no event', async () => {
     const h = harness({ canonicalHash: record.canonicalBlockHash! });
     await expect(h.reconciler.run({ limit: 10 })).resolves.toBe(0);
     expect(h.transitions).toHaveLength(0);
     expect(h.events).toHaveLength(0);
   });
 
-  it('canonical 区块暂时不可读时保持状态，稍后重试', async () => {
+  it('when the canonical block is temporarily unreadable, keep the state and retry later', async () => {
     const h = harness({ canonicalHash: null });
     await expect(h.reconciler.run({ limit: 10 })).resolves.toBe(0);
     expect(h.current.status).toBe('included');
     expect(h.events).toHaveLength(0);
   });
 
-  it('其他 owner 持有 tracker lease 时不查区块、不迁移、不发事件', async () => {
+  it('when another owner holds the tracker lease, do not query blocks, migrate, or emit events', async () => {
     const h = harness({ held: true });
     await expect(h.reconciler.run({ limit: 10 })).resolves.toBe(0);
     expect(h.observes).toBe(0);
@@ -153,7 +153,7 @@ describe('ReorgReconciler', () => {
     expect(h.events).toHaveLength(0);
   });
 
-  it('缺少历史 canonical hash 时不猜测、不查链、不回退', async () => {
+  it('with no historical canonical hash, do not guess, query the chain, or roll back', async () => {
     const { canonicalBlockHash: omittedAnchor, ...withoutAnchor } = record;
     void omittedAnchor;
     const h = harness({ current: withoutAnchor });
@@ -163,7 +163,7 @@ describe('ReorgReconciler', () => {
     expect(h.events).toHaveLength(0);
   });
 
-  it('续租丢失后立即停止，不观测或写入', async () => {
+  it('stop immediately after losing the renewal lease; do not observe or write', async () => {
     const h = harness({ leaseLost: true });
     await expect(h.reconciler.run({ limit: 10 })).resolves.toBe(0);
     expect(h.observes).toBe(0);
@@ -171,14 +171,14 @@ describe('ReorgReconciler', () => {
     expect(h.events).toHaveLength(0);
   });
 
-  it('状态 CAS 冲突时丢弃旧观测，不发重组事件', async () => {
+  it('on a state CAS conflict, discard the stale observation and emit no reorg event', async () => {
     const h = harness({ casConflict: true });
     await expect(h.reconciler.run({ limit: 10 })).resolves.toBe(0);
     expect(h.transitions).toHaveLength(1);
     expect(h.events).toHaveLength(0);
   });
 
-  it('不扫描 confirmed 或 finalized 记录', async () => {
+  it('do not scan confirmed or finalized records', async () => {
     const h = harness({ current: { ...record, status: 'finalized' } });
     await expect(h.reconciler.run({ limit: 10 })).resolves.toBe(0);
     expect(h.observes).toBe(0);

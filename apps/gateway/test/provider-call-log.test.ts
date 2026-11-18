@@ -1,8 +1,8 @@
-// Provider 调用结构化日志契约测试（DFR-M1-E02 观测补充）。
+// Provider call structured-log contract test (DFR-M1-E02 observability supplement).
 //
-// 这是**脱敏护栏**测试：它不关心日志好不好看，只关心"哪些字段允许进入生产日志"。
-// 一旦 `@dfr/provider` 的 `ProviderCallRecord` 新增字段而没人把它加入白名单或排除列表，
-// 本测试即失败，强制人工判断该字段是否可入日志。
+// This is a **redaction guardrail** test: it does not care whether logs look nice, only "which fields may enter production logs".
+// Once `@dfr/provider`'s `ProviderCallRecord` gains a field that nobody adds to the allowlist or exclusion list,
+// this test fails, forcing a human to judge whether the field may enter logs.
 import { createServer } from 'node:http';
 import { describe, expect, it, vi } from 'vitest';
 import type { ProviderCallRecord } from '@dfr/provider';
@@ -33,8 +33,8 @@ const RECORD: ProviderCallRecord = {
   failover: false,
 };
 
-describe('Provider 调用结构化日志（DFR-M1-E02）', () => {
-  it('字段名符合 observability-spec 第 3 章的统一 snake_case 命名', () => {
+describe('Provider call structured logging (DFR-M1-E02)', () => {
+  it('field names follow the unified snake_case naming in observability-spec chapter 3', () => {
     const fields = providerCallLogFields(RECORD);
     expect(fields['request_id']).toBe(RECORD.requestId);
     expect(fields['trace_id']).toBe(RECORD.traceId);
@@ -52,7 +52,7 @@ describe('Provider 调用结构化日志（DFR-M1-E02）', () => {
     expect(fields['level']).toBe('info');
   });
 
-  it('每个记录字段都必须被显式归类为"可入日志"或"有意排除"（新增字段会让本测试失败）', () => {
+  it('every record field must be explicitly classified as "loggable" or "deliberately excluded" (a new field fails this test)', () => {
     const allowlisted = new Set(Object.keys(PROVIDER_CALL_LOG_FIELDS));
     const excluded = new Set<string>(PROVIDER_CALL_LOG_EXCLUDED);
     const unclassified = Object.keys(RECORD).filter(
@@ -60,11 +60,11 @@ describe('Provider 调用结构化日志（DFR-M1-E02）', () => {
     );
     expect(
       unclassified,
-      'ProviderCallRecord 新增了未归类字段：请判断它是否可写日志，并更新白名单或排除列表',
+      'ProviderCallRecord has an unclassified field: judge whether it may be logged, and update the allowlist or exclusion list',
     ).toEqual([]);
   });
 
-  it('失败调用以 warn 记录，并携带稳定错误码', () => {
+  it('failed calls are recorded as warn, with a stable error code', () => {
     const fields = providerCallLogFields({
       ...RECORD,
       status: 'error',
@@ -78,8 +78,8 @@ describe('Provider 调用结构化日志（DFR-M1-E02）', () => {
     expect(fields['failover']).toBe(true);
   });
 
-  it('非白名单字段（端点 / 凭证 / 请求体）绝不进入日志', () => {
-    // 模拟"未来 ProviderCallRecord 被加入敏感字段"的最坏情况：运行时确实带了这些键。
+  it('non-allowlisted fields (endpoints / credentials / request bodies) never enter logs', () => {
+    // Simulate the worst case of "a sensitive field is added to ProviderCallRecord in the future": the runtime really carries those keys.
     const polluted = {
       ...RECORD,
       endpoint: 'https://rpc.example.invalid/v3?apikey=SUPERSECRET',
@@ -97,14 +97,14 @@ describe('Provider 调用结构化日志（DFR-M1-E02）', () => {
     expect(fields).not.toHaveProperty('request_body');
   });
 
-  it('日志出口不抛错：观测失败不得影响被观测的调用路径', () => {
+  it('the log outlet does not throw: observability failures must not affect the observed call path', () => {
     const logger = createProviderCallLogger(() => {
       throw new Error('stdout closed');
     });
     expect(() => logger(RECORD)).not.toThrow();
   });
 
-  it('createProviderCallLogger 输出单行 JSON（便于日志采集按行解析）', () => {
+  it('createProviderCallLogger outputs single-line JSON (so log collectors can parse line by line)', () => {
     const write = vi.fn();
     createProviderCallLogger(write)(RECORD);
     expect(write).toHaveBeenCalledTimes(1);
@@ -114,9 +114,9 @@ describe('Provider 调用结构化日志（DFR-M1-E02）', () => {
     expect(JSON.parse(line)).toMatchObject({ msg: 'provider call', provider_id: RECORD.providerId });
   });
 
-  it('真实 startGateway 装配 onProviderCall：一次链上查询就会写出脱敏调用日志', async () => {
-    // 端到端接线验证：本地起一个最小 JSON-RPC 端点，让 base-sepolia 的 block.read
-    // 真正走到 Provider，断言 composition root 把调用记录写成了结构化日志。
+  it('real startGateway wires onProviderCall: one on-chain query writes a redacted call log', async () => {
+    // End-to-end wiring check: start a local minimal JSON-RPC endpoint and let base-sepolia's block.read
+    // really reach the Provider, asserting that the composition root wrote the call record as a structured log.
     const rpcServer = createServer((req, res) => {
       let body = '';
       req.on('data', (chunk: Buffer) => {
@@ -141,8 +141,8 @@ describe('Provider 调用结构化日志（DFR-M1-E02）', () => {
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     let app: Awaited<ReturnType<typeof startGateway>> | undefined;
     try {
-      // base-sepolia 是 M1 链，必须开 M1 才会启用（否则 /v1/chains/base-sepolia 为 404）。
-      // 持久化用最小假替身：本用例只关心 Provider 调用日志，不关心交易存储。
+      // base-sepolia is an M1 chain and is only enabled when M1 is on (otherwise /v1/chains/base-sepolia is 404).
+      // Persistence uses a minimal fake stand-in: this case only cares about Provider call logs, not transaction storage.
       app = await startGateway(
         {
           DFR_M0_API_KEY_ID: 'LogKey01',
@@ -185,7 +185,7 @@ describe('Provider 调用结构化日志（DFR-M1-E02）', () => {
       expect(record['provider_id']).toBe('base-sepolia-primary');
       expect(record['method']).toBeDefined();
       expect(record['latency_ms']).toBeTypeOf('number');
-      // 脱敏：即使端点带凭证，日志也只能出现逻辑 Provider ID，不出现 URL。
+      // Redaction: even when the endpoint carries credentials, logs may only show the logical Provider ID, never a URL.
       expect(JSON.stringify(record)).not.toContain('127.0.0.1');
     } finally {
       await app?.close();

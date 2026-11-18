@@ -1,14 +1,14 @@
 /**
- * M4 两腿最终性只读快照（Base Sepolia / Arbitrum Sepolia）。
+ * M4 two-leg finality read-only snapshot (Base Sepolia / Arbitrum Sepolia).
  *
- * 默认跳过；显式开启（只读，不需要资金/私钥）：
+ * Skipped by default; enable explicitly (read-only, no funds/private keys needed):
  *   DFR_RUN_TESTNET=1 \
  *   DFR_PROVIDER_BASE_SEPOLIA_PRIMARY_URL=https://sepolia.base.org \
  *   DFR_PROVIDER_ARBITRUM_SEPOLIA_PRIMARY_URL=https://sepolia-rollup.arbitrum.io/rpc \
  *   pnpm vitest run tests/integration/l2-finality.test.ts
  *
- * 这锁定"chains.yaml 里 checkpoint/finalizedTag 的声明在真实链上成立"，
- * 与 docs/reviews/2026-10-06-base-sepolia-finality-evidence.md 的结论对应。
+ * This pins down that "the checkpoint/finalizedTag declarations in chains.yaml hold on the real chains",
+ * matching the conclusions in docs/reviews/2026-10-06-base-sepolia-finality-evidence.md.
  */
 import { describe, expect, it } from 'vitest';
 import { ChainRegistry } from '@dfr/registry';
@@ -35,7 +35,7 @@ async function rpc(url: string, method: string, params: readonly unknown[]): Pro
   return json.result;
 }
 
-/** registry 上该链的最终性声明必须与真实链行为一致。 */
+/** The chain's finality declaration in the registry must match real-chain behavior. */
 function registry() {
   return ChainRegistry.load({
     env: {
@@ -48,20 +48,20 @@ function registry() {
   });
 }
 
-describe.skipIf(!ENABLED)('M4 L2 两腿最终性快照（只读）', () => {
+describe.skipIf(!ENABLED)('M4 L2 two-leg finality snapshot (read-only)', () => {
   for (const leg of LEGS) {
-    it(`${leg.chain}：finality 声明为 checkpoint/finalizedTag，真实链上 finalized 可用`, async () => {
-      // 1) 注册表声明。
+    it(`${leg.chain}: finality declared as checkpoint/finalizedTag, finalized is available on the real chain`, async () => {
+      // 1) Registry declaration.
       const entry = registry().listEntries().find((e) => e.id === leg.chain);
-      expect(entry, `${leg.chain} 未注册`).toBeDefined();
+      expect(entry, `${leg.chain} not registered`).toBeDefined();
       expect(entry!.finality).toEqual({ kind: 'checkpoint', finalizedTag: true });
       expect(entry!.finalityStatus).toBe('verified');
 
-      // 2) 真实链：chainId 与注册表一致。
+      // 2) Real chain: chainId matches the registry.
       const chainIdHex = (await rpc(leg.url, 'eth_chainId', [])) as string;
       expect(Number.parseInt(chainIdHex, 16)).toBe(leg.expectedChainId);
 
-      // 3) 真实链：finalized/safe/latest 三方可得，且严格有序（checkpoint 语义）。
+      // 3) Real chain: finalized/safe/latest are all available and strictly ordered (checkpoint semantics).
       const [latest, safe, finalized] = await Promise.all([
         rpc(leg.url, 'eth_getBlockByNumber', ['latest', false]) as Promise<{ number: string }>,
         rpc(leg.url, 'eth_getBlockByNumber', ['safe', false]) as Promise<{ number: string }>,
@@ -71,7 +71,7 @@ describe.skipIf(!ENABLED)('M4 L2 两腿最终性快照（只读）', () => {
       expect(n(finalized)).toBeLessThanOrEqual(n(safe));
       expect(n(safe)).toBeLessThanOrEqual(n(latest));
 
-      // 4) finalized 复查不回退（单调）。
+      // 4) finalized does not regress on re-check (monotonic).
       const again = (await rpc(leg.url, 'eth_getBlockByNumber', ['finalized', false])) as { number: string };
       expect(n(again)).toBeGreaterThanOrEqual(n(finalized));
     }, 30_000);

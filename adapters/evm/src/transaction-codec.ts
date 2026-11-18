@@ -1,30 +1,30 @@
 /**
- * EVM 交易编解码纯函数（DFR-M1-B01）。
+ * EVM transaction codec pure functions (DFR-M1-B01).
  *
- * 权威来源：ADR-016、docs/architecture/m1-api-contract.md。
+ * Authoritative sources: ADR-016, docs/architecture/m1-api-contract.md.
  *
- * 设计约束（逐条对应 ADR-016）：
- *   1. **只使用 Viem 纯工具**：`serializeTransaction`（编码）、`fromRlp`（无损解码）、
- *      `keccak256`（哈希）。不出现 `PublicClient` / `WalletClient` / transport /
- *      account / 签名能力，也不自行实现 RLP 或 secp256k1。
- *   2. **数值一律 bigint / 十进制字符串**。Viem 的 `parseTransaction` 会把
- *      `nonce` 与 `chainId` 降级为 JS `number`，所以本模块**不使用**它解码，
- *      改用 `fromRlp` 逐字段还原，避免任何精度或类型回退。
- *   3. 输入校验 fail-closed：非法十进制、JS number、非法地址 / 数据 / accessList、
- *      费用字段与交易类型不匹配，都必须抛 `EvmCodecError`，不静默纠正。
- *   4. 本模块是纯函数：不发网络请求、不读取私钥、不持有端点或凭证。
+ * Design constraints (one per ADR-016 rule):
+ *   1. **Only use Viem pure utilities**: `serializeTransaction` (encoding), `fromRlp` (lossless decoding),
+ *      `keccak256` (hashing). No `PublicClient` / `WalletClient` / transport /
+ *      account / signing capability, and no home-grown RLP or secp256k1.
+ *   2. **All values are bigint / decimal strings**. Viem's `parseTransaction` downgrades
+ *      `nonce` and `chainId` to JS `number`, so this module does **not** use it for decoding;
+ *      it uses `fromRlp` to restore fields one by one instead, avoiding any precision or type regression.
+ *   3. Input validation fails closed: invalid decimals, JS numbers, invalid addresses / data / accessLists,
+ *      and fee fields mismatched with the transaction type must all throw `EvmCodecError`, never silently corrected.
+ *   4. This module is pure functions: no network requests, no private-key reads, no endpoints or credentials held.
  *
- * 边界：本模块只做编解码与结构比较，**不**选 Provider、不写数据库、不决定交易状态。
+ * Boundary: this module only encodes/decodes and compares structure; it does **not** select Providers, write to databases, or decide transaction state.
  */
 
 import { fromRlp, keccak256, serializeTransaction } from 'viem';
 import type { DecimalUint } from '@dfr/types';
 import { isEvmAddress } from './address.js';
 
-/** M1 支持的 EVM 交易类型（ADR-016 §5）。 */
+/** EVM transaction types supported by M1 (ADR-016 §5). */
 export type EvmTransactionType = 'legacy' | 'eip2930' | 'eip1559';
 
-/** 稳定的失败原因码；Adapter 负责把它归一化为对外 DFR 错误。 */
+/** Stable failure reason codes; the Adapter normalizes them into public DFR errors. */
 export type EvmCodecErrorReason =
   | 'number_not_allowed'
   | 'invalid_decimal'
@@ -37,7 +37,7 @@ export type EvmCodecErrorReason =
   | 'unsupported_transaction_type'
   | 'invalid_payload'
   | 'intent_mismatch'
-  // DFR-M1-C01：签名载荷解析与绑定（signed-transaction.ts）
+  // DFR-M1-C01: signed-payload parsing and binding (signed-transaction.ts)
   | 'not_signed'
   | 'chain_id_unknown'
   | 'invalid_signature'
@@ -64,42 +64,42 @@ export interface EvmAccessListEntry {
   readonly storageKeys: readonly string[];
 }
 
-/** 未签名交易意图。所有数值字段都是规范十进制字符串，禁止 JS number。 */
+/** Unsigned transaction intent. All numeric fields are canonical decimal strings; JS number is forbidden. */
 export interface EvmUnsignedIntent {
   readonly chainId: string;
   readonly nonce: string;
   readonly to: string;
   readonly value: string;
   readonly gas: string;
-  /** 调用数据；省略等价于 `0x`（原生转账）。 */
+  /** Call data; omitting it is equivalent to `0x` (native transfer). */
   readonly data?: string;
   readonly type?: EvmTransactionType;
-  /** legacy / eip2930 必填。 */
+  /** Required for legacy / eip2930. */
   readonly gasPrice?: string;
-  /** eip1559 必填。 */
+  /** Required for eip1559. */
   readonly maxFeePerGas?: string;
-  /** eip1559 必填。 */
+  /** Required for eip1559. */
   readonly maxPriorityFeePerGas?: string;
   readonly accessList?: readonly EvmAccessListEntry[];
 }
 
 export interface EvmUnsignedPayload {
-  /** 未签名序列化载荷：外部钱包对它求 keccak256 即得签名哈希。 */
+  /** Unsigned serialized payload: the signing hash is keccak256 of it, computed by the external wallet. */
   readonly payload: string;
   readonly encoding: 'hex';
   readonly type: EvmTransactionType;
   readonly chainId: DecimalUint;
   readonly nonce: DecimalUint;
-  /** `keccak256(payload)`：未签名时即签名前哈希。 */
+  /** `keccak256(payload)`: the pre-signing hash when unsigned. */
   readonly signingHash: string;
 }
 
 export interface EvmDecodedTransaction {
   readonly type: EvmTransactionType;
-  /** 无法从载荷推导时（pre-EIP-155 legacy）为 null。 */
+  /** null when it cannot be derived from the payload (pre-EIP-155 legacy). */
   readonly chainId: DecimalUint | null;
   readonly nonce: DecimalUint;
-  /** null 表示合约创建。 */
+  /** null means contract creation. */
   readonly to: string | null;
   readonly value: DecimalUint;
   readonly data: string;
@@ -108,17 +108,17 @@ export interface EvmDecodedTransaction {
   readonly maxFeePerGas?: DecimalUint;
   readonly maxPriorityFeePerGas?: DecimalUint;
   readonly accessList: readonly EvmAccessListEntry[];
-  /** 载荷是否已带签名。 */
+  /** Whether the payload already carries a signature. */
   readonly signed: boolean;
-  /** `keccak256(payload)`：未签名时是签名前哈希，已签名时是交易哈希。 */
+  /** `keccak256(payload)`: the pre-signing hash when unsigned, the transaction hash when signed. */
   readonly hash: string;
 }
 
 /* ------------------------------------------------------------------ */
-/* 校验辅助                                                            */
+/* Validation helpers                                                            */
 /* ------------------------------------------------------------------ */
 
-/** 规范十进制：无前导零（`0` 除外）、无符号、无小数。 */
+/** Canonical decimal: no leading zeros (except `0` itself), no sign, no fraction. */
 const DECIMAL_RE = /^(?:0|[1-9][0-9]*)$/;
 const HEX_DATA_RE = /^0x(?:[0-9a-fA-F]{2})*$/;
 const STORAGE_KEY_RE = /^0x[0-9a-fA-F]{64}$/;
@@ -127,14 +127,14 @@ function toBigIntField(value: unknown, field: string): bigint {
   if (typeof value === 'number') {
     throw new EvmCodecError(
       'number_not_allowed',
-      `${field} 不得使用 JS number（数值一律十进制字符串）`,
+      `${field} must not use JS number (all values are decimal strings)`,
       field,
     );
   }
   if (typeof value !== 'string' || !DECIMAL_RE.test(value)) {
     throw new EvmCodecError(
       'invalid_decimal',
-      `${field} 必须是规范十进制字符串（无前导零、无符号、无小数）`,
+      `${field} must be a canonical decimal string (no leading zeros, no sign, no fraction)`,
       field,
     );
   }
@@ -145,11 +145,11 @@ function toDecimal(value: bigint): DecimalUint {
   return value.toString(10) as DecimalUint;
 }
 
-/** EVM 交易数值必须采用最短大端 RLP 表示；零仅允许空字节串。 */
+/** EVM transaction values must use the shortest big-endian RLP form; zero is only allowed as an empty byte string. */
 function rlpToBigInt(value: string): bigint {
   if (value === '0x') return 0n;
   if (!/^0x(?:[0-9a-f]{2})+$/.test(value) || value.startsWith('0x00')) {
-    throw new EvmCodecError('invalid_payload', 'RLP 整数字段不得含前导零或非规范字节');
+    throw new EvmCodecError('invalid_payload', 'RLP integer fields must not contain leading zeros or non-canonical bytes');
   }
   return BigInt(value);
 }
@@ -159,7 +159,7 @@ function normalizeData(value: string | undefined, field: string): string {
   if (!HEX_DATA_RE.test(value)) {
     throw new EvmCodecError(
       'invalid_hex_data',
-      `${field} 必须是 0x 前缀的偶数字节十六进制`,
+      `${field} must be 0x-prefixed hex with an even number of bytes`,
       field,
     );
   }
@@ -168,7 +168,7 @@ function normalizeData(value: string | undefined, field: string): string {
 
 function normalizeAddress(value: string, field: string): string {
   if (!isEvmAddress(value)) {
-    throw new EvmCodecError('invalid_address', `${field} 不是合法的 EVM 地址`, field);
+    throw new EvmCodecError('invalid_address', `${field} is not a valid EVM address`, field);
   }
   return value.toLowerCase();
 }
@@ -178,15 +178,15 @@ function normalizeAccessList(
 ): readonly EvmAccessListEntry[] {
   if (list === undefined) return [];
   return list.map((entry) => {
-    // accessList 内部问题统一归为 invalid_access_list，便于调用方区分
-    // "目标地址非法" 与 "访问列表非法" 两类修复动作。
+    // accessList-internal problems are all classified as invalid_access_list, so callers can distinguish
+    // "invalid target address" from "invalid access list" as two different fixes.
     let address: string;
     try {
       address = normalizeAddress(entry.address, 'accessList.address');
     } catch {
       throw new EvmCodecError(
         'invalid_access_list',
-        'accessList.address 不是合法的 EVM 地址',
+        'accessList.address is not a valid EVM address',
         'accessList.address',
       );
     }
@@ -194,7 +194,7 @@ function normalizeAccessList(
       if (!STORAGE_KEY_RE.test(key)) {
         throw new EvmCodecError(
           'invalid_access_list',
-          'accessList.storageKeys 必须是 0x + 32 字节十六进制',
+          'accessList.storageKeys must be 0x + 32-byte hex',
           'accessList.storageKeys',
         );
       }
@@ -204,7 +204,7 @@ function normalizeAccessList(
   });
 }
 
-/** 编码时用于喂给 Viem 的最小结构（全部 bigint / hex，绝不出现 number）。 */
+/** Minimal structure fed to Viem when encoding (all bigint / hex, never number). */
 interface CanonicalIntent {
   readonly type: EvmTransactionType;
   readonly chainId: bigint;
@@ -221,7 +221,7 @@ interface CanonicalIntent {
 
 function requireFee(value: string | undefined, field: string): bigint {
   if (value === undefined) {
-    throw new EvmCodecError('missing_fee_field', `${field} 对该交易类型是必填项`, field);
+    throw new EvmCodecError('missing_fee_field', `${field} is required for this transaction type`, field);
   }
   return toBigIntField(value, field);
 }
@@ -230,7 +230,7 @@ function rejectFee(value: string | undefined, field: string, type: EvmTransactio
   if (value !== undefined) {
     throw new EvmCodecError(
       'unexpected_fee_field',
-      `${field} 不适用于 ${type} 交易`,
+      `${field} does not apply to ${type} transactions`,
       field,
     );
   }
@@ -241,7 +241,7 @@ function canonicalizeIntent(intent: EvmUnsignedIntent): CanonicalIntent {
   if (type !== 'legacy' && type !== 'eip2930' && type !== 'eip1559') {
     throw new EvmCodecError(
       'unsupported_transaction_type',
-      `M1 只支持 legacy / eip2930 / eip1559，收到 ${String(intent.type)}`,
+      `M1 only supports legacy / eip2930 / eip1559, got ${String(intent.type)}`,
       'type',
     );
   }
@@ -261,7 +261,7 @@ function canonicalizeIntent(intent: EvmUnsignedIntent): CanonicalIntent {
     if (maxPriorityFeePerGas > maxFeePerGas) {
       throw new EvmCodecError(
         'invalid_fee_bounds',
-        'maxPriorityFeePerGas 不得大于 maxFeePerGas',
+        'maxPriorityFeePerGas must not exceed maxFeePerGas',
         'maxPriorityFeePerGas',
       );
     }
@@ -273,28 +273,28 @@ function canonicalizeIntent(intent: EvmUnsignedIntent): CanonicalIntent {
   rejectFee(intent.maxFeePerGas, 'maxFeePerGas', type);
   rejectFee(intent.maxPriorityFeePerGas, 'maxPriorityFeePerGas', type);
   if (type === 'legacy' && accessList.length > 0) {
-    throw new EvmCodecError('unexpected_fee_field', 'legacy 交易不支持 accessList', 'accessList');
+    throw new EvmCodecError('unexpected_fee_field', 'legacy transactions do not support accessList', 'accessList');
   }
   const gasPrice = requireFee(intent.gasPrice, 'gasPrice');
   return { type, chainId, nonce, to, value, gas, data, accessList, gasPrice };
 }
 
 /* ------------------------------------------------------------------ */
-/* 编码                                                                */
+/* Encoding                                                                */
 /* ------------------------------------------------------------------ */
 
 /**
- * 原生转账 / 带 data 的未签名交易序列化。
+ * Serialize a native transfer / unsigned transaction with data.
  *
- * 返回值中的 `payload` 直接交给外部钱包签名；`signingHash` 便于调用方核对钱包
- * 展示的签名对象，但**不**替代钱包自己的哈希计算。
+ * The returned `payload` goes straight to the external wallet for signing; `signingHash` lets the caller check what the wallet
+ * shows as the signing object, but does **not** replace the wallet's own hash computation.
  */
 export function encodeUnsignedTransaction(intent: EvmUnsignedIntent): EvmUnsignedPayload {
   const canonical = canonicalizeIntent(intent);
 
-  // Viem 的 TypeScript 把 chainId 声明为 number，但运行时接受 bigint。
-  // DFR 政策禁止把链上数值降级为 number，因此这里在 viem 边界做一次显式断言，
-  // 并由 golden vector 测试证明运行行为符合预期。
+  // Viem's TypeScript declares chainId as number, but accepts bigint at runtime.
+  // DFR policy forbids downgrading on-chain values to number, so an explicit assertion is made here at the viem boundary,
+  // with golden-vector tests proving the runtime behavior matches expectations.
   const tx = {
     type: canonical.type,
     chainId: canonical.chainId,
@@ -319,7 +319,7 @@ export function encodeUnsignedTransaction(intent: EvmUnsignedIntent): EvmUnsigne
   } catch (cause) {
     throw new EvmCodecError(
       'invalid_payload',
-      `无法序列化交易：${cause instanceof Error ? cause.message : String(cause)}`,
+      `Failed to serialize transaction: ${cause instanceof Error ? cause.message : String(cause)}`,
     );
   }
 
@@ -334,21 +334,21 @@ export function encodeUnsignedTransaction(intent: EvmUnsignedIntent): EvmUnsigne
 }
 
 /* ------------------------------------------------------------------ */
-/* 解码                                                                */
+/* Decoding                                                                */
 /* ------------------------------------------------------------------ */
 
 type RlpField = string | readonly RlpField[];
 
 function asArray(fields: RlpField, type: EvmTransactionType): readonly RlpField[] {
   if (typeof fields === 'string') {
-    throw new EvmCodecError('invalid_payload', `${type} 载荷必须是 RLP 列表`);
+    throw new EvmCodecError('invalid_payload', `${type} payload must be an RLP list`);
   }
   return fields;
 }
 
 function asBytes(value: RlpField | undefined, label: string): string {
   if (typeof value !== 'string') {
-    throw new EvmCodecError('invalid_payload', `${label} 必须是字节串`);
+    throw new EvmCodecError('invalid_payload', `${label} must be a byte string`);
   }
   return value.toLowerCase();
 }
@@ -358,31 +358,31 @@ function asBigInt(value: RlpField | undefined, label: string): bigint {
   try {
     return rlpToBigInt(hex);
   } catch {
-    throw new EvmCodecError('invalid_payload', `${label} 不是合法的整数编码`);
+    throw new EvmCodecError('invalid_payload', `${label} is not a valid integer encoding`);
   }
 }
 
 function decodeAccessList(value: RlpField | undefined): readonly EvmAccessListEntry[] {
   if (value === undefined || typeof value === 'string') {
-    // 空列表被 RLP 编码为 0xc0，fromRlp 会解成 []，因此字符串这里只能是非法输入。
+    // An empty list is RLP-encoded as 0xc0, which fromRlp decodes to [], so a string here can only be invalid input.
     if (value === '0xc0') return [];
-    throw new EvmCodecError('invalid_payload', 'accessList 必须是列表');
+    throw new EvmCodecError('invalid_payload', 'accessList must be a list');
   }
   return value.map((entry) => {
     if (typeof entry === 'string' || entry.length !== 2) {
-      throw new EvmCodecError('invalid_payload', 'accessList 项必须是 [address, storageKeys] 二元列表');
+      throw new EvmCodecError('invalid_payload', 'accessList entries must be [address, storageKeys] two-element lists');
     }
     const address = asBytes(entry[0], 'accessList.address');
     if (!/^0x[0-9a-f]{40}$/.test(address)) {
-      throw new EvmCodecError('invalid_payload', 'accessList.address 必须为 20 字节地址');
+      throw new EvmCodecError('invalid_payload', 'accessList.address must be a 20-byte address');
     }
     const keys = entry[1];
     if (keys === undefined || typeof keys === 'string') {
-      throw new EvmCodecError('invalid_payload', 'accessList.storageKeys 必须是列表');
+      throw new EvmCodecError('invalid_payload', 'accessList.storageKeys must be a list');
     }
     const storageKeys = keys.map((key) => asBytes(key, 'accessList.storageKeys'));
     if (storageKeys.some((key) => !/^0x[0-9a-f]{64}$/.test(key))) {
-      throw new EvmCodecError('invalid_payload', 'accessList.storageKeys 必须为 32 字节');
+      throw new EvmCodecError('invalid_payload', 'accessList.storageKeys must be 32 bytes');
     }
     return { address, storageKeys };
   });
@@ -391,20 +391,20 @@ function decodeAccessList(value: RlpField | undefined): readonly EvmAccessListEn
 function emptyToNull(value: string): string | null {
   if (value === '0x') return null;
   if (!/^0x[0-9a-f]{40}$/.test(value)) {
-    throw new EvmCodecError('invalid_payload', '接收地址必须为空（合约创建）或恰好 20 字节');
+    throw new EvmCodecError('invalid_payload', 'recipient address must be empty (contract creation) or exactly 20 bytes');
   }
   return value;
 }
 
 /**
- * 从序列化载荷还原 DFR 领域字段。
+ * Restore DFR domain fields from a serialized payload.
  *
- * 已签名与未签名载荷都能解析：`signed` 由签名字段的存在推导，`hash` 始终是
- * `keccak256(payload)`（未签名即签名前哈希，已签名即交易哈希）。
+ * Both signed and unsigned payloads can be parsed: `signed` is derived from the presence of signature fields, and `hash` is always
+ * `keccak256(payload)` (the pre-signing hash when unsigned, the transaction hash when signed).
  */
 export function decodeTransactionPayload(payload: string): EvmDecodedTransaction {
   if (typeof payload !== 'string' || !HEX_DATA_RE.test(payload) || payload === '0x') {
-    throw new EvmCodecError('invalid_payload', '载荷必须是 0x 前缀的偶数字节十六进制');
+    throw new EvmCodecError('invalid_payload', 'payload must be 0x-prefixed hex with an even number of bytes');
   }
 
   const firstByte = Number.parseInt(payload.slice(2, 4), 16);
@@ -418,10 +418,10 @@ export function decodeTransactionPayload(payload: string): EvmDecodedTransaction
     type = 'eip1559';
     body = `0x${payload.slice(4)}`;
   } else if (firstByte <= 0x7f) {
-    // 0x00 / 0x03…0x7f 都不是 M1 承诺的交易类型（EIP-4844 / 7702 等）。
+    // 0x00 / 0x03…0x7f are not transaction types M1 supports (EIP-4844 / 7702 and others).
     throw new EvmCodecError(
       'unsupported_transaction_type',
-      `不支持的 EVM 交易类型前缀 0x${firstByte.toString(16).padStart(2, '0')}`,
+      `Unsupported EVM transaction type prefix 0x${firstByte.toString(16).padStart(2, '0')}`,
     );
   } else {
     type = 'legacy';
@@ -431,16 +431,16 @@ export function decodeTransactionPayload(payload: string): EvmDecodedTransaction
   try {
     rlp = fromRlp(body as `0x${string}`) as RlpField;
   } catch {
-    throw new EvmCodecError('invalid_payload', '载荷不是合法的 RLP 交易编码');
+    throw new EvmCodecError('invalid_payload', 'payload is not valid RLP transaction encoding');
   }
 
   const fields = asArray(rlp, type);
   const hash = keccak256(payload as `0x${string}`);
 
-  /* legacy：[nonce, gasPrice, gas, to, value, data, (chainId|v), (0|r), (0|s)] */
+  /* legacy: [nonce, gasPrice, gas, to, value, data, (chainId|v), (0|r), (0|s)] */
   if (type === 'legacy') {
     if (fields.length !== 6 && fields.length !== 9) {
-      throw new EvmCodecError('invalid_payload', `legacy 载荷字段数非法：${fields.length}`);
+      throw new EvmCodecError('invalid_payload', `invalid legacy payload field count: ${fields.length}`);
     }
     let chainId: DecimalUint | null = null;
     let signed = false;
@@ -448,9 +448,9 @@ export function decodeTransactionPayload(payload: string): EvmDecodedTransaction
       const v = asBigInt(fields[6], 'v');
       const r = asBigInt(fields[7], 'r');
       const s = asBigInt(fields[8], 's');
-      // 两个签名标量都必须存在；半零载荷不是已签名交易。
+      // Both signature scalars must be present; a half-zero payload is not a signed transaction.
       signed = r !== 0n && s !== 0n;
-      // EIP-155：v = chainId * 2 + 35/36；pre-EIP-155 的 27/28 推导不出 chainId。
+      // EIP-155: v = chainId * 2 + 35/36; pre-EIP-155 27/28 cannot derive a chainId.
       chainId = signed ? (v >= 35n ? toDecimal((v - 35n) / 2n) : null)
         : (v === 27n || v === 28n ? null : toDecimal(v));
     }
@@ -469,10 +469,10 @@ export function decodeTransactionPayload(payload: string): EvmDecodedTransaction
     };
   }
 
-  /* eip2930：[chainId, nonce, gasPrice, gas, to, value, data, accessList(, yParity, r, s)] */
+  /* eip2930: [chainId, nonce, gasPrice, gas, to, value, data, accessList(, yParity, r, s)] */
   if (type === 'eip2930') {
     if (fields.length !== 8 && fields.length !== 11) {
-      throw new EvmCodecError('invalid_payload', `eip2930 载荷字段数非法：${fields.length}`);
+      throw new EvmCodecError('invalid_payload', `invalid eip2930 payload field count: ${fields.length}`);
     }
     return {
       type,
@@ -489,9 +489,9 @@ export function decodeTransactionPayload(payload: string): EvmDecodedTransaction
     };
   }
 
-  /* eip1559：[chainId, nonce, maxPriorityFeePerGas, maxFeePerGas, gas, to, value, data, accessList(, ...)] */
+  /* eip1559: [chainId, nonce, maxPriorityFeePerGas, maxFeePerGas, gas, to, value, data, accessList(, ...)] */
   if (fields.length !== 9 && fields.length !== 12) {
-    throw new EvmCodecError('invalid_payload', `eip1559 载荷字段数非法：${fields.length}`);
+    throw new EvmCodecError('invalid_payload', `invalid eip1559 payload field count: ${fields.length}`);
   }
   return {
     type,
@@ -510,10 +510,10 @@ export function decodeTransactionPayload(payload: string): EvmDecodedTransaction
 }
 
 /* ------------------------------------------------------------------ */
-/* 结构比较                                                            */
+/* Structural comparison                                                            */
 /* ------------------------------------------------------------------ */
 
-/** 供比较使用的规范化视图：全部 lowercase hex + 十进制字符串。 */
+/** Normalized view for comparison: all lowercase hex + decimal strings. */
 function canonicalView(tx: EvmDecodedTransaction): string {
   const accessList = tx.accessList.map((entry) => [entry.address, entry.storageKeys]);
   return JSON.stringify({
@@ -532,11 +532,11 @@ function canonicalView(tx: EvmDecodedTransaction): string {
 }
 
 /**
- * 校验载荷与原未签名意图逐字段一致。
+ * Verify the payload matches the original unsigned intent field by field.
  *
- * ADR-016 §7 要求广播前用重新解析的载荷与原 intent 比较；本函数是该校验的纯函数内核，
- * 任何字段（chainId / nonce / to / value / gas / data / fee / accessList）不一致都拒绝。
- * 不比较签名：`signed` 与 `hash` 是载荷自身的属性，不属于意图。
+ * ADR-016 §7 requires comparing the re-parsed payload against the original intent before broadcast; this function is the pure-function core of that check,
+ * rejecting on any field mismatch (chainId / nonce / to / value / gas / data / fee / accessList).
+ * Signatures are not compared: `signed` and `hash` are properties of the payload itself, not of the intent.
  */
 export function assertDecodedMatchesIntent(
   decoded: EvmDecodedTransaction,
@@ -547,7 +547,7 @@ export function assertDecodedMatchesIntent(
   if (canonicalView(decoded) !== canonicalView(expectedDecoded)) {
     throw new EvmCodecError(
       'intent_mismatch',
-      '载荷字段与原未签名交易意图不一致',
+      'payload fields do not match the original unsigned transaction intent',
     );
   }
 }

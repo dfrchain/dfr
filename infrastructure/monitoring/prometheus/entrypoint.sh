@@ -1,23 +1,26 @@
 #!/bin/sh
-# Prometheus 启动入口：在容器内**运行时**生成 scrape 配置。
+# Prometheus startup entrypoint: generate the scrape config **at runtime**
+# inside the container.
 #
-# 为什么不在仓库里放 prometheus.yml：`/metrics` 需要 `x-dfr-key` 头，而 Prometheus 的
-# `http_headers` 只支持内联值、不支持从文件读取 —— 把 key 写进仓库配置会直接违反
-# "凭证不入库"的安全红线。
-# 因此配置在启动时从环境变量生成（heredoc 展开，无 sed 转义风险）。
+# Why prometheus.yml is not kept in the repository: `/metrics` needs an
+# `x-dfr-key` header, and Prometheus's `http_headers` only supports inline
+# values, not reading from a file — writing the key into a repository config
+# would directly violate the "credentials are never committed" safety red
+# line. So the config is generated at startup from environment variables
+# (heredoc expansion, no sed escaping risk).
 #
-# 必需环境变量：
-#   DFR_METRICS_API_KEY  形如 dfr_<8位 keyId>_<20..64 位 secret>（与 Gateway 鉴权一致）
-# 可选：
-#   DFR_METRICS_TARGET   scrape 目标，默认 host.docker.internal:18787
-#                        （= docker-compose.m1.yml 默认映射到宿主机的端口）
+# Required environment variables:
+#   DFR_METRICS_API_KEY  shaped like dfr_<8-char keyId>_<20..64-char secret> (same as Gateway auth)
+# Optional:
+#   DFR_METRICS_TARGET   scrape target, default host.docker.internal:18787
+#                        (= the port docker-compose.m1.yml maps to the host by default)
 set -eu
 
-: "${DFR_METRICS_API_KEY:?DFR_METRICS_API_KEY is required (形式 dfr_<keyId>_<secret>)}"
+: "${DFR_METRICS_API_KEY:?DFR_METRICS_API_KEY is required (format dfr_<keyId>_<secret>)}"
 TARGET="${DFR_METRICS_TARGET:-host.docker.internal:18787}"
 
 cat > /etc/prometheus/prometheus.yml <<EOF
-# 由 entrypoint.sh 在运行时生成，**不要提交**（含凭证）。
+# Generated at runtime by entrypoint.sh; **do not commit** (contains credentials).
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
@@ -31,8 +34,8 @@ scrape_configs:
     scheme: http
     static_configs:
       - targets: ['${TARGET}']
-    # Gateway 的 /metrics 需要有效 API Key（见 observability-spec §9）。
-    # key 只存在于容器内存与这个运行时生成的配置里。
+    # The Gateway's /metrics needs a valid API key (see observability-spec §9).
+    # The key exists only in container memory and in this runtime-generated config.
     http_headers:
       x-dfr-key:
         values: ['${DFR_METRICS_API_KEY}']

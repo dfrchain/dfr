@@ -1,15 +1,15 @@
 /**
- * 真实测试网 E2E：SDK →（真实 HTTP）→ Gateway → Core → EVM Adapter → 真实 Sepolia RPC。
+ * Real testnet E2E: SDK → (real HTTP) → Gateway → Core → EVM Adapter → real Sepolia RPC.
  *
- * 与 gateway.e2e.test.ts 的区别：那里用可编程替身保证确定性，这里**真的发网络请求**。
- * 因此默认跳过，只在显式开启时运行：
+ * Difference from gateway.e2e.test.ts: that one uses programmable stand-ins to guarantee determinism; this one **really makes network requests**.
+ * So it is skipped by default and only runs when explicitly enabled:
  *
  *   DFR_RUN_TESTNET=1 \
  *   DFR_PROVIDER_ETHEREUM_SEPOLIA_PRIMARY_URL=https://… \
  *   DFR_PROVIDER_ETHEREUM_SEPOLIA_SECONDARY_URL=https://… \
  *   pnpm vitest run tests/e2e/testnet.e2e.test.ts
  *
- * 全程只读：不签名、不广播。
+ * Read-only throughout: no signing, no broadcasting.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { AddressInfo } from 'node:net';
@@ -58,19 +58,19 @@ afterAll(async () => {
   if (server !== undefined) await new Promise<void>((resolve) => server.close(() => resolve()));
 });
 
-describe.skipIf(!ENABLED)('真实 Sepolia E2E（HTTP 全链路）', () => {
-  it('鉴权后的 /v1/chains 返回启用的链', async () => {
+describe.skipIf(!ENABLED)('Real Sepolia E2E (full HTTP chain)', () => {
+  it('authenticated /v1/chains returns the enabled chains', async () => {
     const chains = await dfr.listChains();
     expect(chains.map((c) => c.id)).toContain(CHAIN);
   }, 30_000);
 
-  it('getChain 返回真实高度', async () => {
+  it('getChain returns the real height', async () => {
     const info = await dfr.getChain(CHAIN);
     expect(info.chain).toBe(CHAIN);
     expect(BigInt(info.height ?? '0')).toBeGreaterThan(0n);
   }, 30_000);
 
-  it('getBalance 返回十进制余额', async () => {
+  it('getBalance returns a decimal balance', async () => {
     const balance = await dfr.getBalance({
       chain: CHAIN,
       account: '0x0000000000000000000000000000000000000000',
@@ -78,13 +78,13 @@ describe.skipIf(!ENABLED)('真实 Sepolia E2E（HTTP 全链路）', () => {
     expect(balance.amount).toMatch(/^[0-9]+$/);
   }, 30_000);
 
-  it('getBlock(tag:finalized) 返回已最终化区块', async () => {
+  it('getBlock(tag:finalized) returns a finalized block', async () => {
     const block = await dfr.getBlock({ chain: CHAIN, blockRef: 'tag:finalized' });
     expect(block.finality).toBe('finalized');
     expect(block.hash).toMatch(/^0x[0-9a-f]{64}$/i);
   }, 30_000);
 
-  it('未鉴权请求被拒绝，且错误体是 RFC 9457 封套', async () => {
+  it('unauthenticated requests are rejected, and the error body is an RFC 9457 envelope', async () => {
     const response = await fetch(`${baseUrl}/v1/chains`);
     expect(response.status).toBe(401);
     const body = (await response.json()) as { dfr_code?: string; request_id?: string };
@@ -93,8 +93,8 @@ describe.skipIf(!ENABLED)('真实 Sepolia E2E（HTTP 全链路）', () => {
   }, 30_000);
 });
 
-describe.skipIf(ENABLED)('真实测试网 E2E（未启用）', () => {
-  it('默认跳过：设置 DFR_RUN_TESTNET=1 与 RPC 端点后运行', () => {
+describe.skipIf(ENABLED)('Real testnet E2E (not enabled)', () => {
+  it('skipped by default: set DFR_RUN_TESTNET=1 and an RPC endpoint, then run', () => {
     expect(ENABLED).toBe(false);
   });
 });

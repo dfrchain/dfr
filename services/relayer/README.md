@@ -1,3 +1,5 @@
-# DFR Relayer（M6 占位）
+# DFR Relayer (M6 placeholder)
 
-默认不实现服务端签名。任何 Relayer 自动签名能力必须先复审 ADR-007，并定义 KMS/HSM、审批、限额与审计。
+Server-side signing is not implemented by default. Any automatic Relayer
+signing capability must first re-review ADR-007 and define KMS/HSM,
+approval, limits, and auditing.

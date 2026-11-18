@@ -1,8 +1,8 @@
 /**
- * @dfr/events —— 进程内事件总线（M2，ADR-006 / ADR-026）。
+ * @dfr/events — the in-process event bus (M2, ADR-006 / ADR-026).
  *
- * 明确边界：不持久化、不跨重启；事件类型权威来源仍是 `@dfr/types`。
- * SSE 传输不在本包（见 ADR-029 与 Gateway 侧实现）。
+ * Explicit boundary: no persistence, no cross-restart; the authoritative source for event types is still `@dfr/types`.
+ * SSE transport is not in this package (see ADR-029 and the Gateway-side implementation).
  */
 export {
   EventBus,

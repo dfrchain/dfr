@@ -1,5 +1,5 @@
 /**
- * @dfr/gateway —— DFR API Gateway（DFR-009，M0 只读）。
+ * @dfr/gateway — DFR API Gateway (DFR-009, M0 read-only).
  */
 export { createGatewayServer, parseBlockRef, type GatewayOptions, type GatewayLogger } from './server.js';
 export { matchRoute, ROUTE_CAPABILITIES, type RouteHandlerId, type RouteMatch } from './routes.js';

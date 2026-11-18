@@ -1,17 +1,17 @@
 /**
- * EVM JSON-RPC 调用封装。
+ * EVM JSON-RPC call wrapper.
  *
- * Adapter 负责构造 method/params 并声明幂等类别；Provider 只做传输
- * （provider-spec 第 2 章）。所有读调用都是 `safe-read`。
+ * The Adapter builds method/params and declares the idempotency class; the Provider only transports
+ * (provider-spec Chapter 2). All read calls are `safe-read`.
  *
- * 单次 Adapter 操作（例如 getInfo）如果发出多个 RPC 调用，应当**复用同一个句柄**，
- * 否则 eth_chainId 与 eth_blockNumber 可能落在不同端点，chainId 校验就失去意义。
+ * If a single Adapter operation (e.g. getInfo) makes multiple RPC calls, it should **reuse the same handle**,
+ * otherwise eth_chainId and eth_blockNumber may land on different endpoints and the chainId check becomes meaningless.
  */
 import type { AdapterContext, CapabilityId, ProviderCall, ProviderHandle } from '@dfr/types';
 
 export const DEFAULT_READ_TIMEOUT_MS = 10_000;
 
-/** 在已获取的句柄上发起一次只读调用。 */
+/** Make one read-only call on an already acquired handle. */
 export function rpcOn<T>(
   handle: ProviderHandle,
   ctx: AdapterContext,
@@ -28,7 +28,7 @@ export function rpcOn<T>(
   });
 }
 
-/** 按能力获取句柄并发起一次只读调用（单次调用场景）。 */
+/** Acquire a handle by capability and make one read-only call (single-call scenario). */
 export async function evmCall<T>(
   ctx: AdapterContext,
   capability: CapabilityId,
@@ -61,7 +61,7 @@ export interface RpcTransaction {
   gasPrice?: string;
 }
 
-/** `eth_getLogs` 的日志形状（ADR-034）。 */
+/** Log shape for `eth_getLogs` (ADR-034). */
 export interface RpcLog {
   address?: string;
   topics?: readonly string[];
@@ -85,10 +85,10 @@ export interface RpcReceipt {
 }
 
 /**
- * `eth_feeHistory` 的最小字段（EIP-1559）。
+ * Minimal fields of `eth_feeHistory` (EIP-1559).
  *
- * 只在端点不支持 `eth_maxPriorityFeePerGas` 时用于回退取 priority fee；
- * `reward[i][j]` 是第 i 个区块第 j 个百分位的有效小费。
+ * Only used to fall back to fetching the priority fee when the endpoint does not support `eth_maxPriorityFeePerGas`;
+ * `reward[i][j]` is the effective tip for the j-th percentile of the i-th block.
  */
 export interface RpcFeeHistory {
   baseFeePerGas?: readonly string[];

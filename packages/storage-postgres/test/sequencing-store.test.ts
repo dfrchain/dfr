@@ -1,14 +1,14 @@
 /**
- * PostgresSequencingStore 契约测试（DFR-M3-A01，ADR-032 方案 A）。
+ * PostgresSequencingStore contract test (DFR-M3-A01, ADR-032 option A).
  *
- * 默认跳过；`pnpm test:db` 会提供迁移身份 DSN。
- * 测试使用独立数据库，真实验证 PostgreSQL 行锁 / advisory lock / 唯一约束，
- * 而不是进程内互斥。
+ * Skipped by default; `pnpm test:db` provides the migration-identity DSN.
+ * Tests use a separate database, genuinely verifying PostgreSQL row locks / advisory locks / unique constraints,
+ * rather than in-process mutexes.
  *
- * 与 nonce-store 测试的关键区别（这正是 ADR-032 要固定的语义）：
- *   - 多笔交易**可以共享同一个 blockhash**（因此按 token_value 建唯一约束是错的）；
- *   - 租约身份是 transactionId，引用必须带它；
- *   - 过期回收按**租约 TTL**，与 blockhash 的链上有效期（lastValidBlockHeight）无关。
+ * Key differences from the nonce-store tests (exactly the semantics ADR-032 pins down):
+ *   - Many transactions **may share one blockhash** (so a unique constraint on token_value would be wrong);
+ *   - Lease identity is the transactionId, and references must carry it;
+ *   - Expiry reclamation follows the **lease TTL**, unrelated to the blockhash's on-chain validity (lastValidBlockHeight).
  */
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -36,9 +36,9 @@ const chain = 'solana-devnet' as ChainId;
 const account = { chain, address: 'So11111111111111111111111111111111111111112' } as const;
 
 /**
- * 一个形状合法的 Solana blockhash（base58，32 字节）。
+ * A well-formed Solana blockhash (base58, 32 bytes).
  *
- * 公开链上引用，不含任何秘密；48 个 '1' 是 32 个零字节的 base58 表示。
+ * A public on-chain reference containing no secrets; 48 '1's are the base58 representation of 32 zero bytes.
  */
 const BLOCKHASH = '1'.repeat(48) + '2345'; // secret-scan:allow public-blockhash-placeholder
 const BLOCKHASH_B = '2'.repeat(48) + '3456'; // secret-scan:allow public-blockhash-placeholder
@@ -58,7 +58,7 @@ function runtimeDsnFor(database: string): string {
 }
 
 async function reset(): Promise<void> {
-  // 0006 无外键，CASCADE 不会连带清理本表——必须显式列出。
+  // 0006 has no foreign key, so CASCADE does not clean up this table — it must be listed explicitly.
   await inspector.query(`TRUNCATE ${SCHEMA}.sequencing_leases`);
 }
 
@@ -85,7 +85,7 @@ beforeAll(async () => {
   await admin.connect();
   const { rows } = await admin.query<{ db: string }>('SELECT current_database() AS db');
   if (!/_test$/u.test(rows[0]!.db)) {
-    throw new Error(`拒绝在非测试库 "${rows[0]!.db}" 上执行（库名必须以 _test 结尾）`);
+    throw new Error(`refusing to run against non-test database "${rows[0]!.db}" (database name must end with _test)`);
   }
 
   await admin.query(`DROP DATABASE IF EXISTS ${PRIVATE_DB} WITH (FORCE)`);
@@ -107,8 +107,8 @@ afterAll(async () => {
   if (inspector) await inspector.end();
   if (pool) await pool.end();
   if (admin) {
-    // Store 池使用最小权限 dfr_runtime；migrator 无权终止另一角色，
-    // 因此只读轮询到连接归零，再由数据库 owner 普通 DROP。
+    // The Store pool uses the least-privilege dfr_runtime role; the migrator may not terminate another role,
+    // so poll read-only until connections reach zero, then let the database owner DROP normally.
     for (let attempt = 0; attempt < 50; attempt += 1) {
       const { rows } = await admin.query<{ count: string }>(
         `SELECT count(*)::text AS count FROM pg_stat_activity WHERE datname = $1`,
@@ -122,8 +122,8 @@ afterAll(async () => {
   }
 }, 60_000);
 
-describe.skipIf(!ENABLED)('PostgresSequencingStore（DFR-M3-A01）', () => {
-  it('reserve 落库 blockhash 与链高，token 与高度都以字符串返回（禁 number）', async () => {
+describe.skipIf(!ENABLED)('PostgresSequencingStore (DFR-M3-A01)', () => {
+  it('reserve persists the blockhash and chain height, returning token and height as strings (no number)', async () => {
     await reset();
     const result = await reserve('txn_seq_first');
     expect(result.kind).toBe('reserved');
@@ -149,14 +149,14 @@ describe.skipIf(!ENABLED)('PostgresSequencingStore（DFR-M3-A01）', () => {
     expect(rows[0]).toEqual({ n: BLOCKHASH, h: LAST_VALID });
   });
 
-  it('多笔交易可共享同一个 blockhash——token 不是身份，transactionId 才是', async () => {
+  it('many transactions can share one blockhash — the token is not the identity, the transactionId is', async () => {
     await reset();
     const first = await reserve('txn_seq_share_a');
     const second = await reserve('txn_seq_share_b', { token: blockhashToken() });
 
     expect(first.kind).toBe('reserved');
     expect(second.kind).toBe('reserved');
-    // 两行都在，token_value 相同——这正是 NonceStore 语义下不可能、Solana 下必需的情形。
+    // Both rows exist with the same token_value — impossible under NonceStore semantics and required under Solana semantics.
     const { rows } = await inspector.query<{ count: string }>(
       `SELECT count(*)::text AS count FROM ${SCHEMA}.sequencing_leases
         WHERE chain_id = $1 AND account_address = $2 AND token_value = $3`,
@@ -164,7 +164,7 @@ describe.skipIf(!ENABLED)('PostgresSequencingStore（DFR-M3-A01）', () => {
     );
     expect(rows[0]!.count).toBe('2');
 
-    // 消耗其一，不影响另一条租约的状态。
+    // Consuming one does not affect the other lease's state.
     await store.markConsumed({
       chain,
       account,
@@ -178,7 +178,7 @@ describe.skipIf(!ENABLED)('PostgresSequencingStore（DFR-M3-A01）', () => {
     expect(other.rows[0]!.status).toBe('reserved');
   });
 
-  it('20 个独立连接并发 reserve 全部成功（blockhash 不互斥），每笔一条租约', async () => {
+  it('20 independent connections reserve concurrently and all succeed (blockhashes are not mutually exclusive), one lease per transaction', async () => {
     await reset();
     const ids = Array.from({ length: 20 }, (_, index) => `txn_seq_c_${index}`);
     const results = await Promise.all(ids.map((id) => reserve(id)));
@@ -188,11 +188,11 @@ describe.skipIf(!ENABLED)('PostgresSequencingStore（DFR-M3-A01）', () => {
       `SELECT count(*)::text AS count FROM ${SCHEMA}.sequencing_leases`,
     );
     expect(rows[0]!.count).toBe('20');
-    // 全部共享同一 token：blockhash 不是互斥量。
+    // All share the same token: a blockhash is not a mutex.
     expect(new Set(results.map((r) => r.lease.token.value))).toEqual(new Set([BLOCKHASH]));
   });
 
-  it('同一 transactionId 并发重放只保留一条租约并返回 reused', async () => {
+  it('concurrent replays with the same transactionId keep only one lease and return reused', async () => {
     await reset();
     const results = await Promise.all(
       Array.from({ length: 8 }, () => reserve('txn_seq_replay')),
@@ -207,7 +207,7 @@ describe.skipIf(!ENABLED)('PostgresSequencingStore（DFR-M3-A01）', () => {
     expect(rows[0]!.count).toBe('1');
   });
 
-  it('B40：已释放/已消耗/TTL 过期的 blockhash 租约，不得在同 transactionId 重放时作为有效租约返回', async () => {
+  it('B40: a released/consumed/TTL-expired blockhash lease must not be returned as a valid lease on a replay with the same transactionId', async () => {
     for (const state of ['released', 'consumed', 'expired'] as const) {
       await reset();
       const id = `txn_seq_b40_replay_${state}`;
@@ -229,7 +229,7 @@ describe.skipIf(!ENABLED)('PostgresSequencingStore（DFR-M3-A01）', () => {
     }
   });
 
-  it('B40：原交易重放若携带不同 token/链高，不得复用过去的 blockhash', async () => {
+  it('B40: a replay of the original transaction carrying a different token/chain height must not reuse the old blockhash', async () => {
     await reset();
     await reserve('txn_seq_b40_changed_token');
     await expect(reserve('txn_seq_b40_changed_token', {
@@ -240,7 +240,7 @@ describe.skipIf(!ENABLED)('PostgresSequencingStore（DFR-M3-A01）', () => {
     })).rejects.toThrow(/sequencing.*replay|inactive.*lease/u);
   });
 
-  it('B40：markConsumed 不得复活 released/expired 终态租约', async () => {
+  it('B40: markConsumed must not revive released/expired terminal leases', async () => {
     for (const state of ['released', 'expired'] as const) {
       await reset();
       const id = `txn_seq_b40_consume_${state}`;
@@ -262,7 +262,7 @@ describe.skipIf(!ENABLED)('PostgresSequencingStore（DFR-M3-A01）', () => {
     }
   });
 
-  it('B40：TTL 内且 token 完全一致的同一交易重放仍可合法复用', async () => {
+  it('B40: a replay of the same transaction within the TTL with an identical token may still be legally reused', async () => {
     await reset();
     const first = await reserve('txn_seq_b40_active');
     const again = await reserve('txn_seq_b40_active');
@@ -271,7 +271,7 @@ describe.skipIf(!ENABLED)('PostgresSequencingStore（DFR-M3-A01）', () => {
     expect(again.lease).toEqual(first.lease);
   });
 
-  it('markConsumed 幂等，且即便 token 已被别家共享也只推进本行', async () => {
+  it('markConsumed is idempotent and advances only this row even when the token is shared with others', async () => {
     await reset();
     await reserve('txn_seq_consume');
     const ref = {
@@ -286,7 +286,7 @@ describe.skipIf(!ENABLED)('PostgresSequencingStore（DFR-M3-A01）', () => {
     const second = await store.markConsumed(ref);
     expect(second).toMatchObject({ kind: 'updated', lease: { status: 'consumed' } });
 
-    // 未知 transactionId → not_found（不静默成功）。
+    // Unknown transactionId → not_found (never silently succeed).
     await expect(
       store.markConsumed({
         chain,
@@ -296,7 +296,7 @@ describe.skipIf(!ENABLED)('PostgresSequencingStore（DFR-M3-A01）', () => {
       }),
     ).resolves.toEqual({ kind: 'not_found' });
 
-    // 引用 token 与租约不一致 → not_found（引用不自洽时 fail-closed）。
+    // Reference token inconsistent with the lease → not_found (fail closed when the reference is inconsistent).
     await expect(
       store.markConsumed({
         chain,
@@ -307,7 +307,7 @@ describe.skipIf(!ENABLED)('PostgresSequencingStore（DFR-M3-A01）', () => {
     ).resolves.toEqual({ kind: 'not_found' });
   });
 
-  it('releaseIfSafe：reserved 可释放；consumed 拒绝（already_consumed）', async () => {
+  it('releaseIfSafe: reserved can be released; consumed is refused (already_consumed)', async () => {
     await reset();
     await reserve('txn_seq_release_ok');
     const released = await store.releaseIfSafe({
@@ -318,7 +318,7 @@ describe.skipIf(!ENABLED)('PostgresSequencingStore（DFR-M3-A01）', () => {
     });
     expect(released).toMatchObject({ kind: 'released', lease: { status: 'released' } });
 
-    // 幂等：再释放仍返回 released。
+    // Idempotent: releasing again still returns released.
     const again = await store.releaseIfSafe({
       chain,
       account,
@@ -343,7 +343,7 @@ describe.skipIf(!ENABLED)('PostgresSequencingStore（DFR-M3-A01）', () => {
     expect(denied).toMatchObject({ kind: 'forbidden', reason: 'already_consumed' });
   });
 
-  it('releaseIfSafe：引用 token 不匹配 → forbidden{not_owner}，租约状态不变', async () => {
+  it('releaseIfSafe: mismatched reference token → forbidden{not_owner}, lease state unchanged', async () => {
     await reset();
     await reserve('txn_seq_not_owner');
     const denied = await store.releaseIfSafe({
@@ -361,7 +361,7 @@ describe.skipIf(!ENABLED)('PostgresSequencingStore（DFR-M3-A01）', () => {
     expect(rows[0]!.status).toBe('reserved');
   });
 
-  it('releaseExpiredOrphaned 只回收 TTL 已过的 reserved，consumed 永不回收', async () => {
+  it('releaseExpiredOrphaned reclaims only TTL-expired reserved rows; consumed is never reclaimed', async () => {
     await reset();
     await reserve('txn_seq_orphan', { ttlMs: -1 });
     await reserve('txn_seq_live');
@@ -384,13 +384,13 @@ describe.skipIf(!ENABLED)('PostgresSequencingStore（DFR-M3-A01）', () => {
     ]);
   });
 
-  it('releaseExpiredOrphaned 的 limit 越界即拒绝（不做无界扫描）', async () => {
+  it('releaseExpiredOrphaned refuses an out-of-range limit (no unbounded scans)', async () => {
     await expect(store.releaseExpiredOrphaned({ limit: 0 })).rejects.toBeInstanceOf(RangeError);
     await expect(store.releaseExpiredOrphaned({ limit: 501 })).rejects.toBeInstanceOf(RangeError);
     await expect(store.releaseExpiredOrphaned({ limit: 1.5 })).rejects.toBeInstanceOf(RangeError);
   });
 
-  it('reserve 拒绝非 blockhash token（M3 只服务 Solana）', async () => {
+  it('reserve refuses non-blockhash tokens (M3 serves only Solana)', async () => {
     await reset();
     await expect(
       store.reserve({
@@ -403,7 +403,7 @@ describe.skipIf(!ENABLED)('PostgresSequencingStore（DFR-M3-A01）', () => {
     ).rejects.toThrow(/blockhash/u);
   });
 
-  it('reserve 拒绝 account.chain 与 chain 不一致', async () => {
+  it('reserve refuses a mismatched account.chain and chain', async () => {
     await reset();
     await expect(
       store.reserve({
@@ -413,6 +413,6 @@ describe.skipIf(!ENABLED)('PostgresSequencingStore（DFR-M3-A01）', () => {
         token: blockhashToken(),
         leaseTtlMs: 60_000,
       }),
-    ).rejects.toThrow(/不一致/u);
+    ).rejects.toThrow(/does not match/u);
   });
 });

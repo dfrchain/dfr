@@ -1,22 +1,22 @@
 /**
- * PostgresNonceStore（DFR-M1-A11）。
+ * PostgresNonceStore (DFR-M1-A11).
  *
- * 并发与安全语义（M1-C00 / ADR-018 起）：
- *   - **reserve 先于交易行创建**：引擎顺序是 reserve → chain.build → create，
- *     因此 `nonce_leases.transaction_id` 不再有外键（迁移 0003），
- *     本 Store 的 reserve 不读取也不加锁 transactions 表；
- *   - nonce_accounts 行（FOR UPDATE）加上 nonce_leases 的两条唯一约束
- *     `(chain_id, account_address, nonce)` 与 `(transaction_id)` 共同构成串行化点：
- *     插入落空后区分 conflict（别的交易占了 nonce）与 reused（同一交易并发重放）；
- *   - 分配值为 max(chain pending nonce, next_nonce)，全部以 numeric/text 处理；
- *   - releaseIfSafe 检查交易快照与租约状态；交易行尚未创建时只允许释放 `reserved`
- *     （该租约未签名、未广播），signed/broadcast 之后一律 fail-closed；
- *   - 已释放的未签名 nonce 可在严格所有权和链上 pending nonce 条件下回收；
- *     调用端必须携带 transactionId，以防旧 Worker 修改重新绑定的租约（ABA）。
- *   - create 侧的"租约 ↔ 记录"一致性校验由 PostgresTransactionStore 负责，
- *     替代原先写在本 Store 里的交易行 chain/from 校验。
+ * Concurrency and safety semantics (since M1-C00 / ADR-018):
+ *   - **reserve runs before the transaction row is created**: the engine order is reserve → chain.build → create,
+ *     so `nonce_leases.transaction_id` no longer has a foreign key (migration 0003),
+ *     and this Store's reserve neither reads nor locks the transactions table;
+ *   - The nonce_accounts row (FOR UPDATE) plus nonce_leases' two unique constraints
+ *     `(chain_id, account_address, nonce)` and `(transaction_id)` together form the serialization point:
+ *     after a failed insert, distinguish conflict (another transaction took the nonce) from reused (concurrent replay of the same transaction);
+ *   - The allocated value is max(chain pending nonce, next_nonce), handled entirely as numeric/text;
+ *   - releaseIfSafe checks the transaction snapshot and the lease state; when the transaction row does not exist yet, only `reserved`
+ *     may be released (the lease is unsigned and unbroadcast); after signed/broadcast everything fails closed;
+ *   - A released unsigned nonce may be reclaimed under strict ownership and on-chain pending-nonce conditions;
+ *     the caller must carry the transactionId, so a stale worker cannot modify a rebound lease (ABA).
+ *   - The "lease ↔ record" consistency check on the create side is PostgresTransactionStore's job,
+ *     replacing the transaction-row chain/from check previously written in this Store.
  *
- * 本 Store 不接触签名载荷，也不调用 Adapter、Provider 或 Core。
+ * This Store never touches signed payloads and never calls Adapter, Provider, or Core.
  */
 
 import type {
@@ -71,7 +71,7 @@ interface TransactionLockRow extends QueryResultRow {
 
 interface NonceAccountRow extends QueryResultRow {
   next_nonce: string;
-  /** 原始水位（未与链上 pending 取 max），ADR-030 用它界定可回收空洞的上界。 */
+  /** Raw watermark (before taking the max with the on-chain pending nonce); ADR-030 uses it to bound reclaimable gaps. */
   watermark: string;
 }
 
@@ -96,13 +96,13 @@ async function rollbackQuietly(client: PoolClient): Promise<void> {
   try {
     await client.query('ROLLBACK');
   } catch {
-    // 保留原始异常；连接释放时 pg 会清理已失败事务。
+    // Keep the original error; pg cleans up the failed transaction when the connection is released.
   }
 }
 
 function assertMatchingAccount(input: ReserveNonceInput): void {
   if (input.account.chain !== input.chain) {
-    throw new Error('reserve: account.chain 与 chain 不一致');
+    throw new Error('reserve: account.chain does not match chain');
   }
 }
 
@@ -115,11 +115,11 @@ export class PostgresNonceStore implements NonceStore {
     try {
       await client.query('BEGIN');
 
-      // M1-C00（ADR-018）：reserve 发生在 TransactionStore.create **之前**，
-      // 因此这里不得要求交易行存在（0003 已移除该外键）。
-      // 同一 transactionId 的串行化点改为 nonce_leases.transaction_id 唯一索引
-      // （0002），下面的 `FOR UPDATE` 复用查询即基于它；
-      // chain/from 与记录的一致性由 create 侧 fail-closed 校验补上（见 ADR-018）。
+      // M1-C00 (ADR-018): reserve happens **before** TransactionStore.create,
+      // so the transaction row must not be required to exist here (0003 removed that foreign key).
+      // The serialization point for a given transactionId is now the nonce_leases.transaction_id unique index
+      // (0002); the `FOR UPDATE` reuse query below is based on it;
+      // chain/from consistency with the record is covered by the fail-closed check on the create side (see ADR-018).
       const existing = await client.query<NonceLeaseRow>(
         `SELECT ${LEASE_COLUMNS}, (expires_at > clock_timestamp()) AS unexpired
            FROM ${LEASES}
@@ -163,7 +163,7 @@ export class PostgresNonceStore implements NonceStore {
       const candidate = account.rows[0]?.next_nonce;
       const watermark = account.rows[0]?.watermark;
       if (candidate === undefined || watermark === undefined) {
-        throw new Error('reserve: nonce account upsert 后读取失败');
+        throw new Error('reserve: failed to read the nonce account after upsert');
       }
 
       // ADR-030 / TX-05: fill the lowest provably unsigned gap INLINE during
@@ -173,21 +173,21 @@ export class PostgresNonceStore implements NonceStore {
       // new worker builds before the sweep, skipping that gap would strand
       // later higher nonces in a queued mempool. The account row lock above
       // serializes all competing reservations for this account.
-      // ADR-030：优先填补**可安全回收**的空洞，避免 build 失败后留下永久空洞。
+      // ADR-030: prefer filling **safely reclaimable** gaps, so a failed build does not leave a permanent gap.
       //
-      // 可回收的三个条件（缺一不可）：
+      // The three conditions for reclaimability (all required):
       //   1. `released` OR an expired *reserved* lease (DB-time TTL):
       //      creation of a transaction after lease expiry fails closed in
       //      TransactionStore.create; a signed/broadcast lease is never
       //      eligible because its status is not reserved. Never seize a
       //      still-live lease even if no transaction row exists.
-      //   2. **没有交易行**：build 在 create 之前失败才会如此。有交易行的记录即便当前
-      //      是 built/simulated，之后仍可能被 simulate→sign→broadcast，绝不能复用；
-      //   3. `nonce >= 链上 pending nonce`：链上已用的 nonce 永远不复用（最终权威）。
-      // 上界用原始 watermark，因此只回收水位之下的空洞；水位本身保持单调不回退。
+      //   2. **No transaction row**: only happens when build fails before create. A record with a transaction row, even if currently
+      //      built/simulated, may still go through simulate→sign→broadcast later and must never be reused;
+      //   3. `nonce >= on-chain pending nonce`: an on-chain-used nonce is never reused (the chain is the final authority).
+      // The upper bound uses the raw watermark, so only gaps below the watermark are reclaimed; the watermark itself stays monotonic and never moves back.
       //
-      // 这一段的并发安全来自上方 `nonce_accounts ... FOR UPDATE`：同一 (chain, account)
-      // 的 reserve 在此串行化，不会有两个调用者抢同一个空洞。
+      // Concurrency safety here comes from the `nonce_accounts ... FOR UPDATE` above: reserves for the same (chain, account)
+      // are serialized here, so two callers cannot race for the same gap.
       const gap = await client.query<NonceLeaseRow>(
         `SELECT ${LEASE_COLUMNS}
            FROM ${LEASES} l
@@ -199,13 +199,13 @@ export class PostgresNonceStore implements NonceStore {
             )
             AND l.nonce < $3::numeric
             AND l.nonce >= $4::numeric
-            -- ADR-037 对 ADR-030 决策 #2 的**有意修订**：原来的条件是"没有交易行"
-            -- （即 build 在 create 之前失败）。现在放宽为"没有交易行 **或** 交易已 abandoned"。
-            -- 为什么安全：abandoned 是**终态**且只从 built/simulated 可达，
-            -- 但仍必须确认 expected_hash / tx_hash 均为空（抵御异常历史数据或导入错误）；
-            -- 只允许此种未签名记录的 nonce 重用。
-            -- TX-01：终态 reverted 且从未保存 expected_hash/tx_hash 的模拟失败也可复用。
-            -- 已签名、已广播或链上执行回滚的记录仍不可复用。
+            -- ADR-037's **deliberate revision** of ADR-030 decision #2: the original condition was "no transaction row"
+            -- (i.e. build failed before create). It is now relaxed to "no transaction row **or** the transaction is abandoned".
+            -- Why it is safe: abandoned is a **terminal state** reachable only from built/simulated,
+            -- but expected_hash / tx_hash must still be confirmed empty (guarding against anomalous historical data or import errors);
+            -- only this kind of unsigned record's nonce may be reused.
+            -- TX-01: a simulation failure in terminal reverted state that never saved expected_hash/tx_hash may also be reused.
+            -- Records that are signed, broadcast, or reverted by on-chain execution still may not be reused.
             AND NOT EXISTS (
               SELECT 1 FROM ${TRANSACTIONS} t
                WHERE t.id = l.transaction_id
@@ -221,10 +221,10 @@ export class PostgresNonceStore implements NonceStore {
       );
       const reclaimable = gap.rows[0];
       if (reclaimable !== undefined) {
-        // 复用该 nonce：把已释放 / 严格过期且无可签名交易的租约行
-        // 在同一个事务和 lease 行锁内绑定给新交易（既无暂时释放窗口，
-        // 也不依赖定时巡检先运行）。
-        // 不改 next_nonce —— 水位是上界，空洞在这里被填平后仍是单调的。
+        // Reuse that nonce: bind the released / strictly-expired lease row with no signable transaction to the new transaction
+        // within the same transaction and lease row lock (no temporary release window,
+        // and no dependence on a scheduled sweep running first).
+        // next_nonce is unchanged — the watermark is an upper bound, and it stays monotonic once the gap is filled here.
         const reclaimed = await client.query<NonceLeaseRow>(
           `UPDATE ${LEASES}
               SET transaction_id = $4,
@@ -250,9 +250,9 @@ export class PostgresNonceStore implements NonceStore {
            (chain_id, account_address, nonce, transaction_id, status, expires_at)
          VALUES ($1, $2, $3::numeric, $4, 'reserved',
                  clock_timestamp() + ($5::text || ' milliseconds')::interval)
-         -- 不指定冲突目标：nonce_leases 上有两条唯一约束
-         --   (chain_id, account_address, nonce) 与 (transaction_id)，
-         -- 二者都必须在并发下被吸收，然后由下面的分支区分 reused / conflict。
+         -- No conflict target is specified: nonce_leases has two unique constraints
+         --   (chain_id, account_address, nonce) and (transaction_id),
+         -- and both must be absorbed under concurrency, then distinguished as reused / conflict by the branches below.
          ON CONFLICT DO NOTHING
          RETURNING ${LEASE_COLUMNS}`,
         [
@@ -266,11 +266,11 @@ export class PostgresNonceStore implements NonceStore {
 
       const lease = inserted.rows[0];
       if (lease === undefined) {
-        // 有两种唯一约束可能让插入落空，必须区分（否则会误报冲突）：
-        //   1. (chain_id, account_address, nonce)：别的交易抢走了同一 nonce → conflict；
-        //   2. transaction_id（0002）：同一交易已被并发调用抢先落租约 → reused。
-        // 第 2 种在 M1-C00 之前不会出现，因为当时交易行锁已把并发重放串行化了；
-        // ADR-018 之后该串行化点变成唯一索引，因此这里必须显式处理。
+        // Two unique constraints can make the insert fail, and they must be distinguished (or conflicts would be misreported):
+        //   1. (chain_id, account_address, nonce): another transaction took the same nonce → conflict;
+        //   2. transaction_id (0002): the same transaction already had a lease placed by a concurrent call → reused.
+        // Case 2 could not occur before M1-C00, because the transaction row lock then serialized concurrent replays;
+        // after ADR-018 that serialization point became a unique index, so it must be handled explicitly here.
         const conflict = await client.query<NonceLeaseRow>(
           `SELECT ${LEASE_COLUMNS}
              FROM ${LEASES}
@@ -293,7 +293,7 @@ export class PostgresNonceStore implements NonceStore {
         );
         const replayedLease = sameTransaction.rows[0];
         if (replayedLease === undefined) {
-          throw new Error('reserve: nonce 唯一冲突后读取不到冲突租约');
+          throw new Error('reserve: conflicting lease not found after nonce unique conflict');
         }
         // Unique-index replay must obey the same live-lease rule as the
         // early transactionId lookup. An expired/released conflicting lease
@@ -367,7 +367,7 @@ export class PostgresNonceStore implements NonceStore {
         return { kind: 'not_found' };
       }
 
-      // ADR-030：同一 nonce 可能已被回收并绑定到**新**交易；迟到的释放不得影响新租约。
+      // ADR-030: the same nonce may already have been reclaimed and bound to a **new** transaction; a late release must not affect the new lease.
       if (locked.transaction_id !== ref.transactionId) {
         await client.query('COMMIT');
         return { kind: 'forbidden', lease: rowToLease(locked), reason: 'not_owner' };
@@ -379,10 +379,10 @@ export class PostgresNonceStore implements NonceStore {
       }
 
       if (transactionStatus === undefined) {
-        // 交易行从未创建：build 在 create 之前失败（ADR-018 之后这是可发生的）。
-        // 此时租约只可能是 reserved —— markBroadcast / advance 都要求交易行存在，
-        // 因此它既未签名也未广播，释放不会破坏"已广播 nonce 不可复用"。
-        // 不释放则会留下永远无法回收的孤儿租约。
+        // The transaction row was never created: build failed before create (possible since ADR-018).
+        // At this point the lease can only be reserved — markBroadcast / advance both require the transaction row to exist,
+        // so it is neither signed nor broadcast, and releasing it does not break "a broadcast nonce is never reused".
+        // Not releasing it would leave an orphaned lease that can never be reclaimed.
         if (locked.status !== 'reserved') {
           await client.query('COMMIT');
           return {
@@ -496,7 +496,7 @@ export class PostgresNonceStore implements NonceStore {
         return { kind: 'not_found' };
       }
 
-      // 即使只推进 lease，也先取 transaction 锁，保持全局锁顺序。
+      // Even when only advancing the lease, take the transaction lock first to keep the global lock order.
       const transaction = await client.query(
         `SELECT id FROM ${TRANSACTIONS} WHERE id = $1 FOR UPDATE`,
         [transactionId],
@@ -512,15 +512,15 @@ export class PostgresNonceStore implements NonceStore {
         return { kind: 'not_found' };
       }
 
-      // ADR-030：空洞 nonce 可被回收复用，因此调用方可能持有**旧**租约引用。
-      // 提供 transactionId 时必须与当前绑定一致，否则视为 not_found（相当于"这个引用已失效"），
-      // 避免迟到 Worker 误更新新租约（ABA）。
+      // ADR-030: gap nonces can be reclaimed and reused, so a caller may hold a **stale** lease reference.
+      // When a transactionId is provided it must match the current binding, otherwise it counts as not_found (equivalent to "this reference is stale"),
+      // so a late worker cannot mistakenly update the new lease (ABA).
       if (locked.transaction_id !== ref.transactionId) {
         await client.query('ROLLBACK');
         return { kind: 'not_found' };
       }
 
-      // consumed 是最高事实，迟到的 broadcast 不能把它降级。
+      // consumed is the highest fact; a late broadcast cannot downgrade it.
       const nextStatus = locked.status === 'consumed' ? 'consumed' : target;
       const { rows } = await client.query<NonceLeaseRow>(
         `UPDATE ${LEASES}

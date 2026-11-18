@@ -1,26 +1,26 @@
 /**
- * PostgresSequencingStore 双 `pg.Pool` 争用测试（issue #22 门禁 2 残留项）。
+ * PostgresSequencingStore dual-`pg.Pool` contention test (issue #22 gate 2 leftover).
  *
- * 默认跳过；`pnpm test:db` 会提供迁移/运行时两套 DSN。
+ * Skipped by default; `pnpm test:db` provides both the migration and runtime DSNs.
  *
- * 为什么存在：门禁 2 的核心性质——"已 reserved→consumed 的签名广播租约
- * 不能被任何 worker 回收"——此前只由 (i) sweep 的 SQL 谓词
- * （`status='reserved' AND expires_at<=…`，consumed 结构性不可达）、
- * (ii) 单 Pool 多连接竞争、(iii) TX-05 的双池类比测试旁证。
- * 本文件补上缺失的一环：**两个独立 `pg.Pool`**（各自独立的连接集，
- * 模拟两个网关进程/worker）对同一数据库正面对撞，形状借鉴
- * `idempotency-store.test.ts` 的 TX-05 双池用例：
+ * Why it exists: gate 2's core property — "a signed broadcast lease that has gone reserved→consumed
+ * cannot be reclaimed by any worker" — was previously only evidenced by (i) the sweep's SQL predicate
+ * (`status='reserved' AND expires_at<=…`, under which consumed is structurally unreachable),
+ * (ii) single-Pool multi-connection contention, and (iii) TX-05's dual-pool analogy test.
+ * This file supplies the missing link: **two independent `pg.Pool`s** (each with its own connection set,
+ * simulating two gateway processes/workers) colliding head-on against the same database, shaped after
+ * the TX-05 dual-pool case in `idempotency-store.test.ts`:
  *
- *   (a) consumed 租约跨池不可回收/过期/复活（TTL 过后 sweep 仍碰不到、
- *       releaseIfSafe 跨池拒绝、同 transactionId 重放跨池拒绝）；
- *   (b) CAS 完整性：同 transactionId 跨池并发 reserve 恰好一个 `reserved`、
- *       其余 `reused`、只落一行；markConsumed 与 releaseIfSafe 跨池对撞
- *       每轮恰好一个胜者（无 double-consume、无丢失更新）；
- *       双池并发 markConsumed 只推进一次（幂等路径不产生第二次 UPDATE）；
- *   (c) 一池的 sweep 绝不触碰另一池产生的 consumed，只回收过期的 reserved。
+ *   (a) consumed leases cannot be reclaimed/expired/revived across pools (after the TTL passes the sweep still cannot touch them,
+ *       releaseIfSafe refuses across pools, and replays with the same transactionId are refused across pools);
+ *   (b) CAS integrity: concurrent cross-pool reserves with the same transactionId yield exactly one `reserved`,
+ *       the rest `reused`, and only one row lands; cross-pool collisions of markConsumed and releaseIfSafe yield
+ *       exactly one winner per round (no double-consume, no lost updates);
+ *       concurrent dual-pool markConsumed advances only once (the idempotent path produces no second UPDATE);
+ *   (c) one pool's sweep never touches the other pool's consumed rows, reclaiming only expired reserved rows.
  *
- * 测试使用独立数据库，真实验证 PostgreSQL 行锁 / advisory lock / 唯一约束，
- * 而不是进程内互斥。
+ * Tests use a separate database, genuinely verifying PostgreSQL row locks / advisory locks / unique constraints,
+ * rather than in-process mutexes.
  */
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -49,9 +49,9 @@ const chain = 'solana-devnet' as ChainId;
 const account = { chain, address: 'So11111111111111111111111111111111111111112' } as const;
 
 /**
- * 一个形状合法的 Solana blockhash（base58，32 字节）。
+ * A well-formed Solana blockhash (base58, 32 bytes).
  *
- * 公开链上引用，不含任何秘密；48 个 '1' 是 32 个零字节的 base58 表示。
+ * A public on-chain reference containing no secrets; 48 '1's are the base58 representation of 32 zero bytes.
  */
 const BLOCKHASH = '1'.repeat(48) + '2345'; // secret-scan:allow public-blockhash-placeholder
 const LAST_VALID = '495317734' as DecimalUint;
@@ -124,7 +124,7 @@ beforeAll(async () => {
   await admin.connect();
   const { rows } = await admin.query<{ db: string }>('SELECT current_database() AS db');
   if (!/_test$/u.test(rows[0]!.db)) {
-    throw new Error(`拒绝在非测试库 "${rows[0]!.db}" 上执行（库名必须以 _test 结尾）`);
+    throw new Error(`refusing to run against non-test database "${rows[0]!.db}" (database name must end with _test)`);
   }
 
   await admin.query(`DROP DATABASE IF EXISTS ${PRIVATE_DB} WITH (FORCE)`);
@@ -135,7 +135,7 @@ beforeAll(async () => {
   await runMigrations({ client: setup, migrations: loadMigrations(migrationsDir) });
   await setup.end();
 
-  // 两个**独立**的 Pool = 两个互不知情的 worker 进程的连接集。
+  // Two **independent** Pools = the connection sets of two worker processes unaware of each other.
   poolA = new Pool({ connectionString: runtimeDsnFor(PRIVATE_DB), max: 10 });
   poolB = new Pool({ connectionString: runtimeDsnFor(PRIVATE_DB), max: 10 });
   inspector = new Client({ connectionString: dsnFor(PRIVATE_DB) });
@@ -150,8 +150,8 @@ afterAll(async () => {
   if (poolA) await poolA.end();
   if (poolB) await poolB.end();
   if (admin) {
-    // Store 池使用最小权限 dfr_runtime；migrator 无权终止另一角色，
-    // 因此只读轮询到连接归零，再由数据库 owner 普通 DROP。
+    // The Store pool uses the least-privilege dfr_runtime role; the migrator may not terminate another role,
+    // so poll read-only until connections reach zero, then let the database owner DROP normally.
     for (let attempt = 0; attempt < 50; attempt += 1) {
       const { rows } = await admin.query<{ count: string }>(
         `SELECT count(*)::text AS count FROM pg_stat_activity WHERE datname = $1`,
@@ -165,8 +165,8 @@ afterAll(async () => {
   }
 }, 60_000);
 
-describe.skipIf(!ENABLED)('PostgresSequencingStore 双 Pool 争用（TX-07 / issue #22 门禁 2）', () => {
-  it('TX-07 双池：A 池 consumed 的租约在 TTL 过后不能被 B 池 sweep 回收、释放或重放复活', async () => {
+describe.skipIf(!ENABLED)('PostgresSequencingStore dual-Pool contention (TX-07 / issue #22 gate 2)', () => {
+  it('TX-07 dual-pool: a lease consumed by pool A cannot be sweep-reclaimed, released, or replay-revived by pool B after the TTL passes', async () => {
     await reset();
     const txn = 'txn_mp_consumed_guard';
     const reserved = await reserveOn(storeA, txn, { ttlMs: 250 });
@@ -174,59 +174,59 @@ describe.skipIf(!ENABLED)('PostgresSequencingStore 双 Pool 争用（TX-07 / iss
     const consumed = await storeA.markConsumed(refFor(txn));
     expect(consumed).toMatchObject({ kind: 'updated', lease: { status: 'consumed' } });
 
-    // 租约 TTL 已过：行政过期只对 reserved 有意义，consumed 是审计事实。
+    // The lease TTL has passed: administrative expiry is only meaningful for reserved; consumed is an audit fact.
     await delay(450);
 
-    // 对方 Pool 的 sweep 碰不到它（表里只有这一行，回收数必须为 0）。
+    // The other pool's sweep cannot touch it (this is the only row in the table, so the reclaimed count must be 0).
     await expect(storeB.releaseExpiredOrphaned({ limit: 100 })).resolves.toBe(0);
     expect(await statusOf(txn)).toBe('consumed');
 
-    // 对方 Pool 也不能把它"安全释放"掉。
+    // The other pool cannot "safely release" it either.
     const release = await storeB.releaseIfSafe(refFor(txn));
     expect(release).toMatchObject({ kind: 'forbidden', reason: 'already_consumed' });
     expect(await statusOf(txn)).toBe('consumed');
 
-    // 同 transactionId 跨池重放也不能把 consumed 租约当有效租约拿回来。
+    // A cross-pool replay with the same transactionId cannot bring the consumed lease back as a valid lease either.
     await expect(reserveOn(storeB, txn)).rejects.toThrow(/inactive/u);
     expect(await statusOf(txn)).toBe('consumed');
 
-    // 本池 sweep 同样无-op。
+    // This pool's own sweep is likewise a no-op.
     await expect(storeA.releaseExpiredOrphaned({ limit: 100 })).resolves.toBe(0);
     expect(await statusOf(txn)).toBe('consumed');
   });
 
-  it('TX-07 双池：一池的 sweep 只回收过期的 reserved，绝不触碰两池产生的 consumed', async () => {
+  it('TX-07 dual-pool: one pool's sweep reclaims only expired reserved rows and never touches consumed rows from either pool', async () => {
     await reset();
-    // A 池 reserve、B 池 consume（跨池推进本身必须成立）。
+    // Pool A reserves, pool B consumes (cross-pool advancement itself must work).
     await reserveOn(storeA, 'txn_mp_sweep_consumed_a', { ttlMs: 250 });
     await expect(storeB.markConsumed(refFor('txn_mp_sweep_consumed_a'))).resolves.toMatchObject({
       kind: 'updated',
       lease: { status: 'consumed' },
     });
-    // B 池自己的 consumed。
+    // Pool B's own consumed row.
     await reserveOn(storeB, 'txn_mp_sweep_consumed_b', { ttlMs: 250 });
     await storeB.markConsumed(refFor('txn_mp_sweep_consumed_b'));
-    // 对照组 1：已过期的 reserved（应被回收的那一行）。
+    // Control group 1: an expired reserved row (the one that should be reclaimed).
     await reserveOn(storeA, 'txn_mp_sweep_reserved', { ttlMs: 250 });
-    // 对照组 2：未过期的 reserved（sweep 同样不许碰）。
+    // Control group 2: an unexpired reserved row (the sweep must not touch it either).
     await reserveOn(storeB, 'txn_mp_sweep_live', { ttlMs: 60_000 });
 
     await delay(450);
 
-    // 由 A 池发起 sweep：恰好回收 1 行（过期的 reserved）。
+    // Pool A runs the sweep: exactly 1 row reclaimed (the expired reserved one).
     await expect(storeA.releaseExpiredOrphaned({ limit: 100 })).resolves.toBe(1);
     expect(await statusOf('txn_mp_sweep_consumed_a')).toBe('consumed');
     expect(await statusOf('txn_mp_sweep_consumed_b')).toBe('consumed');
     expect(await statusOf('txn_mp_sweep_reserved')).toBe('expired');
     expect(await statusOf('txn_mp_sweep_live')).toBe('reserved');
 
-    // B 池再 sweep 一轮：无事可做，且 consumed 依旧纹丝不动。
+    // Pool B sweeps another round: nothing to do, and consumed stays untouched.
     await expect(storeB.releaseExpiredOrphaned({ limit: 100 })).resolves.toBe(0);
     expect(await statusOf('txn_mp_sweep_consumed_a')).toBe('consumed');
     expect(await statusOf('txn_mp_sweep_consumed_b')).toBe('consumed');
   });
 
-  it('TX-07 双池：同一 transactionId 跨池并发 reserve——恰好一个 reserved、其余 reused、只落一行', async () => {
+  it('TX-07 dual-pool: concurrent cross-pool reserves with the same transactionId — exactly one reserved, the rest reused, only one row lands', async () => {
     await reset();
     const txn = 'txn_mp_reserve_race';
     const contenders = Array.from({ length: 10 }, (_, i) => (i % 2 === 0 ? storeA : storeB));
@@ -234,18 +234,18 @@ describe.skipIf(!ENABLED)('PostgresSequencingStore 双 Pool 争用（TX-07 / iss
 
     expect(results.filter((r) => r.kind === 'reserved')).toHaveLength(1);
     expect(results.filter((r) => r.kind === 'reused')).toHaveLength(9);
-    // 所有人看到的是同一条租约（同一个 expiresAt = 同一行），不是各自一份。
+    // Everyone sees the same lease (the same expiresAt = the same row), not one each.
     const expires = new Set(results.map((r) => r.lease.expiresAt));
     expect(expires.size).toBe(1);
     expect(await rowCount(txn)).toBe('1');
     expect(await statusOf(txn)).toBe('reserved');
   });
 
-  it('TX-07 双池：markConsumed 与 releaseIfSafe 跨池正面对撞——每轮恰好一个胜者', async () => {
+  it('TX-07 dual-pool: head-on cross-pool collisions of markConsumed and releaseIfSafe — exactly one winner per round', async () => {
     await reset();
     for (let round = 0; round < 8; round += 1) {
       const txn = `txn_mp_cas_race_${round}`;
-      // 交替由不同池 reserve、不同池担任 consume/release 两侧，排除单侧偏差。
+      // Alternate which pool reserves and which pool takes the consume/release sides, ruling out single-sided bias.
       const reserver = round % 2 === 0 ? storeA : storeB;
       const consumer = round % 2 === 0 ? storeB : storeA;
       const releaser = round % 2 === 0 ? storeA : storeB;
@@ -258,11 +258,11 @@ describe.skipIf(!ENABLED)('PostgresSequencingStore 双 Pool 争用（TX-07 / iss
 
       const finalStatus = await statusOf(txn);
       if (mark.kind === 'updated') {
-        // consume 胜：release 必须被 already_consumed 拒绝，状态停在 consumed。
+        // Consume wins: release must be refused with already_consumed, and the state stays consumed.
         expect(release).toMatchObject({ kind: 'forbidden', reason: 'already_consumed' });
         expect(finalStatus).toBe('consumed');
       } else {
-        // release 胜：mark 必须 not_found（B40 不得复活终态），状态停在 released。
+        // Release wins: mark must be not_found (B40 must not revive a terminal state), and the state stays released.
         expect(mark.kind).toBe('not_found');
         expect(release.kind).toBe('released');
         expect(finalStatus).toBe('released');
@@ -271,7 +271,7 @@ describe.skipIf(!ENABLED)('PostgresSequencingStore 双 Pool 争用（TX-07 / iss
     }
   });
 
-  it('TX-07 双池：双池并发 markConsumed 同一租约——只推进一次，跨池重放不改 updated_at', async () => {
+  it('TX-07 dual-pool: concurrent dual-pool markConsumed on the same lease — advances only once, and a cross-pool replay does not change updated_at', async () => {
     await reset();
     const txn = 'txn_mp_consume_once';
     await reserveOn(storeA, txn);
@@ -288,8 +288,8 @@ describe.skipIf(!ENABLED)('PostgresSequencingStore 双 Pool 争用（TX-07 / iss
         WHERE transaction_id = $1`,
       [txn],
     );
-    // 幂等路径只读不写：再从另一池 markConsumed，updated_at 必须逐字不变——
-    // 证明状态只被推进过一次，没有 double-consume 式的第二次 UPDATE。
+    // The idempotent path is read-only: marking consumed again from the other pool must leave updated_at byte-identical —
+    // proof the state was advanced only once, with no double-consume-style second UPDATE.
     await expect(storeB.markConsumed(refFor(txn))).resolves.toMatchObject({ kind: 'updated' });
     const { rows: after } = await inspector.query<{ updated_at: string }>(
       `SELECT updated_at::text AS updated_at FROM ${SCHEMA}.sequencing_leases

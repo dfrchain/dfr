@@ -1,9 +1,9 @@
-// `vault:` 引用在 Registry 层的行为（M5 生产加固 E4）。
+// Behavior of `vault:` references at the Registry layer (M5 production hardening E4).
 //
-// 这里的断言针对**语义**，不是实现：
-// - 未配置 vault 时必须**抛配置错误**，绝不当成"未认证"放行（fail-closed）；
-// - 显式注入 reader 时能取到值；
-// - 凭证缺失仍沿用既有语义（undefined = 未认证），与 `env:` 一致。
+// The assertions here target **semantics**, not implementation:
+// - Without a configured vault, it must **throw a configuration error** and never pass as "unauthenticated" (fail-closed);
+// - An explicitly injected reader can retrieve values;
+// - A missing credential keeps the existing semantics (undefined = unauthenticated), consistent with `env:`.
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -43,8 +43,8 @@ function vault(): string {
   return root;
 }
 
-describe('vault: 引用', () => {
-  it('注入 VaultReader 后可解析凭证', () => {
+describe('vault: references', () => {
+  it('an injected VaultReader can resolve credentials', () => {
     const registry = ChainRegistry.fromText(withVault('vault:providers/eth.key'), {
       env: { TEST_PRIMARY_URL: 'https://rpc.example.com' },
       vault: new FileVaultReader(vault()),
@@ -53,7 +53,7 @@ describe('vault: 引用', () => {
     expect(registry.resolveCredential(registry.listProviders()[0]!)).toBe('vault-secret');
   });
 
-  it('未配置 vault 时**抛配置错误**，不静默当作未认证', () => {
+  it('without a configured vault it **throws a configuration error** instead of silently passing as unauthenticated', () => {
     const registry = ChainRegistry.fromText(withVault('vault:providers/eth.key'), {
       env: { TEST_PRIMARY_URL: 'https://rpc.example.com' },
       source: 'test',
@@ -61,7 +61,7 @@ describe('vault: 引用', () => {
     expect(() => registry.resolveCredential(registry.listProviders()[0]!)).toThrowError(/DFR_VAULT_DIR/);
   });
 
-  it('vault 中条目不存在时按"未提供"返回 undefined（沿用 env: 语义）', () => {
+  it('a missing vault entry returns undefined as "not provided" (keeping the env: semantics)', () => {
     const registry = ChainRegistry.fromText(withVault('vault:providers/missing.key'), {
       env: { TEST_PRIMARY_URL: 'https://rpc.example.com' },
       vault: new FileVaultReader(vault()),
@@ -70,7 +70,7 @@ describe('vault: 引用', () => {
     expect(registry.resolveCredential(registry.listProviders()[0]!)).toBeUndefined();
   });
 
-  it('路径逃逸在 Registry 层同样取不到值（不泄漏、放行）', () => {
+  it('path escapes cannot retrieve values at the Registry layer either (no leak, no pass-through)', () => {
     const registry = ChainRegistry.fromText(withVault('vault:../../../../etc/hosts'), {
       env: { TEST_PRIMARY_URL: 'https://rpc.example.com' },
       vault: new FileVaultReader(vault()),
@@ -79,7 +79,7 @@ describe('vault: 引用', () => {
     expect(registry.resolveCredential(registry.listProviders()[0]!)).toBeUndefined();
   });
 
-  it('端点使用 vault 且条目缺失时必须报错（端点不可缺失）', () => {
+  it('an endpoint using vault with a missing entry must error (endpoints may not be missing)', () => {
     const text = withVault('none').replace('endpointRef: "env:TEST_PRIMARY_URL"', 'endpointRef: "vault:providers/missing.key"');
     const registry = ChainRegistry.fromText(text, {
       env: {},

@@ -1,8 +1,8 @@
 /**
- * 事件源接线测试（M2-C03 收尾）：后台 `chain.reorg` 必须真正进入事件总线。
+ * Event-source wiring test (M2-C03 wrap-up): background `chain.reorg` must really reach the event bus.
  *
- * 为什么必须用真实 `startGateway`：接线点在 composition root（reorg 巡检的 publish sink），
- * 组件级测试看不到"事件是否真的从巡检流到了订阅者"。
+ * Why a real `startGateway` is required: the wiring point is in the composition root (the reorg sweep's publish sink),
+ * and component-level tests cannot see "whether events really flow from the sweep to subscribers".
  */
 import { createServer } from 'node:http';
 import { describe, expect, it, vi } from 'vitest';
@@ -29,7 +29,7 @@ function rpcServer(): ReturnType<typeof createServer> {
     req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
     req.on('end', () => {
       const parsed = JSON.parse(body || '{}') as { id?: unknown; method?: string };
-      // 链上 canonical hash 是 0xaa…，而记录锚定的是 0xcc… → 每轮都判定为重组。
+      // The on-chain canonical hash is 0xaa…, while the record is anchored to 0xcc… → every round is judged a reorg.
       const result = parsed.method === 'eth_chainId' ? '0xaa36a7'
         : parsed.method === 'eth_getBlockByNumber' ? BLOCK
           : '0x0';
@@ -56,8 +56,8 @@ function includedRecord(seq: number): Record<string, unknown> {
   };
 }
 
-describe('事件源接线：chain.reorg → SSE（M2-C03）', () => {
-  it('订阅者能收到后台巡检发布的 chain.reorg 事件', async () => {
+describe('event-source wiring: chain.reorg → SSE (M2-C03)', () => {
+  it('subscribers receive the chain.reorg events published by the background sweep', async () => {
     const rpc = rpcServer();
     await new Promise<void>((resolve) => rpc.listen(0, '127.0.0.1', resolve));
     const rpcPort = (rpc.address() as { port: number }).port;
@@ -65,11 +65,11 @@ describe('事件源接线：chain.reorg → SSE（M2-C03）', () => {
     const persistence: GatewayPersistence = {
       stores: {
         transaction: {
-          // 只有**重组巡检**带 `statuses: ['included']`；启动恢复巡检不带 statuses
-          // （`RecoveryCoordinator.run` 的调用形状）。按这一点区分，避免启动恢复
-          // 提前消耗掉我们要观察的那条记录（否则测试会随启动时序 flaky）。
-          // 每一轮都返回同一个"被重组"的记录：订阅者无论何时连上，后续轮次都会产生事件。
-          // （只返回一次会让测试依赖"订阅恰好早于第一轮巡检"，那是 flaky 的根源。）
+          // Only the **reorg sweep** carries `statuses: ['included']`; the startup recovery sweep carries no statuses
+          // (the `RecoveryCoordinator.run` call shape). Distinguish by this, so startup recovery does not
+          // consume the record we want to observe early (otherwise the test becomes flaky with startup timing).
+          // Every round returns the same "reorged" record: whenever a subscriber connects, later rounds still produce events.
+          // (Returning it only once would make the test depend on "the subscription happens just before the first sweep round" — the root of the flakiness.)
           listRecoverable: async (input: { statuses?: readonly string[] }) => {
             if (input.statuses?.includes('included') !== true) return [];
             return [includedRecord(1)];
@@ -103,7 +103,7 @@ describe('事件源接线：chain.reorg → SSE（M2-C03）', () => {
           DFR_TRANSACTION_DATABASE_URL: 'postgres://runtime:[redacted]@db.invalid/dfr',
           DFR_GATEWAY_PORT: '0',
           DFR_RECOVERY_SWEEP_INTERVAL_MS: '3600000',
-          DFR_REORG_SWEEP_INTERVAL_MS: '1000', // 让巡检尽快跑一轮（不依赖外部入口）
+          DFR_REORG_SWEEP_INTERVAL_MS: '1000', // let the sweep run a round soon (without depending on an external trigger)
           DFR_REORG_SWEEP_BATCH: '10',
           DFR_PROVIDER_ETHEREUM_SEPOLIA_PRIMARY_URL: `http://127.0.0.1:${rpcPort}`,
           DFR_PROVIDER_ETHEREUM_SEPOLIA_SECONDARY_URL: `http://127.0.0.1:${rpcPort}`,
@@ -111,7 +111,7 @@ describe('事件源接线：chain.reorg → SSE（M2-C03）', () => {
         async () => persistence,
       );
 
-      // 订阅（header 鉴权路径），然后触发一轮重组巡检。
+      // Subscribe (header auth path), then trigger one reorg sweep round.
       const controller = new AbortController();
       const res = await fetch(`${app.port ? `http://127.0.0.1:${app.port}` : ''}/v1/events/subscribe?chain=${CHAIN}`, {
         headers: { 'x-dfr-key': KEY },
@@ -119,13 +119,13 @@ describe('事件源接线：chain.reorg → SSE（M2-C03）', () => {
       });
       expect(res.status).toBe(200);
 
-      // 巡检每 1s 一轮；每轮都判定为重组并发布事件，因此订阅者总能等到一个。
+      // The sweep runs one round per second; every round is judged a reorg and publishes an event, so a subscriber always eventually gets one.
       const reader = res.body!.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
-      // 必须由一个连续读取循环独占 reader。此前每秒将 `reader.read()` 与超时
-      // Promise 竞争；若超时先赢，遗留的 read 仍会在事件到达时消费 chunk，
-      // 测试主循环却不再观察该 chunk，造成“日志已有 reorg、SSE 缓冲为空”的假阴性。
+      // A single continuous read loop must own the reader. Previously, every second `reader.read()` raced against a timeout
+      // Promise; if the timeout won, the leftover read would still consume the chunk when the event arrived,
+      // while the test's main loop no longer observed that chunk, causing a false negative of "the log already has the reorg, but the SSE buffer is empty".
       const received = await new Promise<boolean>((resolve) => {
         const timeout = setTimeout(() => {
           controller.abort();
@@ -146,7 +146,7 @@ describe('事件源接线：chain.reorg → SSE（M2-C03）', () => {
               }
             }
           } catch {
-            // abort/对端断开都不是成功接收事件。
+            // An abort / peer disconnect is not a successful event receipt.
             resolve(false);
           } finally {
             clearTimeout(timeout);

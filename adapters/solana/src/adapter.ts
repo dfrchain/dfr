@@ -1,11 +1,11 @@
 /**
- * @dfr/adapter-solana —— Solana Adapter（M2 只读，ADR-025/027/028）。
+ * @dfr/adapter-solana — Solana Adapter (M2 read-only, ADR-025/027/028).
  *
- * 范围：getInfo / capabilities / getBalance（lamports）/ getBlock（以 slot 定位）。
- * 写路径（build/simulate/broadcast）属 M3，本 Adapter 不声明这些能力，
- * 因此 Core 会在能力闸门处 fail-closed。
+ * Scope: getInfo / capabilities / getBalance (lamports) / getBlock (located by slot).
+ * The write path (build/simulate/broadcast) belongs to M3; this Adapter does not declare those capabilities,
+ * so Core fails closed at the capability gate.
  *
- * 与 EVM Adapter 同构：Adapter 只做链语义与编解码，不选择 Provider、不访问数据库。
+ * Isomorphic with the EVM Adapter: the Adapter only handles chain semantics and codecs; it does not select Providers or access databases.
  */
 import { createDfrError, isDfrError } from '@dfr/errors';
 import type {
@@ -71,7 +71,7 @@ function isUnsignedTransaction(
   return 'payload' in value;
 }
 
-/** 按能力获取句柄后发起一次只读调用（单次调用场景，与 EVM 的 evmCall 同构）。 */
+/** Acquire a handle by capability, then make one read-only call (single-call scenario, isomorphic with the EVM evmCall). */
 async function evmStyleCall<T>(
   ctx: AdapterContext,
   capability: CapabilityId,
@@ -83,33 +83,33 @@ async function evmStyleCall<T>(
 }
 
 /**
- * 本 Adapter **实际实现**的能力（真相）。Registry 是允许清单，启动时校验 registry ⊆ adapter。
+ * The capabilities this Adapter **actually implements** (ground truth). The Registry is an allowlist, verified at startup as registry ⊆ adapter.
  *
- * 注意不含 `event.subscribe`：按 ADR-025，该能力是**部署级**（由 Core 的事件总线提供），
- * 不由 Adapter 实现。`transaction.read` 需要 getTransaction，当前 M2 只读范围先只声明
- * balance / block，待 B04 补齐后再加入清单与 registry。
+ * Note that `event.subscribe` is excluded: per ADR-025, that capability is **deployment-level** (provided by Core's event bus),
+ * not implemented by the Adapter. `transaction.read` needs getTransaction; the current M2 read-only scope declares only
+ * balance / block, to be added to the list and registry once B04 fills the gap.
  */
 export const SOLANA_IMPLEMENTED_CAPABILITIES: readonly CapabilityId[] = [
   'account.balance',
   'block.read',
   'transaction.read',
-  // M3-A02/B01：写路径构建（codec 见 transaction-codec.ts）。
+  // M3-A02/B01: write-path construction (codec in transaction-codec.ts).
   'transaction.build',
-  // M3-B02：只读链上模拟。
+  // M3-B02: read-only on-chain simulation.
   'transaction.simulate',
-  // M3-C01：单次广播。
+  // M3-C01: single broadcast.
   'transaction.broadcast',
 ];
 
 const LAMPORTS_DECIMALS = 9;
 
-/** System Program（11111111111111111111111111111111 = 32 个零字节）。 */
+/** System Program (11111111111111111111111111111111 = 32 zero bytes). */
 const SYSTEM_PROGRAM_ID = '11111111111111111111111111111111';
 
-/** 广播超时：单次提交，失败即抛出，绝不重发。 */
+/** Broadcast timeout: a single submission; failures throw immediately, never resent. */
 const BROADCAST_TIMEOUT_MS = 30_000;
 
-/** 端点说"已经有了"的模式（幂等成功）。 */
+/** Patterns for the endpoint saying "already have it" (idempotent success). */
 const ALREADY_KNOWN_PATTERNS = ['already been processed', 'already processed', 'already in'] as const;
 
 export interface SolanaAdapterOptions {
@@ -155,7 +155,7 @@ export class SolanaAdapter
 
   async getInfo(ctx: AdapterContext): Promise<ChainInfo> {
     this.assertChain(ctx.chain, ctx);
-    // 复用同一句柄：slot 与版本必须来自同一端点。
+    // Reuse the same handle: slot and version must come from the same endpoint.
     const handle = await ctx.providers.acquire({ capability: 'block.read' });
     const [slotResult, version, blockhash] = await Promise.all([
       rpcOn<number>(handle, ctx, 'getSlot', [{ commitment: 'confirmed' }]),
@@ -176,7 +176,7 @@ export class SolanaAdapter
       observedAt: new Date().toISOString() as Iso8601,
     };
     if (version?.['solana-core'] !== undefined) info.nodeVersion = String(version['solana-core']);
-    // getLatestBlockhash 返回 { context, value: { blockhash, lastValidBlockHeight } }
+    // getLatestBlockhash returns { context, value: { blockhash, lastValidBlockHeight } }
     const latest = blockhash as { readonly value?: { readonly blockhash?: string } } | undefined;
     if (typeof latest?.value?.blockhash === 'string') info.latestBlockHash = latest.value.blockhash;
     return info;
@@ -190,10 +190,10 @@ export class SolanaAdapter
 
     const asset = req.asset ?? { kind: 'native', chain: this.chain.id };
     if (asset.kind !== 'native') {
-      // SPL token 余额需要 getTokenAccountBalance + 关联账户推导；M2 只读范围不做。
+      // SPL token balances need getTokenAccountBalance + associated-account derivation; out of the M2 read-only scope.
       throw createDfrError('DFR_UNSUPPORTED_CAPABILITY', {
         requestId: ctx.requestId,
-        message: 'M2 只支持原生 SOL 余额；SPL token 余额需要额外的代币账户解析',
+        message: 'M2 only supports native SOL balances; SPL token balances need extra token-account resolution',
         chain: this.chain.id,
         details: { capability: 'account.balance' },
       });
@@ -201,7 +201,7 @@ export class SolanaAdapter
     if (asset.chain !== this.chain.id) {
       throw createDfrError('DFR_INVALID_ASSET', {
         requestId: ctx.requestId,
-        message: 'asset.chain 与请求链不一致',
+        message: 'asset.chain does not match the requested chain',
         chain: this.chain.id,
       });
     }
@@ -212,7 +212,7 @@ export class SolanaAdapter
       { commitment, encoding: 'base64' },
     ]);
 
-    // 账户不存在时 lamports 视为 0（Solana 语义：未初始化账户余额为 0），不报 not found。
+    // When an account does not exist, lamports count as 0 (Solana semantics: an uninitialized account has a 0 balance); no not-found error.
     const lamports = accountInfo.value?.lamports ?? 0;
     return {
       account: req.account.address,
@@ -250,20 +250,20 @@ export class SolanaAdapter
   /* --------------------------- getTransaction -------------------------- */
 
   /**
-   * Solana 交易查询（M2-B04）。
+   * Solana transaction query (M2-B04).
    *
-   * 与 EVM 的差异（如实反映，不强行套用 EVM 字段）：
-   * - 标识是**签名**（base58，64 字节），不是 keccak 哈希；
-   * - 没有 nonce、没有"单一 to/value"（账户列表 + 指令模型），因此不填这些字段；
-   * - 费用是 meta.fee（lamports）；
-   * - 状态由 meta.err 决定：null = 成功，非 null = 执行失败。
+   * Differences from EVM (stated as they are, without forcing EVM fields onto them):
+   * - The identifier is a **signature** (base58, 64 bytes), not a keccak hash;
+   * - No nonce, no single "to/value" (account list + instruction model), so those fields are left unset;
+   * - The fee is meta.fee (lamports);
+   * - Status is decided by meta.err: null = success, non-null = execution failure.
    */
   async getTransaction(ctx: AdapterContext, ref: TransactionRef): Promise<Transaction | null> {
     this.assertChain(ctx.chain, ctx);
     if (ref.kind !== 'hash') {
       throw createDfrError('DFR_UNSUPPORTED_CAPABILITY', {
         requestId: ctx.requestId,
-        message: 'Solana 只支持按交易签名（signature）查询',
+        message: 'Solana only supports querying by transaction signature',
         chain: this.chain.id,
       });
     }
@@ -293,7 +293,7 @@ export class SolanaAdapter
     if (rpc.meta?.err != null) {
       transaction.error = createDfrError('DFR_TRANSACTION_REVERTED', {
         requestId: ctx.requestId,
-        message: 'Solana 交易执行失败',
+        message: 'Solana transaction execution failed',
         chain: this.chain.id,
       });
     }
@@ -301,13 +301,13 @@ export class SolanaAdapter
   }
 
   /**
-   * Solana 回执：computeUnitsConsumed 是"消耗的计算资源"，语义与 EVM 的 gasUsed 不同
-   * （没有 gas price），因此只填 gasUsed 与费用，不伪造计价方式。
+   * Solana receipts: computeUnitsConsumed is "consumed compute", with different semantics from EVM gasUsed
+   * (there is no gas price), so only gasUsed and the fee are filled in; no pricing model is fabricated.
    */
   async getReceipt(ctx: AdapterContext, ref: TransactionRef): Promise<Receipt | null> {
     this.assertChain(ctx.chain, ctx);
     if (ref.kind !== 'hash') return null;
-    // 软校验：非法签名视为"不存在"，不抛错（回执是可选信息）。
+    // Soft check: an invalid signature counts as "not found", no error thrown (a receipt is optional information).
     if (!isSolanaSignature(ref.hash)) return null;
 
     const rpc = await evmStyleCall<SolanaRpcTransaction | null>(
@@ -339,19 +339,19 @@ export class SolanaAdapter
   /* ------------------------------ helpers ------------------------------ */
 
   /**
-   * `BlockRef` → slot（ADR-027）。
+   * `BlockRef` → slot (ADR-027).
    *
-   * - `slot`：Solana 的规范定位；
-   * - `hash`：定义为 **blockhash**（base58），需先按 blockhash 查到 slot；
-   * - `number` / `tag`：Solana 不适用 → fail-closed（对应的镜像行为是 EVM 对 `slot` 的处理）。
+   * - `slot`: Solana's canonical locator;
+   * - `hash`: defined as a **blockhash** (base58), which must first be resolved to a slot by blockhash;
+   * - `number` / `tag`: not applicable to Solana → fail-closed (the mirror image of how EVM handles `slot`).
    */
   private slotOf(ref: BlockRef, ctx: AdapterContext): { slot: bigint | number } {
     if (ref.kind === 'slot') return { slot: BigInt(ref.slot) };
     if (ref.kind === 'tag') {
-      // 仅支持 latest/confirmed/finalized 语义 → 由调用方先用 getSlot 解析。
+      // Only latest/confirmed/finalized semantics are supported → the caller resolves them with getSlot first.
       throw createDfrError('DFR_UNSUPPORTED_CAPABILITY', {
         requestId: ctx.requestId,
-        message: 'Solana 的 getBlock 需要明确的 slot 或 blockhash；tag 定位请先用 getSlot 解析',
+        message: 'Solana getBlock needs an explicit slot or blockhash; resolve tag-based locations with getSlot first',
         chain: this.chain.id,
         details: { capability: 'block.read' },
       });
@@ -359,7 +359,7 @@ export class SolanaAdapter
     if (ref.kind === 'hash') {
       throw createDfrError('DFR_UNSUPPORTED_CAPABILITY', {
         requestId: ctx.requestId,
-        message: '按 blockhash 定位需要先解析为 slot；M2 只支持 slot 定位',
+        message: 'Blockhash-based location must first resolve to a slot; M2 only supports slot location',
         chain: this.chain.id,
         details: { capability: 'block.read' },
       });
@@ -367,7 +367,7 @@ export class SolanaAdapter
     // kind === 'number'
     throw createDfrError('DFR_UNSUPPORTED_CAPABILITY', {
       requestId: ctx.requestId,
-      message: 'Solana 不使用区块高度（number）；请用 slot 定位',
+      message: 'Solana does not use block height (number); use slot location',
       chain: this.chain.id,
       details: { capability: 'block.read' },
     });
@@ -382,55 +382,55 @@ export class SolanaAdapter
   }
 
   /**
-   * 判定一个 Solana 排序前提（recent blockhash）是否已过期（M3-A01，ADR-032）。
+   * Decide whether a Solana sequencing prerequisite (recent blockhash) has expired (M3-A01, ADR-032).
    *
-   * 判据是**区块高度**，不是时间：`getBlockHeight()` 一旦超过 token 的
-   * `lastValidBlockHeight`，该 blockhash 就不再被链接受（实测 devnet 有效窗口
-   * 约 166 个 block，≈60–90 秒）。这正是"链特定过期语义必须在 Adapter"的落点；
-   * Store 只存 `lastValidBlockHeight`，从不自行判断。
+   * The criterion is **block height**, not time: once `getBlockHeight()` exceeds the token's
+   * `lastValidBlockHeight`, the blockhash is no longer accepted by the chain (measured devnet validity window:
+   * about 166 blocks, ≈60–90 seconds). This is exactly why "chain-specific expiry semantics belong in the Adapter";
+   * the Store only keeps `lastValidBlockHeight` and never judges on its own.
    *
-   * 这是非 Capability 的内部协调方法（与 `getPendingNonce` 同理）：不进
-   * `CapabilityId` / `capabilities()`，不能被 Gateway 直接路由。EVM **不实现**它
-   * （nonce 不会过期），Core 缺失时按"永不过期"处理。
+   * This is a non-Capability internal coordination method (like `getPendingNonce`): it does not enter
+   * `CapabilityId` / `capabilities()` and cannot be routed directly by the Gateway. EVM does **not** implement it
+   * (a nonce never expires); when Core lacks it, it is treated as "never expires".
    */
   async isSequencingExpired(ctx: AdapterContext, token: SequencingToken): Promise<boolean> {
     this.assertChain(ctx.chain, ctx);
     if (token.kind !== 'blockhash') {
-      // EVM 的 nonce token 不该走到 Solana Adapter：fail-closed 而不是猜一个答案。
+      // An EVM nonce token must not reach the Solana Adapter: fail closed instead of guessing an answer.
       throw createDfrError('DFR_INVALID_REQUEST', {
         requestId: ctx.requestId,
-        message: 'Solana Adapter 只接受 blockhash 排序前提；nonce 语义属于 EVM',
+        message: 'Solana Adapter only accepts blockhash sequencing prerequisites; nonce semantics belong to EVM',
         chain: this.chain.id,
         details: { capability: 'transaction.build' },
       });
     }
-    // JSDoc 已声明这是安全通信（只读、不涉及签名材料）。
+    // The JSDoc already states this is a safe call (read-only, no signing material involved).
     const handle = await ctx.providers.acquire({ capability: 'block.read' });
     const height = await rpcOn<number>(handle, ctx, 'getBlockHeight', [{ commitment: 'confirmed' }]);
-    // 十进制字符串比较：两者都可能超出 JS 安全整数范围（禁 number 契约）。
+    // Decimal-string comparison: both may exceed the JS safe-integer range (no-number rule).
     return BigInt(String(height)) > BigInt(token.lastValidBlockHeight);
   }
 
   /* ------------------------------- build ------------------------------- */
 
   /**
-   * 构建一笔未签名 Solana 交易（M3-B01）。
+   * Build an unsigned Solana transaction (M3-B01).
    *
-   * 与 EVM build 的关键差异：Solana **没有账户 nonce**，排序前提是 recent blockhash，
-   * 由 Adapter 从链上取（`getLatestBlockhash`）——这正是"链特定前提在 Adapter"。
-   * 因此 `req.nonce` 对 Solana 无意义：出现即 fail-closed（不静默忽略，避免调用方
-   * 以为 nonce 生效了）。blockhash 同时写入 `meta.recentBlockhash` 供上层
-   * `SequencingStore` 承载其 `lastValidBlockHeight`。
+   * Key difference from EVM build: Solana has **no account nonce**; the sequencing prerequisite is a recent blockhash,
+   * fetched from the chain by the Adapter (`getLatestBlockhash`) — exactly the "chain-specific prerequisite lives in the Adapter" point.
+   * So `req.nonce` is meaningless for Solana: its presence fails closed (never silently ignored, so callers do not
+   * think the nonce took effect). The blockhash is also written to `meta.recentBlockhash` for the upper layer's
+   * `SequencingStore` to carry its `lastValidBlockHeight`.
    *
-   * 范围（M3-B01）：原生 SOL 转账（System Program `Transfer`，指令枚举值 2）。
-   * SPL token / 任意指令 / ALT / durable nonce 不在本卡范围，显式 fail-closed。
+   * Scope (M3-B01): native SOL transfers (System Program `Transfer`, instruction enum value 2).
+   * SPL token / arbitrary instructions / ALT / durable nonce are out of this card's scope; fail closed explicitly.
    */
   /**
-   * 取本链当前的**排序前提**（ADR-032/033）：recent blockhash + 链上有效期。
+   * Fetch this chain's current **sequencing prerequisite** (ADR-032/033): recent blockhash + on-chain validity.
    *
-   * 这是非 Capability 的内部协调方法（与 EVM 的 `getPendingNonce` 对位）：引擎走
-   * blockhash 路径时先调它，把 token 交给 `SequencingStore.reserve` 落租约，
-   * 再用 `withSequencingToken` 把**同一个** blockhash 注入 build——保证租约与载荷一致。
+   * This is a non-Capability internal coordination method (the counterpart of EVM's `getPendingNonce`): when the engine takes the
+   * blockhash path it calls this first, handing the token to `SequencingStore.reserve` to place the lease,
+   * then injecting the **same** blockhash into build via `withSequencingToken` — keeping the lease and payload consistent.
    */
   async getSequencingToken(ctx: AdapterContext, account: AccountRef): Promise<SequencingToken> {
     this.assertChain(account.chain, ctx);
@@ -443,7 +443,7 @@ export class SolanaAdapter
     if (typeof blockhash !== 'string' || blockhash.length === 0 || lastValidBlockHeight == null) {
       throw createDfrError('DFR_PROVIDER_UNAVAILABLE', {
         requestId: ctx.requestId,
-        message: 'getLatestBlockhash 未返回可用的 blockhash / lastValidBlockHeight',
+        message: 'getLatestBlockhash did not return a usable blockhash / lastValidBlockHeight',
         chain: this.chain.id,
         details: { capability: 'transaction.build' },
       });
@@ -455,12 +455,12 @@ export class SolanaAdapter
     };
   }
 
-  /** 把引擎分配的 blockhash 注入请求（ADR-033）；形状不符即 fail-closed。 */
+  /** Inject the engine-assigned blockhash into the request (ADR-033); a shape mismatch fails closed. */
   withSequencingToken(req: TransactionRequest, token: SequencingToken): TransactionRequest {
     if (token.kind !== 'blockhash') {
       throw createDfrError('DFR_INVALID_REQUEST', {
         requestId: 'req_sequencing_token_shape' as never,
-        message: 'Solana 的排序前提必须是 blockhash token',
+        message: 'Solana sequencing prerequisite must be a blockhash token',
         chain: this.chain.id,
         details: { capability: 'transaction.build', field: 'sequencingRef' },
       });
@@ -475,7 +475,7 @@ export class SolanaAdapter
     if (req.to === undefined) {
       throw createDfrError('DFR_UNSUPPORTED_CAPABILITY', {
         requestId: ctx.requestId,
-        message: 'Solana build 需要明确的收款地址（to）；本卡不支持合约/程序部署',
+        message: 'Solana build needs an explicit recipient address (to); this card does not support contract/program deployment',
         chain: this.chain.id,
         details: { capability: 'transaction.build', reason: 'missing-to' },
       });
@@ -483,26 +483,26 @@ export class SolanaAdapter
     this.assertChain(req.to.chain, ctx);
     assertSolanaAddress(req.to.address, this.chain.id, ctx.requestId);
     if (req.nonce !== undefined) {
-      // Solana 无账户 nonce。EVM 语义的 nonce 传进来必须显式失败，不能装作没看见。
+      // Solana has no account nonce. An EVM-semantics nonce passed in must fail explicitly, not be pretended away.
       throw createDfrError('DFR_INVALID_REQUEST', {
         requestId: ctx.requestId,
-        message: 'Solana 不使用账户 nonce；排序前提是 recent blockhash（由 Adapter 取）',
+        message: 'Solana does not use account nonces; the sequencing prerequisite is a recent blockhash (fetched by the Adapter)',
         chain: this.chain.id,
         details: { capability: 'transaction.build', field: 'nonce' },
       });
     }
 
     const lamports = this.transferLamports(req, ctx);
-    // 排序前提：引擎（经 SequencingStore）已注入则原样使用；否则（直接调用 Adapter 的
-    // 路径，如契约测试）现场取一个。绝不硬编码。
+    // Sequencing prerequisite: use as-is when the engine (via SequencingStore) already injected one; otherwise (when the Adapter is called directly,
+    // as in contract tests) fetch one on the spot. Never hardcode one.
     let blockhash = req.recentBlockhash;
     if (blockhash === undefined || blockhash.length === 0) {
       const token = await this.getSequencingToken(ctx, req.from);
-      if (token.kind !== 'blockhash') throw new Error('unreachable: Solana token 必须是 blockhash');
+      if (token.kind !== 'blockhash') throw new Error('unreachable: Solana token must be blockhash');
       blockhash = token.value;
     }
 
-    // System Program 的 Transfer 指令：u32 小端指令枚举 2 + u64 小端 lamports。
+    // System Program Transfer instruction: u32 little-endian instruction enum 2 + u64 little-endian lamports.
     const data = new Uint8Array(12);
     data[0] = 2;
     new DataView(data.buffer).setBigUint64(4, lamports, true);
@@ -526,27 +526,27 @@ export class SolanaAdapter
 
     const meta: UnsignedTransactionMeta = {
       encoding: 'base64',
-      // Solana 的排序前提（ADR-032）：写进 meta 供 SequencingStore 记录时效。
+      // Solana sequencing prerequisite (ADR-032): written into meta for SequencingStore to record validity.
       recentBlockhash: blockhash,
       feeEstimate: {
         asset: { kind: 'native', chain: this.chain.id },
-        // 费用由签名者数量与 compute budget 决定；精确值需 simulate（B02）。
-        // 这里给出 Solana 的**基础签名费**（5000 lamports × 签名者数），不虚构 compute 费。
+        // Fees are decided by signer count and compute budget; the exact value needs simulate (B02).
+        // Here is Solana's **base signature fee** (5000 lamports × signer count); no compute fee is invented.
         amount: String(5_000 * message.numRequiredSignatures) as DecimalUint,
       },
       warnings: [
-        '费用仅含基础签名费（5000 lamports × 签名者数），未含 compute 费用；精确费用由 simulate 给出',
+        'fee covers only the base signature fee (5000 lamports × signer count), excluding compute fees; the exact fee comes from simulate',
       ],
     };
     return { schemaVersion: '1', chain: this.chain.id, payload: encoded.payload, meta };
   }
 
-  /** 原生 SOL 金额 → lamports（`Amount.amount` 已是十进制字符串，按法定小数位换算）。 */
+  /** Native SOL amount → lamports (`Amount.amount` is already a decimal string, converted at the legal decimal places). */
   private transferLamports(req: TransactionRequest, ctx: AdapterContext): bigint {
     if (req.value === undefined) {
       throw createDfrError('DFR_INVALID_ASSET', {
         requestId: ctx.requestId,
-        message: 'Solana 转账必须提供金额（value）',
+        message: 'Solana transfers must provide an amount (value)',
         chain: this.chain.id,
         details: { capability: 'transaction.build', field: 'value' },
       });
@@ -555,7 +555,7 @@ export class SolanaAdapter
     if (asset.kind !== 'native' || asset.chain !== this.chain.id) {
       throw createDfrError('DFR_INVALID_ASSET', {
         requestId: ctx.requestId,
-        message: 'build 的原生金额必须使用本链原生资产',
+        message: 'build native amounts must use this chain's native asset',
         chain: this.chain.id,
         details: { capability: 'transaction.build', field: 'value' },
       });
@@ -563,17 +563,17 @@ export class SolanaAdapter
     if (!/^[0-9]+$/u.test(req.value.amount)) {
       throw createDfrError('DFR_VALIDATION_FAILED', {
         requestId: ctx.requestId,
-        message: '金额必须是十进制字符串',
+        message: 'amount must be a decimal string',
         chain: this.chain.id,
         details: { capability: 'transaction.build', field: 'value' },
       });
     }
     const lamports = BigInt(req.value.amount) * 10n ** BigInt(LAMPORTS_DECIMALS);
-    // Solana 的 lamports 是 u64。
+    // Solana lamports are u64.
     if (lamports > (2n ** 64n - 1n)) {
       throw createDfrError('DFR_VALIDATION_FAILED', {
         requestId: ctx.requestId,
-        message: '金额超出 Solana u64 lamports 上限',
+        message: 'amount exceeds the Solana u64 lamports limit',
         chain: this.chain.id,
         details: { capability: 'transaction.build', field: 'value' },
       });
@@ -584,19 +584,19 @@ export class SolanaAdapter
   /* ------------------------------ simulate ------------------------------ */
 
   /**
-   * 只读链上模拟（M3-B02）。
+   * Read-only on-chain simulation (M3-B02).
    *
-   * Solana 用 `simulateTransaction`：返回 `err`（执行失败原因）、`logs`、`unitsConsumed`、
-   * `fee`。语义与 EVM 对齐：**执行回滚不抛 5xx**，而是归一化为
-   * `{ success:false, revertReason }`，由 Transaction Engine 落为 `reverted` 并封锁广播。
+   * Solana uses `simulateTransaction`, returning `err` (execution failure reason), `logs`, `unitsConsumed`,
+   * `fee`. Semantics align with EVM: **execution reverts do not throw 5xx**; they are normalized to
+   * `{ success:false, revertReason }`, which the Transaction Engine records as `reverted` and blocks from broadcast.
    *
-   * 与 EVM 的输入形状一致地支持两种调用：
-   *   - 载荷路径（`UnsignedTransaction`）：直接模拟该载荷；`options.from` 不适用
-   *     （Solana 的 fee payer 已编译进 message），给了也不改变结果。
-   *   - 请求路径（`TransactionRequest`）：先构建再模拟（build 会取 blockhash）。
+   * Two call shapes are supported, matching EVM's input shapes:
+   *   - Payload path (`UnsignedTransaction`): simulate the payload directly; `options.from` does not apply
+   *     (Solana's fee payer is already compiled into the message); passing one changes nothing.
+   *   - Request path (`TransactionRequest`): build first, then simulate (build fetches a blockhash).
    *
-   * `sigVerify:false` 的原因：外部签名交易在**客户端**签名，服务端只做模拟，
-   * 没有也不需要签名材料；Solana 允许 sigVerify:false 下模拟（签名视为通过）。
+   * Why `sigVerify:false`: externally signed transactions are signed on the **client**; the server only simulates,
+   * it has and needs no signing material; Solana allows simulation with sigVerify:false (signatures count as passing).
    */
   async simulate(
     ctx: AdapterContext,
@@ -610,14 +610,14 @@ export class SolanaAdapter
       if (req.meta.encoding !== undefined && req.meta.encoding !== 'base64') {
         throw createDfrError('DFR_UNSUPPORTED_VERSION', {
           requestId: ctx.requestId,
-          message: 'Solana simulate 只接受 base64 载荷',
+          message: 'Solana simulate only accepts base64 payloads',
           chain: this.chain.id,
           details: { capability: 'transaction.simulate', encoding: req.meta.encoding },
         });
       }
       payload = req.payload;
-      // Solana 的发送方（fee payer）已编译进 message；请求路径才需要 from。
-      warnings.push('载荷路径不校验发送方余额之外的角色；fee payer 已由载荷决定');
+      // Solana's sender (fee payer) is already compiled into the message; only the request path needs from.
+      warnings.push('the payload path does not verify roles beyond the sender balance; the fee payer is already decided by the payload');
     } else {
       const built = await this.build(ctx, req);
       payload = built.payload;
@@ -640,18 +640,18 @@ export class SolanaAdapter
     if (value === undefined) {
       throw createDfrError('DFR_PROVIDER_UNAVAILABLE', {
         requestId: ctx.requestId,
-        message: 'simulateTransaction 未返回结果',
+        message: 'simulateTransaction returned no result',
         chain: this.chain.id,
         details: { capability: 'transaction.simulate' },
       });
     }
     if (value.err != null) {
       const reason = this.describeSolanaError(value.err);
-      // `BlockhashNotFound` 语义上是"排序前提已过期，需要重新 build"，而不是程序回滚。
-      // 精确分类（该错误码 / 重试语义）由 C03 定义；这里只显式标注，避免被当成普通 revert。
+      // `BlockhashNotFound` semantically means "the sequencing prerequisite expired; rebuild", not a program revert.
+      // The exact classification (this error code / retry semantics) is defined by C03; it is only flagged explicitly here so it is not mistaken for an ordinary revert.
       const extra =
         reason.includes('BlockhashNotFound')
-          ? ['blockhash 可能已过期：应按 C03 语义重新 build，而不是标记为 reverted']
+          ? ['blockhash may have expired: rebuild per C03 semantics instead of marking it reverted']
           : [];
       return this.revertedSimulation(reason, [...warnings, ...extra]);
     }
@@ -669,14 +669,14 @@ export class SolanaAdapter
     return result;
   }
 
-  /** Solana 的执行错误（`err` 可为对象或字符串）→ 已脱敏的原因文本。 */
+  /** Solana execution errors (`err` may be an object or a string) → redacted reason text. */
   private describeSolanaError(err: unknown): string {
     if (typeof err === 'string') return err;
     try {
       const encoded = JSON.stringify(err);
-      return encoded === undefined ? 'Solana 交易执行失败' : encoded;
+      return encoded === undefined ? 'Solana transaction execution failed' : encoded;
     } catch {
-      return 'Solana 交易执行失败';
+      return 'Solana transaction execution failed';
     }
   }
 
@@ -689,17 +689,17 @@ export class SolanaAdapter
   /* ------------------------------ broadcast ------------------------------ */
 
   /**
-   * 单次广播已签名交易（M3-C01）。
+   * Broadcast a signed transaction once (M3-C01).
    *
-   * 四条与 EVM 对齐的红线（资金安全优先于便利）：
-   *   1. **恰好一次**：`idempotency: 'non-idempotent-write'`，Provider Manager 绝不自动重试，
-   *      失败也不切换端点重发；
-   *   2. **广播前本地校验**：签名载荷与记录真值（from / 未签名载荷 / expectedHash）绑定不符
-   *      一律在 `acquire()` 之前拒绝 → `DFR_TRANSACTION_REJECTED`，**不发出广播**；
-   *   3. **already known 是幂等成功**（error-spec §5.1）；
-   *   4. 端点返回的签名必须与载荷重算一致，否则 `DFR_PROVIDER_INVALID_RESPONSE`。
+   * Four red lines aligned with EVM (fund safety over convenience):
+   *   1. **Exactly once**: `idempotency: 'non-idempotent-write'`; the Provider Manager never retries automatically,
+   *      and failures never switch endpoints and resend;
+   *   2. **Pre-broadcast local validation**: signed payload vs. recorded ground truth (from / unsigned payload / expectedHash) binding mismatches
+   *      are all rejected before `acquire()` → `DFR_TRANSACTION_REJECTED`, **no broadcast sent**;
+   *   3. **already known is an idempotent success** (error-spec §5.1);
+   *   4. The signature returned by the endpoint must match the recomputed payload hash, otherwise `DFR_PROVIDER_INVALID_RESPONSE`.
    *
-   * `maxRetries:0`：绝不把"重试"交给节点——重试策略是状态机的职责（C03），不是传输层。
+   * `maxRetries:0`: never hand "retries" to the node — retry policy is the state machine's job (C03), not the transport layer's.
    */
   async broadcast(
     ctx: AdapterContext,
@@ -708,10 +708,10 @@ export class SolanaAdapter
   ): Promise<BroadcastResult> {
     this.assertChain(signed.chain, ctx);
 
-    // --- 本地校验（不花 RPC、不 acquire）---
+    // --- Local validation (no RPC, no acquire)---
     const txHash = this.verifyBroadcastBinding(ctx, signed, options);
 
-    // --- 单次调用 ---
+    // --- Single call ---
     const handle = await ctx.providers.acquire({ capability: 'transaction.broadcast' });
     let returned: string;
     try {
@@ -724,7 +724,7 @@ export class SolanaAdapter
               encoding: 'base64',
               skipPreflight: false,
               preflightCommitment: 'confirmed',
-              // 重试是状态机职责（C03）；这里绝不自动重试。
+              // Retries are the state machine's job (C03); never retry automatically here.
               maxRetries: 0,
             },
           ],
@@ -740,25 +740,25 @@ export class SolanaAdapter
       );
     } catch (err) {
       if (this.isAlreadyKnown(err)) return this.broadcastAccepted(handle, txHash, options);
-      // blockhash 过期（M3-C03）：该签名载荷永远不会上链，重发无意义。
-      // 归一化为**专门的**错误码 + 可执行提示；绝不自动重新签名（签名属外部）。
+      // Blockhash expired (M3-C03): this signed payload will never land on-chain; resending is pointless.
+      // Normalized to a **dedicated** error code + an actionable hint; never re-sign automatically (signing belongs outside).
       if (this.isBlockhashExpired(err)) {
         throw createDfrError('DFR_BLOCKHASH_EXPIRED', {
           requestId: ctx.requestId,
-          message: 'Solana blockhash 已过期：该签名载荷不会被接受，请重新 build 后再签名',
+          message: 'Solana blockhash expired: this signed payload will not be accepted; rebuild and re-sign',
           chain: this.chain.id,
           details: { method: 'sendTransaction', action: 'rebuild' },
           ...(isDfrError(err) ? { cause: err } : {}),
         });
       }
-      // 其它失败原样上抛：是否回退状态由 TransactionEngine 决定（C03）。
+      // Other failures are rethrown as-is: TransactionEngine decides whether to roll state back (C03).
       throw err;
     }
 
     if (typeof returned !== 'string' || !isSolanaSignature(returned) || returned !== txHash) {
       throw createDfrError('DFR_PROVIDER_INVALID_RESPONSE', {
         requestId: ctx.requestId,
-        message: '广播端点返回的签名与签名载荷不一致',
+        message: 'broadcast endpoint returned a signature inconsistent with the signed payload',
         provider: handle.id,
         chain: this.chain.id,
         details: { method: 'sendTransaction' },
@@ -768,7 +768,7 @@ export class SolanaAdapter
     return this.broadcastAccepted(handle, txHash, options);
   }
 
-  /** 广播成功（含 already-known 幂等成功）的唯一构造点。 */
+  /** The single construction point for broadcast success (including already-known idempotent success). */
   private broadcastAccepted(
     handle: ProviderHandle,
     txHash: string,
@@ -786,11 +786,11 @@ export class SolanaAdapter
   }
 
   /**
-   * 广播前的本地绑定校验，返回由签名载荷重算的交易哈希。
+   * Pre-broadcast local binding verification, returning the transaction hash recomputed from the signed payload.
    *
-   * 有记录真值时（引擎会带上 `expectedFrom` + `expectedUnsignedPayload`）做完整绑定；
-   * 否则只做 Adapter 能独立证明的部分（已签名 + expectedHash）。任何失败都在
-   * `acquire()` 之前抛出，因此**不会发出广播**。
+   * With recorded ground truth (the engine passes `expectedFrom` + `expectedUnsignedPayload`), do the full binding;
+   * otherwise only do what the Adapter can prove on its own (signed + expectedHash). Any failure is thrown
+   * before `acquire()`, so **no broadcast is sent**.
    */
   private verifyBroadcastBinding(
     ctx: AdapterContext,
@@ -815,7 +815,7 @@ export class SolanaAdapter
         throw err;
       }
     }
-    // 无记录真值：只做 Adapter 能独立证明的部分。
+    // No recorded ground truth: only do what the Adapter can prove on its own.
     let decoded;
     try {
       decoded = decodeTransactionPayload(signed.signedPayload);
@@ -830,11 +830,11 @@ export class SolanaAdapter
     return txHash;
   }
 
-  /** 广播前的本地拒绝：统一 422 `DFR_TRANSACTION_REJECTED`，不泄漏签名原文。 */
+  /** Pre-broadcast local rejection: uniform 422 `DFR_TRANSACTION_REJECTED`, without leaking the raw signature. */
   private broadcastRejected(ctx: AdapterContext, reason: string, cause?: unknown): Error {
     return createDfrError('DFR_TRANSACTION_REJECTED', {
       requestId: ctx.requestId,
-      message: `签名载荷未通过广播前校验（${reason}）`,
+      message: `signed payload failed pre-broadcast validation (${reason})`,
       chain: this.chain.id,
       details: { reason },
       ...(cause !== undefined ? { cause } : {}),
@@ -842,10 +842,10 @@ export class SolanaAdapter
   }
 
   /**
-   * 端点是否在说"blockhash 找不到/已过期"（M3-C03）。
+   * Whether the endpoint is saying "blockhash not found / expired" (M3-C03).
    *
-   * Solana 在 blockhash 过期（超出 `lastValidBlockHeight`）时以 "Blockhash not found"
-   * 拒绝交易；这是**可证明不可自愈**的拒绝，必须与普通 revert/超时区分开。
+   * When a blockhash expires (past `lastValidBlockHeight`), Solana rejects the transaction with "Blockhash not found"
+   * ; this is a **provably unrecoverable** rejection that must be distinguished from ordinary reverts/timeouts.
    */
   private isBlockhashExpired(err: unknown): boolean {
     const message = this.errorText(err).toLowerCase();
@@ -857,13 +857,13 @@ export class SolanaAdapter
     );
   }
 
-  /** 从任意错误里取出可匹配的文本（DFR 错误优先用 chainError.message，避免泄漏原文）。 */
+  /** Extract matchable text from any error (DFR errors prefer chainError.message, to avoid leaking the original). */
   private errorText(err: unknown): string {
     if (isDfrError(err)) return `${err.chainError?.message ?? ''} ${err.message}`;
     return err instanceof Error ? err.message : String(err);
   }
 
-  /** 端点是否在说"这笔交易我已经有了"（幂等成功）。 */
+  /** Whether the endpoint is saying "I already have this transaction" (idempotent success). */
   private isAlreadyKnown(err: unknown): boolean {
     if (!isDfrError(err)) return false;
     const message = `${err.chainError?.message ?? ''}`.toLowerCase();
@@ -871,18 +871,18 @@ export class SolanaAdapter
   }
 
   /**
-   * 单次只读确认观测（M3-C02）。
+   * Single read-only confirmation observation (M3-C02).
    *
-   * 用 `getTransaction` 带上 Solana 的 commitment：`processed` / `confirmed` / `finalized`
-   * （ADR-031 的三级）。返回的 `finality` 是**由 commitment 映射**到 DFR 观测域（不是
-   * 用确认数派生，Solana 没有 EVM 意义上的"确认数"）。
+   * Use `getTransaction` with a Solana commitment: `processed` / `confirmed` / `finalized`
+   * (ADR-031's three levels). The returned `finality` is **mapped from the commitment** into the DFR observation domain (not
+   * derived from a confirmation count — Solana has no EVM-style "confirmation count").
    *
-   * 语义：
-   *   - 查不到（`null`）→ `null`（上层保持 unknown，不假装状态）；
-   *   - 执行失败（`meta.err != null`）→ status `reverted`，finality 仍按 commitment 报告；
-   *   - 否则 status 取 commitment 对应档位（processed→included / confirmed / finalized）。
+   * Semantics:
+   *   - Not found (`null`) → `null` (the upper layer keeps unknown; no state is faked);
+   *   - Execution failure (`meta.err != null`) → status `reverted`, finality still reported by commitment;
+   *   - Otherwise status takes the commitment's tier (processed→included / confirmed / finalized).
    *
-   * 只读：绝不广播、不重发、不写状态。
+   * Read-only: never broadcast, never resend, never write state.
    */
   async observeConfirmation(
     ctx: AdapterContext,
@@ -908,9 +908,9 @@ export class SolanaAdapter
           { commitment, maxSupportedTransactionVersion: 0, encoding: 'json' },
         ]);
       } catch (err) {
-        // 部分集群（含 devnet）的 getTransaction 不支持 `processed`
-        // （"Method does not support commitment below `confirmed`"）。
-        // 这不是"查不到"，而是"该档位不可用"——按档位不可用跳过，绝不当作失败或 null 结论。
+        // Some clusters (including devnet) do not support `processed` in getTransaction
+        // ("Method does not support commitment below `confirmed`").
+        // This is not "not found" but "that tier is unavailable" — skip it as tier-unavailable, never treat it as a failure or a null conclusion.
         if (isDfrError(err) && /commitment below/i.test(this.errorText(err))) continue;
         throw err;
       }
@@ -923,8 +923,8 @@ export class SolanaAdapter
     if (lastTx === null) return null;
 
     const finality = COMMITMENT_TO_FINALITY_STATE[lastCommitment];
-    // 执行失败（reverted）优先于最终性档位：状态仍是事实，finality 照实报告。
-    // 注意：`getTransaction` 不返回区块哈希，因此 canonicalBlockHash 不伪造（留空）。
+    // Execution failure (reverted) takes precedence over the finality tier: the status is still factual, and finality is reported as observed.
+    // Note: `getTransaction` returns no block hash, so canonicalBlockHash is not fabricated (left empty).
     const status: Transaction['status'] =
       lastTx.meta?.err != null
         ? 'reverted'
@@ -943,13 +943,13 @@ export class SolanaAdapter
   }
 
   /**
-   * `event.subscribe` 是**部署级**能力（ADR-025），由 Core 的事件总线提供，Adapter 不实现。
-   * 与 EVM 同构：存在但立即抛，不静默降级。
+   * `event.subscribe` is a **deployment-level** capability (ADR-025), provided by Core's event bus; the Adapter does not implement it.
+   * Isomorphic with EVM: present but throws immediately, without silent downgrade.
    */
   subscribe(ctx: AdapterContext, _filter: unknown): AsyncIterable<never> {
     const error = createDfrError('DFR_UNSUPPORTED_CAPABILITY', {
       requestId: ctx.requestId,
-      message: 'event.subscribe 是部署级能力，由 Core 的事件总线提供',
+      message: 'event.subscribe is a deployment-level capability, provided by Core's event bus',
       chain: ctx.chain,
       details: { capability: 'event.subscribe' },
     });
@@ -960,12 +960,12 @@ export class SolanaAdapter
     };
   }
 
-  /** `contract.read`（只读程序调用）尚未实现：fail-closed，不静默降级。 */
+  /** `contract.read` (read-only program call) is not implemented yet: fail-closed, no silent downgrade. */
   readContract(ctx: AdapterContext, _req: unknown): Promise<never> {
     return Promise.reject(
       createDfrError('DFR_UNSUPPORTED_CAPABILITY', {
         requestId: ctx.requestId,
-        message: 'Solana 只读程序调用（contract.read）尚未实现',
+        message: 'Solana read-only program call (contract.read) is not implemented yet',
         chain: this.chain.id,
         details: { capability: 'contract.read' },
       }),
@@ -976,7 +976,7 @@ export class SolanaAdapter
     if (chain !== this.chain.id) {
       throw createDfrError('DFR_CHAIN_MISMATCH', {
         requestId: ctx.requestId,
-        message: `请求链 ${chain} 与 Adapter 绑定的链 ${this.chain.id} 不一致`,
+        message: `requested chain ${chain} does not match the chain ${this.chain.id} bound to the Adapter`,
         chain: this.chain.id,
       });
     }

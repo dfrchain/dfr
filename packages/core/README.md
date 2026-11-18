@@ -1,17 +1,22 @@
 # @dfr/core
 
-Core 是模块化单体的编排与 Capability Router。
+Core is the modular monolith's orchestration and Capability Router.
 
-当前职责：Registry + Adapter + Provider Manager 装配、M0 查询路由、统一上下文与错误归一化。
-M1 后委托 `@dfr/transaction` 处理交易状态；Core 不拥有数据库语义。
+Current responsibilities: assembling Registry + Adapter + Provider Manager,
+M0 query routing, unified context, and error normalization. After M1 it
+delegates transaction state to `@dfr/transaction`; Core owns no database
+semantics.
 
-禁止：
+Forbidden:
 
-- import 具体 `@dfr/adapter-evm`；Adapter 由 composition root 注册；
-- `if (chain === ...)` 链分支；
-- 直接执行 SQL；
-- 绕过 capability 检查。
+- importing a concrete `@dfr/adapter-evm`; Adapters are registered by the
+  composition root;
+- `if (chain === ...)` chain branches;
+- executing SQL directly;
+- bypassing capability checks.
 
-`src/stores.ts` 的内存实现是 M0/测试兼容，M1 迁移后只保留 re-export。
+The in-memory implementation in `src/stores.ts` is for M0/test
+compatibility; after the M1 migration it keeps only a re-export.
 
-验证：`tests/e2e/gateway.e2e.test.ts`、Adapter contract 与 workspace typecheck。
+Verify with: `tests/e2e/gateway.e2e.test.ts`, the Adapter contracts, and
+workspace typecheck.

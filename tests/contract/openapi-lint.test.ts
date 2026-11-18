@@ -1,16 +1,17 @@
 /**
- * OpenAPI 语义门禁契约测试（DFR-M1-A03）。
+ * OpenAPI semantic-gate contract test (DFR-M1-A03).
  *
- * 见 docs/architecture/m1-api-contract.md 第 7 节与 docs/development/m1-taskbook.md。
+ * See docs/architecture/m1-api-contract.md §7 and docs/development/m1-taskbook.md.
  *
- * 目的：证明 `pnpm verify` 里的 OpenAPI 门禁**不是**只检查 `$ref` 可解析。
- * 仅靠 spec-consistency.test.ts 的手写断言无法覆盖"语义无效但语法可解析"的类别，
- * 因此这里用行为测试（真实执行 linter）证明：
- *   1. 当前规格通过；
- *   2. 重复 operationId 被拦截；
- *   3. 非法 schema 被拦截。
+ * Purpose: prove the OpenAPI gate in `pnpm verify` does **more** than check that `$ref` resolves.
+ * Hand-written assertions in spec-consistency.test.ts cannot cover the "semantically invalid but syntactically
+ * parseable" category, so this file uses behavioural tests (actually running the linter) to prove:
+ *   1. The current spec passes;
+ *   2. Duplicate operationIds are caught;
+ *   3. Illegal schemas are caught.
  *
- * 负对照使用同一份最小基线文档做变异，避免"因为文档本身有别的错误所以失败"的假阳性。
+ * The negative controls mutate the same minimal baseline document, avoiding false positives from
+ * "it failed because the document itself had some other error".
  */
 import { execFile } from 'node:child_process';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
@@ -29,10 +30,10 @@ interface LintOutcome {
 }
 
 /**
- * 通过真实脚本调用门禁，捕获退出码而不是抛异常。
+ * Calls the gate via the real script, capturing the exit code instead of throwing.
  *
- * 刻意使用**异步** execFile：同步版本会阻塞事件循环，使
- * `describe.concurrent` 下的多个探针退化为串行，拖慢默认测试门禁。
+ * Deliberately uses **async** execFile: the sync version would block the event loop, making the multiple probes
+ * under `describe.concurrent` degrade to serial and slowing the default test gate.
  */
 async function runLint(specPath: string): Promise<LintOutcome> {
   try {
@@ -48,11 +49,11 @@ async function runLint(specPath: string): Promise<LintOutcome> {
 }
 
 /**
- * 最小但语义合法的 OpenAPI 3.1 文档；负对照只在它之上做**单点**变异。
+ * A minimal but semantically valid OpenAPI 3.1 document; negative controls make only a **single** mutation on top of it.
  *
- * `extraPaths` 注入点位于 `paths:` 之下、`components:` 之前，
- * 保证变异落在正确层级——否则会以"结构错误"而非"目标规则"失败，
- * 负对照就失去意义。
+ * The `extraPaths` injection point sits below `paths:` and above `components:`, ensuring the mutation lands at
+ * the right level — otherwise it would fail with a "structural error" instead of the "target rule",
+ * and the negative control would lose its meaning.
  */
 function makeProbeSpec(extraPaths = ''): string {
   return `openapi: 3.1.0
@@ -99,41 +100,41 @@ function writeProbe(dir: string, name: string, body: string): string {
   return target;
 }
 
-describe('OpenAPI 语义门禁接线（DFR-M1-A03）', () => {
-  it('package.json 暴露 lint:openapi 且 verify 会执行它', () => {
+describe('OpenAPI semantic-gate wiring (DFR-M1-A03)', () => {
+  it('package.json exposes lint:openapi and verify runs it', () => {
     const pkg = JSON.parse(readFileSync(resolve(repoRoot, 'package.json'), 'utf8')) as {
       scripts: Record<string, string>;
     };
-    expect(pkg.scripts['lint:openapi'], '缺失 lint:openapi 脚本').toBeTruthy();
-    expect(pkg.scripts.verify, 'verify 未接入 OpenAPI 语义门禁').toContain('lint:openapi');
+    expect(pkg.scripts['lint:openapi'], 'missing lint:openapi script').toBeTruthy();
+    expect(pkg.scripts.verify, 'verify has not wired in the OpenAPI semantic gate').toContain('lint:openapi');
   });
 
-  it('门禁工具版本被精确固定（不是范围版本）', () => {
+  it('the gate tool version is pinned exactly (not a version range)', () => {
     const pkg = JSON.parse(readFileSync(resolve(repoRoot, 'package.json'), 'utf8')) as {
       devDependencies: Record<string, string>;
     };
     const pinned = pkg.devDependencies['@redocly/cli'];
-    expect(pinned, '缺少 @redocly/cli').toBeTruthy();
-    // 精确版本：不含 ^ ~ 或区间符号，避免规则集随工具升级漂移。
+    expect(pinned, 'missing @redocly/cli').toBeTruthy();
+    // Exact version: no ^ ~ or range symbols, so the rule set cannot drift as the tool upgrades.
     expect(pinned).toMatch(/^\d+\.\d+\.\d+$/);
   });
 });
 
-describe.concurrent('OpenAPI 语义门禁行为（DFR-M1-A03）', () => {
+describe.concurrent('OpenAPI semantic-gate behaviour (DFR-M1-A03)', () => {
   const workDir = mkdtempSync(join(tmpdir(), 'dfr-openapi-lint-'));
 
-  it('当前真实规格通过门禁', async () => {
+  it('the current real spec passes the gate', async () => {
     const outcome = await runLint('docs/api/openapi.yaml');
-    expect(outcome.ok, `规格未通过语义门禁：\n${outcome.output}`).toBe(true);
+    expect(outcome.ok, `The spec failed the semantic gate:\n${outcome.output}`).toBe(true);
   }, 60_000);
 
-  it('最小基线文档本身通过（负对照的对照）', async () => {
+  it('the minimal baseline document itself passes (the control for the negative controls)', async () => {
     const outcome = await runLint(writeProbe(workDir, 'baseline.yaml', baselineSpec));
-    expect(outcome.ok, `基线探针文档不合法，负对照不可信：\n${outcome.output}`).toBe(true);
+    expect(outcome.ok, `The baseline probe document is invalid, so the negative controls cannot be trusted:\n${outcome.output}`).toBe(true);
   }, 60_000);
 
-  it('重复 operationId 被拦截', async () => {
-    // 单点变异：新增一条与既有 operation 同名 operationId 的路径。
+  it('a duplicate operationId is caught', async () => {
+    // Single mutation: add a path with an operationId identical to the existing operation.
     const duplicated = makeProbeSpec(`  /probe-duplicate:
     get:
       summary: Probe duplicate operation
@@ -145,17 +146,17 @@ describe.concurrent('OpenAPI 语义门禁行为（DFR-M1-A03）', () => {
     const outcome = await runLint(
       writeProbe(workDir, 'duplicate-operation-id.yaml', duplicated),
     );
-    expect(outcome.ok, '重复 operationId 未被拦截').toBe(false);
+    expect(outcome.ok, 'a duplicate operationId was not caught').toBe(false);
     expect(outcome.output).toMatch(/operation-operationId-unique|operationId/i);
   }, 60_000);
 
-  it('非法 schema 类型被拦截', async () => {
+  it('an illegal schema type is caught', async () => {
     const invalid = baselineSpec.replace(
       '        ok: { type: boolean }',
       '        ok: { type: boolean-not-a-type }',
     );
     const outcome = await runLint(writeProbe(workDir, 'invalid-schema.yaml', invalid));
-    expect(outcome.ok, '非法 schema 未被拦截').toBe(false);
+    expect(outcome.ok, 'an illegal schema was not caught').toBe(false);
     expect(outcome.output).toMatch(/type|schema/i);
   }, 60_000);
 });

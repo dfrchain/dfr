@@ -1,4 +1,4 @@
-/** ApiKeyScope.ipAllowlist 的 Gateway 执行契约。 */
+/** The Gateway enforcement contract for ApiKeyScope.ipAllowlist. */
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -48,14 +48,14 @@ afterEach(async () => {
 });
 
 describe('API Key IP allowlist', () => {
-  it('非白名单来源在路由执行前被拒绝', async () => {
+  it('a non-allowlisted source is rejected before route execution', async () => {
     await start({ ipAllowlist: ['198.51.100.7'] });
     const response = await fetch(`${baseUrl}/v1/chains`, { headers: KEY_HEADER });
     expect(response.status).toBe(403);
     expect(await response.json()).toMatchObject({ dfr_code: 'DFR_IP_NOT_ALLOWED' });
   });
 
-  it('仅在直连对端为可信代理时采信 X-Forwarded-For', async () => {
+  it('X-Forwarded-For is only trusted when the direct peer is a trusted proxy', async () => {
     await start({ ipAllowlist: ['198.51.100.7'], trustedProxies: ['127.0.0.1'] });
     const response = await fetch(`${baseUrl}/v1/chains`, {
       headers: { ...KEY_HEADER, 'x-forwarded-for': '198.51.100.7' },
@@ -63,7 +63,7 @@ describe('API Key IP allowlist', () => {
     expect(response.status).toBe(200);
   });
 
-  it('未配置可信代理时忽略可伪造的 X-Forwarded-For', async () => {
+  it('a forgeable X-Forwarded-For is ignored when no trusted proxy is configured', async () => {
     await start({ ipAllowlist: ['198.51.100.7'] });
     const response = await fetch(`${baseUrl}/v1/chains`, {
       headers: { ...KEY_HEADER, 'x-forwarded-for': '198.51.100.7' },
@@ -72,7 +72,7 @@ describe('API Key IP allowlist', () => {
     expect(await response.json()).toMatchObject({ dfr_code: 'DFR_IP_NOT_ALLOWED' });
   });
 
-  it('指标与 SSE header 鉴权也不能绕过 IP allowlist', async () => {
+  it('metrics and SSE header auth cannot bypass the IP allowlist either', async () => {
     await start({ ipAllowlist: ['198.51.100.7'], eventBus: true });
     const metrics = await fetch(`${baseUrl}/metrics`, { headers: KEY_HEADER });
     expect(metrics.status).toBe(403);

@@ -1,24 +1,28 @@
-# DFR M1 本地测试用 PostgreSQL（见 docs/architecture/m1-storage-model.md 与 ADR-015）
+# DFR M1 local test PostgreSQL (see docs/architecture/m1-storage-model.md and ADR-015)
 #
-# 用途：M1-A 的 Store 集成测试与迁移验证。**不是生产部署文件**。
+# Purpose: Store integration tests and migration verification for M1-A.
+# **Not a production deployment file**.
 #
-# 安全默认值：
-#   - 只监听 127.0.0.1，且使用非默认端口 55432，避免与本机其它 PostgreSQL 冲突；
-#   - 口令全部来自环境变量，compose 与镜像内不写任何真实凭证；
-#   - 两个业务角色分离：dfr_migrator（可 DDL）与 dfr_runtime（仅 DML），
-#     与 infrastructure/README.md 的"migration 身份与 runtime 身份分离"一致。
+# Safe defaults:
+#   - Listens only on 127.0.0.1, on the non-default port 55432, to avoid
+#     clashing with other PostgreSQL instances on the host;
+#   - All passwords come from environment variables; no real credential is
+#     written in compose or in the image;
+#   - Two business roles are separated: dfr_migrator (can do DDL) and
+#     dfr_runtime (DML only), matching infrastructure/README.md's
+#     "migration identity separated from runtime identity".
 #
-# 用法：
+# Usage:
 #   cd infrastructure/docker
-#   cp .env.example .env      # 填入随机口令（.env 已被 .gitignore 排除）
+#   cp .env.example .env      # fill in random passwords (.env is excluded by .gitignore)
 #   docker compose -f docker-compose.test.yml up -d --wait
-#   docker compose -f docker-compose.test.yml down          # 保留数据卷
-#   docker compose -f docker-compose.test.yml down -v       # 连同数据卷删除
+#   docker compose -f docker-compose.test.yml down          # keep data volumes
+#   docker compose -f docker-compose.test.yml down -v       # delete data volumes too
 name: ${DFR_DB_TEST_PROJECT:-dfr-m1-test}
 
 services:
   postgres:
-    # 固定主版本：避免 minor 漂移导致本地与 CI 行为不一致。
+    # Pinned major version: avoids minor drift making local and CI behave differently.
     image: postgres:17-alpine
     container_name: ${DFR_DB_TEST_CONTAINER:-dfr-m1-postgres-test}
     restart: 'no'
@@ -27,9 +31,9 @@ services:
     environment:
       POSTGRES_DB: dfr_m1_test
       POSTGRES_USER: dfr_bootstrap
-      POSTGRES_PASSWORD: ${DFR_POSTGRES_BOOTSTRAP_PASSWORD:?请在 .env 设置 DFR_POSTGRES_BOOTSTRAP_PASSWORD}
-      DFR_MIGRATOR_PASSWORD: ${DFR_POSTGRES_MIGRATOR_PASSWORD:?请在 .env 设置 DFR_POSTGRES_MIGRATOR_PASSWORD}
-      DFR_RUNTIME_PASSWORD: ${DFR_POSTGRES_RUNTIME_PASSWORD:?请在 .env 设置 DFR_POSTGRES_RUNTIME_PASSWORD}
+      POSTGRES_PASSWORD: ${DFR_POSTGRES_BOOTSTRAP_PASSWORD:?set DFR_POSTGRES_BOOTSTRAP_PASSWORD in .env}
+      DFR_MIGRATOR_PASSWORD: ${DFR_POSTGRES_MIGRATOR_PASSWORD:?set DFR_POSTGRES_MIGRATOR_PASSWORD in .env}
+      DFR_RUNTIME_PASSWORD: ${DFR_POSTGRES_RUNTIME_PASSWORD:?set DFR_POSTGRES_RUNTIME_PASSWORD in .env}
     volumes:
       - dfr-m1-pgdata:/var/lib/postgresql/data
       - ./initdb:/docker-entrypoint-initdb.d:ro
@@ -39,7 +43,7 @@ services:
       timeout: 3s
       retries: 30
       start_period: 5s
-    # 资源上限：本地测试环境不应无界占用宿主资源。
+    # Resource limits: the local test environment must not consume host resources without bound.
     deploy:
       resources:
         limits:

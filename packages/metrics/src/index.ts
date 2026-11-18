@@ -1,28 +1,28 @@
 /**
- * Prometheus 指标注册表原语（零依赖叶子工具）。
+ * Prometheus metric registry primitives (a zero-dependency leaf utility).
  *
- * 为什么单独成包：Gateway 与 Transaction 都需要"有界标签 + Prometheus 文本渲染"这同一套
- * 机制。把它留在任一侧、由另一侧 import，会让"谁拥有 HTTP/事务指标"的归属变得含糊；
- * 复制两份则是并发无关但极易只修一份的重复。因此提取为零依赖叶子包，与 `@dfr/types`
- * 同一量级（不依赖任何工作区包）。
+ * Why a separate package: both Gateway and Transaction need this same
+ * machinery ("bounded labels + Prometheus text rendering"). Leaving it on either side, imported by the other, would blur
+ * who owns the HTTP/transaction metrics. Duplicating it would be easy to fix in only one copy, so it is extracted as a zero-dependency leaf package, on the same level as `@dfr/types`
+ * (it depends on no workspace package).
  *
- * 设计要点：
- * - **先声明后使用**：`declareCounter/Histogram/Gauge` 必须在写入前调用，
- *   拼错指标名会立刻抛错，而不是静默产生一个没人看的新序列；
- * - **标签有界**：单个指标的时间序列数硬上限（默认 1000，与 observability-spec 第 6 章一致），
- *   超出时折叠到溢出桶，绝不无限增长；
- * - **标签值防线（两层纵深防御，都不是充分条件）**：
-  1. 字符集/长度白名单 `[A-Za-z0-9_.:-]{1,64}`——挡住格式破坏（引号/换行/空白）与超长值；
-  2. 十六进制标识符规则——挡住 `0x` 开头的地址/哈希形态。
-  **真正的保证来自调用点只传有界枚举**（chain id、状态名、方法名…）。正则无法识别任意高基数值：
-  一个不含特殊字符的随机字符串仍会通过第 1 条。切勿把本模块当"安全标签"的充分证明。
- * - **渲染确定性**：指标按名称排序输出，同一输入必得同一文本（便于快照与 diff）。
+ * Design points:
+ * - **Declare before use**: `declareCounter/Histogram/Gauge` must be called before writing;
+ *   a misspelled metric name throws immediately instead of silently creating a new series nobody watches;
+ * - **Bounded labels**: a hard cap on the number of time series per metric (default 1000, matching observability-spec chapter 6);
+ *   excess is folded into an overflow bucket and never grows without bound;
+ * - **Label-value defenses (two layers of defense in depth, neither sufficient on its own)**:
+ *   1. Character-set/length allowlist `[A-Za-z0-9_.:-]{1,64}` — blocks format breakage (quotes/newlines/whitespace) and overlong values;
+ *   2. Hex-identifier rule — blocks address/hash shapes starting with `0x`.
+ *   **The real guarantee is that call sites only pass bounded enums** (chain id, status name, method name, ...). A regex cannot recognize arbitrary high-cardinality values:
+ *   a random string with no special characters still passes rule 1. Never treat this module as sufficient proof of "safe labels".
+ * - **Deterministic rendering**: metrics are output sorted by name, so the same input always yields the same text (easy to snapshot and diff).
  */
 
 export interface MetricRegistryOptions {
-  /** 单指标时间序列上限；超出折叠到溢出桶。默认 1000。 */
+  /** Per-metric time-series cap; excess folds into an overflow bucket. Default 1000. */
   readonly maxSeriesPerMetric?: number;
-  /** 直方图桶（秒，严格递增正数）。默认覆盖 5ms..10s。 */
+  /** Histogram buckets (seconds, strictly increasing positives). Default covers 5ms..10s. */
   readonly histogramBucketsSeconds?: readonly number[];
 }
 
@@ -44,14 +44,14 @@ const SAFE_LABEL_RE = /^[A-Za-z0-9_.:-]{1,64}$/u;
 const METRIC_NAME_RE = /^[a-z][a-z0-9_]*$/u;
 
 /**
- * 形如 `0x` 后跟 40+ 个十六进制字符：EVM 地址（40）与各种哈希（64）。
+ * Shaped as `0x` followed by 40+ hex characters: EVM addresses (40) and hashes (64).
  *
- * 这是**纵深防御**，不是通用解法：它只覆盖本仓库最现实的泄漏形态（把地址/哈希当标签）。
- * 真正防止高基数的办法是调用点只传有界枚举。URL 已由字符集白名单挡住（含 `/`）。
+ * This is **defense in depth**, not a general solution: it only covers the most realistic leak shape in this repo (addresses/hashes used as labels).
+ * The real way to prevent high cardinality is for call sites to pass only bounded enums. URLs are already blocked by the character-set allowlist (it excludes `/`).
  */
 const HEX_IDENTIFIER_RE = /^0x[0-9a-fA-F]{40,}$/u;
 
-/** 标签值规范化：不合规或形似地址/哈希的值折叠为 `other`。 */
+/** Label-value normalization: non-conforming values, or values shaped like addresses/hashes, fold to `other`. */
 export function sanitizeLabelValue(value: string): string {
   if (!SAFE_LABEL_RE.test(value)) return 'other';
   if (HEX_IDENTIFIER_RE.test(value)) return 'other';
@@ -111,7 +111,7 @@ export class MetricRegistry {
 
   observe(name: string, labels: Record<string, string>, rawValue: number): void {
     this.requireDefinition(name, 'histogram');
-    // 非有限值或负值直接丢弃：让直方图出现 NaN 桶比丢掉一次观测更糟。
+    // Non-finite or negative values are dropped outright: a NaN bucket in a histogram is worse than dropping one observation.
     if (!Number.isFinite(rawValue) || rawValue < 0) return;
     let seriesMap = this.histograms.get(name);
     if (seriesMap === undefined) {
@@ -125,9 +125,9 @@ export class MetricRegistry {
       series = { count: 0, sum: 0, buckets: this.buckets.map(() => 0) };
       seriesMap.set(seriesKey, series);
     }
-    // 与实现无关的表示误差：保留 6 位小数，避免 0.1+0.2 之类的和值抖动。
+    // Representation error unrelated to the implementation: keep 6 decimal places to avoid sum jitter like 0.1+0.2.
     const value = Math.round(rawValue * 1_000_000) / 1_000_000;
-    // 收窄到局部常量：闭包内 TS 无法保持对 `series` 的窄化（noUncheckedIndexedAccess 下更严格）。
+    // Narrow to a local constant: TS cannot keep the narrowing of `series` inside a closure (stricter under noUncheckedIndexedAccess).
     const target = series;
     target.count += 1;
     target.sum += value;
@@ -136,7 +136,7 @@ export class MetricRegistry {
     });
   }
 
-  /** 设置 gauge 当前值（覆盖，不累加）。 */
+  /** Set the gauge's current value (overwrite, not accumulate). */
   setGauge(name: string, labels: Record<string, string>, value: number): void {
     this.requireDefinition(name, 'gauge');
     if (!Number.isFinite(value)) return;
@@ -148,7 +148,7 @@ export class MetricRegistry {
     values.set(key(this.boundLabels(values, sanitizeLabels(labels))), value);
   }
 
-  /** 当前序列数（测试断言"有界"用）。 */
+  /** Current series count (used by tests asserting "bounded"). */
   seriesCount(name: string): number {
     return (
       this.counters.get(name)?.size ??
@@ -158,7 +158,7 @@ export class MetricRegistry {
     );
   }
 
-  /** 渲染为 Prometheus 文本格式 0.0.4；无数据的指标不输出。 */
+  /** Render as Prometheus text format 0.0.4; metrics with no data are not output. */
   renderPrometheus(): string {
     const lines: string[] = [];
     for (const name of [...this.definitions.keys()].sort()) {
@@ -193,8 +193,8 @@ export class MetricRegistry {
   }
 
   /**
-   * 序列数硬上限；超出时把 `chain` 替换为 `other`（保留其余标签以免丢失可用性信息），
-   * 再超时才折叠为单一溢出桶。
+   * Hard cap on series count; on overflow, replace `chain` with `other` (keeping the other labels so availability information is not lost),
+   * and only fold into a single overflow bucket after further overflow.
    */
   private boundLabels<T>(
     values: Map<string, T>,
@@ -241,8 +241,8 @@ export class MetricRegistry {
 }
 
 /**
- * 标签值一律规范化（不信任调用方）：把地址 / 哈希 / URL 之类写进标签是基数灾难，
- * 而"记得在每处调用点 sanitize" 是容易漏的人工纪律。放在写入路径上则结构上不可能漏。
+ * Label values are always normalized (callers are not trusted): writing addresses / hashes / URLs and the like into labels is a cardinality disaster,
+ * and "remember to sanitize at every call site" is manual discipline that is easy to miss. Putting it on the write path makes it structurally impossible to miss.
  */
 function sanitizeLabels(labels: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};

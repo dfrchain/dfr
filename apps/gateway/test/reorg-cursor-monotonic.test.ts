@@ -1,8 +1,8 @@
-// 重组事件游标跨巡检轮次的单调性（ADR-006 / ChainEvent.cursor）。
+// Monotonicity of reorg event cursors across sweep rounds (ADR-006 / ChainEvent.cursor).
 //
-// 为什么必须用真实 startGateway：缺陷不在 `ReorgReconciler` 内部，而在**接线**——
-// Gateway 的 `reconcile` 每轮都 `new ReorgReconciler(...)`，而游标是实例字段，
-// 于是每轮都从 1 重新开始。组件级测试（reorg.test.ts）每次只 new 一个实例，看不到。
+// Why a real startGateway is required: the defect is not inside `ReorgReconciler`, but in the **wiring** —
+// the Gateway's `reconcile` does `new ReorgReconciler(...)` every round, while the cursor is an instance field,
+// so every round restarts from 1. Component-level tests (reorg.test.ts) only ever new one instance, so they cannot see it.
 import { createServer } from 'node:http';
 import { describe, expect, it, vi } from 'vitest';
 import { hashSecret } from '../src/index.js';
@@ -29,8 +29,8 @@ function rpcServer(): ReturnType<typeof createServer> {
     });
     req.on('end', () => {
       const parsed = JSON.parse(body || '{}') as { id?: unknown; method?: string };
-      // 交易锚定的 canonical hash 是 0xcc…，而链上现在返回 0xaa…，
-      // 于是每一轮巡检都会判定为重组并回退这条记录。
+      // The transaction-anchored canonical hash is 0xcc…, while the chain now returns 0xaa…,
+      // so every sweep round judges it a reorg and rolls back the record.
       const result =
         parsed.method === 'eth_chainId'
           ? '0xaa36a7'
@@ -43,7 +43,7 @@ function rpcServer(): ReturnType<typeof createServer> {
   });
 }
 
-/** 一条 included 记录；每轮都会被"发现重组"并回退。 */
+/** One included record; every round "discovers a reorg" and rolls it back. */
 function includedRecord(seq: number): Record<string, unknown> {
   return {
     transactionId: `txn_cursor_${seq}`,
@@ -61,13 +61,13 @@ function includedRecord(seq: number): Record<string, unknown> {
   };
 }
 
-describe('重组事件游标跨轮次单调（DFR-M1-D04 补强）', () => {
-  it('两轮巡检发布的事件游标必须严格递增（当前实现会重复为 1）', async () => {
+describe('reorg event cursors monotonic across rounds (DFR-M1-D04 reinforcement)', () => {
+  it('event cursors published by two sweep rounds must strictly increase (the current implementation repeats 1)', async () => {
     const rpc = rpcServer();
     await new Promise<void>((resolve) => rpc.listen(0, '127.0.0.1', resolve));
     const rpcPort = (rpc.address() as { port: number }).port;
 
-    // 每轮巡检都返回一条新的 included 记录，保证两轮各产出一个事件。
+    // Each sweep round returns a new included record, guaranteeing one event per round.
     let served = 0;
     const persistence: GatewayPersistence = {
       stores: {
@@ -118,7 +118,7 @@ describe('重组事件游标跨轮次单调（DFR-M1-D04 补强）', () => {
         },
         async () => persistence,
       );
-      // 等两轮巡检（间隔 1s）。
+      // Wait for two sweep rounds (1s apart).
       await new Promise((resolve) => setTimeout(resolve, 2_600));
 
       const cursors = lines
@@ -133,11 +133,11 @@ describe('重组事件游标跨轮次单调（DFR-M1-D04 补强）', () => {
         .map((entry) => String(entry.cursor));
 
       expect(cursors.length, `expected >= 2 reorg events, got: ${lines.join('')}`).toBeGreaterThanOrEqual(2);
-      // 字符串比较前先转数字：ADR-006 要求游标单调递增。
+      // Convert to numbers before string comparison: ADR-006 requires cursors to increase monotonically.
       for (let i = 1; i < cursors.length; i += 1) {
         expect(
           Number(cursors[i]),
-          `游标必须严格递增，实际为 ${JSON.stringify(cursors)}`,
+          `cursors must strictly increase, actually ${JSON.stringify(cursors)}`,
         ).toBeGreaterThan(Number(cursors[i - 1]));
       }
     } finally {

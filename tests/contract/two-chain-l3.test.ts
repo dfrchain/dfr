@@ -1,8 +1,9 @@
 /**
- * M2-D01：两链 L3 对照验收。
+ * M2-D01: two-chain L3 comparison acceptance.
  *
- * 完成门（roadmap M2）："两链 L3 对照"。重点**不是**再跑一遍 Adapter，
- * 而是证明 EVM 与 Solana 跑的是**同一套**通用断言，差异通过数据表达而非分叉。
+ * Completion gate (roadmap M2): "two-chain L3 comparison". The point is **not** to run the Adapters again,
+ * but to prove EVM and Solana run the **same** set of generic assertions, with differences expressed through
+ * data rather than branching.
  */
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -13,26 +14,26 @@ import { TWO_CHAINS } from './two-chain-fixtures.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-describe('M2-D01 两链 L3 对照', () => {
-  it('通用契约测试里不存在按链族分叉的分支（同一套断言）', () => {
+describe('M2-D01 two-chain L3 comparison', () => {
+  it('the generic contract test has no per-chain-family branches (one set of assertions)', () => {
     const source = readFileSync(resolve(here, 'adapter-contract.ts'), 'utf8');
-    // 通用断言不得按 family 分支：差异必须由 subject 数据表达。
-    // 若有人为了"让新链通过"在通用文件里加 if，这条会立刻失败（AGENTS.md §6）。
-    // 只匹配**代码**，不匹配注释里作为反例出现的字样：
-    // 先去掉行内注释与块注释，再扫描。
+    // Generic assertions must not branch on family: differences must be expressed via subject data.
+    // If someone adds an if to the generic file "to make a new chain pass", this fails immediately (AGENTS.md §6).
+    // Match **code** only, not wording that appears in comments as a counterexample:
+    // strip line and block comments first, then scan.
     const code = source
       .replace(/\/\*[\s\S]*?\*\//gu, '')
       .replace(/\/\/[^\n]*/gu, '');
     const familyBranches = code.match(/family\s*===\s*['"][a-z]+['"]/gu) ?? [];
     expect(
       familyBranches,
-      `通用契约测试不得按链族分叉，发现：${familyBranches.join(', ')}`,
+      `The generic contract test must not branch on chain family; found: ${familyBranches.join(', ')}`,
     ).toEqual([]);
-    // 差异确实是**声明式**的。
+    // The differences really are **declarative**.
     expect(source).toContain('unsupportedBlockRefs');
   });
 
-  it('两个 Adapter 对"非法账户"给出同一个错误码（行为一致）', async () => {
+  it('both Adapters give the same error code for an "invalid account" (consistent behaviour)', async () => {
     const codes: string[] = [];
     for (const fixture of TWO_CHAINS) {
       try {
@@ -42,37 +43,37 @@ describe('M2-D01 两链 L3 对照', () => {
         codes.push(isDfrError(err) ? err.code : 'not-dfr-error');
       }
     }
-    // 两链都必须是 DFR_INVALID_ACCOUNT —— 同一套语义，不同链。
+    // Both chains must be DFR_INVALID_ACCOUNT — the same semantics, different chains.
     expect(codes).toEqual(['DFR_INVALID_ACCOUNT', 'DFR_INVALID_ACCOUNT']);
   });
 
-  it('两链都拒绝自己声明的、不支持的定位方式（差异被显式表达）', async () => {
+  it('both chains reject the addressing modes they declare unsupported (differences explicitly expressed)', async () => {
     for (const fixture of TWO_CHAINS) {
       expect(
         fixture.unsupportedBlockRefs.length,
-        `${fixture.chain.id} 应声明至少一个不支持的 BlockRef 分支`,
+        `${fixture.chain.id} must declare at least one unsupported BlockRef branch`,
       ).toBeGreaterThan(0);
       for (const ref of fixture.unsupportedBlockRefs) {
         await expect(
           fixture.getBlockRef(ref),
-          `${fixture.chain.id} 的 ${ref.kind} 定位应 fail-closed`,
+          `${fixture.chain.id}'s ${ref.kind} addressing must fail closed`,
         ).rejects.toMatchObject({ code: 'DFR_UNSUPPORTED_CAPABILITY' });
       }
     }
   });
 
-  it('两链各自的 registry 能力都被自己的 Adapter 实现（registry ⊆ adapter）', () => {
+  it("each chain's registry capabilities are implemented by its own Adapter (registry ⊆ adapter)", () => {
     for (const fixture of TWO_CHAINS) {
       const declared = new Set(fixture.capabilities().capabilities);
       for (const required of fixture.chain.capabilities) {
-        expect(declared.has(required), `${fixture.chain.id} 缺少 ${required}`).toBe(true);
+        expect(declared.has(required), `${fixture.chain.id} is missing ${required}`).toBe(true);
       }
     }
   });
 
-  it('两链的 family 不同、但都声明同一套能力语义（account.balance / block.read / transaction.read）', () => {
+  it('the two chains have different families but declare the same capability semantics (account.balance / block.read / transaction.read)', () => {
     const families = TWO_CHAINS.map((f) => f.chain.family);
-    expect(new Set(families).size, '对照要求两条不同的链族').toBe(2);
+    expect(new Set(families).size, 'the comparison requires two different chain families').toBe(2);
     for (const fixture of TWO_CHAINS) {
       for (const cap of ['account.balance', 'block.read', 'transaction.read']) {
         expect(fixture.capabilities().capabilities).toContain(cap);

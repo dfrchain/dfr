@@ -1,20 +1,20 @@
 /**
- * PostgresSequencingStore（M3-A01，ADR-032 方案 A）。
+ * PostgresSequencingStore (M3-A01, ADR-032 option A).
  *
- * 与 `PostgresNonceStore` 的**刻意差异**：
- *   - token 是判别联合（当前只有 blockhash），Store 只存不判——
- *     过期语义属于链，属于 Adapter（`isSequencingExpired`）；
- *   - 没有"水位"：blockhash 是全链共用的引用，不是需要单调推进的序号；
- *   - 行身份是 **(chain, account, transaction_id)**，不是 token 取值。一个 blockhash
- *     可合法地服务多笔交易，所以"同一 token 只有一行"是错的；
- *   - 正因行一旦建立就永不改绑，"迟到调用者误更新他人租约"（ADR-030 的 ABA）在结构上
- *     不存在，无需 nonce 那套空洞回收。
+ * **Deliberate differences** from `PostgresNonceStore`:
+ *   - The token is a discriminated union (currently only blockhash); the Store only stores, never judges —
+ *     expiry semantics belong to the chain, i.e. the Adapter (`isSequencingExpired`);
+ *   - There is no "watermark": a blockhash is a chain-wide shared reference, not a sequence that must advance monotonically;
+ *   - Row identity is **(chain, account, transaction_id)**, not the token value. One blockhash
+ *     may legitimately serve many transactions, so "one row per token" would be wrong;
+ *   - Precisely because a row is never rebound once created, "a late caller mistakenly updating someone else's lease" (the ADR-030 ABA) is structurally
+ *     impossible, so the nonce gap-reclamation machinery is unneeded.
  *
- * 与 `PostgresNonceStore` 的**相同之处**：
- *   - 以 `(chain_id, account_address)` 作为**串行化点**（同一账户的 build 必须稳定）；
- *   - 非 Capability，也不接触签名材料；`releaseExpiredOrphaned` 有界（LIMIT + SKIP LOCKED）。
+ * **Shared points** with `PostgresNonceStore`:
+ *   - `(chain_id, account_address)` is the **serialization point** (builds for the same account must be stable);
+ *   - It is not a Capability and never touches signing material; `releaseExpiredOrphaned` is bounded (LIMIT + SKIP LOCKED).
  *
- * 不负责：blockhash 是否已过期（Adapter 按链高判定）、Provider 选择、状态机语义。
+ * Not responsible for: whether a blockhash has expired (the Adapter judges by chain height), Provider selection, or state-machine semantics.
  */
 
 import type {
@@ -39,7 +39,7 @@ import type { Pool, PoolClient, QueryResultRow } from 'pg';
 const SCHEMA = 'transaction_data';
 const LEASES = `${SCHEMA}.sequencing_leases`;
 
-/** 单轮回收上限，与 NonceStore 保持一致（恢复任务不得无界扫描）。 */
+/** Per-round reclamation cap, matching NonceStore (recovery tasks must never scan unboundedly). */
 const MAX_RELEASE_LIMIT = 500;
 
 const LEASE_COLUMNS = `
@@ -64,16 +64,16 @@ function toIso(value: Date | string): Iso8601 {
 }
 
 /**
- * 行 → 领域对象。
+ * Row → domain object.
  *
- * 迁移的 CHECK 把 `token_kind` 限制为 `blockhash`，因此这里不出现 nonce 分支；
- * 但读取时不静默降级：形状不符（缺高度）即抛错，免得把半张租约当成有效引用。
+ * The migration's CHECK restricts `token_kind` to `blockhash`, so no nonce branch appears here;
+ * but reads never silently degrade: a mismatched shape (missing height) throws, so a half-formed lease is never treated as a valid reference.
  */
 function rowToLease(row: SequencingLeaseRow): SequencingLease {
   const chain = row.chain_id as ChainId;
   const account: AccountRef = { chain, address: row.account_address };
   if (row.token_kind !== 'blockhash' || row.last_valid_block_height === null) {
-    throw new Error('sequencing lease: 期望 blockhash token（含 last_valid_block_height）');
+    throw new Error('sequencing lease: expected a blockhash token (with last_valid_block_height)');
   }
   return {
     chain,
@@ -93,13 +93,13 @@ async function rollbackQuietly(client: PoolClient): Promise<void> {
   try {
     await client.query('ROLLBACK');
   } catch {
-    // 保留原始异常。
+    // Keep the original error.
   }
 }
 
 function assertMatchingAccount(input: ReserveSequencingInput): void {
   if (input.account.chain !== input.chain) {
-    throw new Error('reserve: account.chain 与 chain 不一致');
+    throw new Error('reserve: account.chain does not match chain');
   }
 }
 
@@ -109,25 +109,25 @@ export class PostgresSequencingStore implements SequencingStore {
   async reserve(input: ReserveSequencingInput): Promise<ReserveSequencingResult> {
     assertMatchingAccount(input);
     if (input.token.kind !== 'blockhash') {
-      // 迁移的 CHECK 也只接受 blockhash；这里在进入事务前 fail-closed，错误更明确。
-      throw new Error('SequencingStore 目前只接受 blockhash token（ADR-032）');
+      // The migration's CHECK also accepts only blockhash; failing closed here before entering the transaction gives a clearer error.
+      throw new Error('SequencingStore currently accepts only blockhash tokens (ADR-032)');
     }
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
 
-      // 串行化点：同一 (chain, account) 的 reserve 互斥。
+      // Serialization point: reserves for the same (chain, account) are mutually exclusive.
       //
-      // 为什么用 advisory lock 而不是 `nonce_accounts` 那种"先 upsert 水位行再 FOR UPDATE"：
-      // sequencing 没有需要维护的水位——它的串行化只需要"同一账户同一时刻只有一个 reserve"。
-      // hashtext 把 (chain, account) 折叠成 32 位 key 对，作用域限定在事务内（xact）。
+      // Why an advisory lock instead of the `nonce_accounts` pattern of "upsert the watermark row first, then FOR UPDATE":
+      // sequencing has no watermark to maintain — its serialization only needs "one reserve per account at a time".
+      // hashtext folds (chain, account) into a 32-bit key pair, scoped to the transaction (xact).
       await client.query('SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))', [
         input.chain,
         input.account.address,
       ]);
 
-      // 同一 transactionId 已有租约 → 并发/重放：返回原租约（不重复分配）。
-      // transaction_id 上有唯一约束，是这里的幂等锚点（ADR-018 对 build 重放的同一要求）。
+      // The same transactionId already has a lease → concurrent call / replay: return the original lease (no duplicate allocation).
+      // The unique constraint on transaction_id is the idempotency anchor here (the same requirement ADR-018 sets for build replays).
       const existing = await client.query<SequencingLeaseRow & { unexpired: boolean }>(
         `SELECT ${LEASE_COLUMNS}, (expires_at > clock_timestamp()) AS unexpired
            FROM ${LEASES} WHERE transaction_id = $1 FOR UPDATE`,
@@ -191,12 +191,12 @@ export class PostgresSequencingStore implements SequencingStore {
         return { kind: 'not_found' };
       }
       if (locked.token_value !== ref.tokenValue) {
-        // 行身份由 transactionId 决定；token 不符说明调用方的引用与租约不自洽，
-        // fail-closed（不把消耗标记落到一条它没打算用的租约上）。
+        // Row identity is decided by transactionId; a mismatched token means the caller's reference is inconsistent with the lease,
+        // so fail closed (do not mark consumed on a lease it did not intend to use).
         await client.query('ROLLBACK');
         return { kind: 'not_found' };
       }
-      // consumed 是终态：重复调用保持幂等（一次签名/广播事实，不会因重放而变）。
+      // consumed is a terminal state: repeated calls stay idempotent (one signing/broadcast fact, unchanged by replays).
       if (locked.status === 'consumed') {
         await client.query('COMMIT');
         return { kind: 'updated', lease: rowToLease(locked) };
@@ -236,7 +236,7 @@ export class PostgresSequencingStore implements SequencingStore {
         return { kind: 'not_found' };
       }
       if (locked.token_value !== ref.tokenValue) {
-        // 引用自相矛盾：不是这条租约的合法持有者。
+        // The reference contradicts itself: not a legitimate holder of this lease.
         await client.query('COMMIT');
         return { kind: 'forbidden', lease: rowToLease(locked), reason: 'not_owner' };
       }
@@ -244,7 +244,7 @@ export class PostgresSequencingStore implements SequencingStore {
         await client.query('COMMIT');
         return { kind: 'released', lease: rowToLease(locked) };
       }
-      // 已签名/已广播的引用不得释放：释放会掩盖"这个 blockhash 已被用过"的事实。
+      // A signed/broadcast reference must not be released: releasing would hide the fact that "this blockhash has been used".
       if (locked.status === 'consumed') {
         await client.query('COMMIT');
         return { kind: 'forbidden', lease: rowToLease(locked), reason: 'already_consumed' };
@@ -273,9 +273,9 @@ export class PostgresSequencingStore implements SequencingStore {
     if (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > MAX_RELEASE_LIMIT) {
       throw new RangeError(`limit must be 1..${MAX_RELEASE_LIMIT}`);
     }
-    // 只回收**租约 TTL 已过**的 `reserved` 行（reserve 之后崩溃、从未标 consumed）。
-    // consumed 永不回收：它代表一笔已签名/已广播的交易引用过该 token。
-    // 这不是 blockhash 过期回收——那由 Adapter 按链高判定（`isSequencingExpired`）。
+    // Only reclaim `reserved` rows whose **lease TTL has passed** (crashed after reserve, never marked consumed).
+    // consumed is never reclaimed: it records that a signed/broadcast transaction referenced the token.
+    // This is not blockhash-expiry reclamation — that is judged by the Adapter by chain height (`isSequencingExpired`).
     const { rowCount } = await this.pool.query(
       `UPDATE ${LEASES}
           SET status = 'expired', updated_at = clock_timestamp()
@@ -292,10 +292,10 @@ export class PostgresSequencingStore implements SequencingStore {
   }
 
   /**
-   * 按 `transactionId`（行身份）取租约并加行锁。
+   * Fetch a lease by `transactionId` (row identity) and lock the row.
    *
-   * 刻意**不**按 `token_value` 查：一个 blockhash 服务多笔交易，按它查会命中多行，
-   * 且语义上也不该把"别的交易也在用同一 blockhash"当成冲突。
+   * Deliberately **not** looked up by `token_value`: one blockhash serves many transactions, so that lookup would hit many rows,
+   * and semantically "another transaction is also using the same blockhash" must not count as a conflict.
    */
   private async lockLease(
     client: PoolClient,

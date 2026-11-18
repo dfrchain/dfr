@@ -1,21 +1,21 @@
 /**
- * 恢复巡检调度器（DFR-M1-D03 运行时补充）。
+ * Recovery sweep scheduler (DFR-M1-D03 runtime supplement).
  *
- * 缺口：`RecoveryCoordinator`（D03）只在**启动**时跑一轮——过期幂等记录清理、
- * 孤儿 nonce 租约回收、unknown 交易解析。因此长期不重启的实例永远不会再回收它们，
- * 租约表与幂等表会随崩溃次数单调增长（TODO-009 记录的残余缺口）。
+ * The gap: `RecoveryCoordinator` (D03) only runs one round at **startup** — expired idempotency cleanup,
+ * orphaned nonce lease reclamation, unknown transaction resolution. So an instance that runs for a long time without restarting never reclaims them,
+ * and the lease and idempotency tables grow monotonically with the number of crashes (the residual gap recorded in TODO-009).
  *
- * 本类把同一份 `RecoveryCoordinator.run` 接入周期调度。安全性不变：恢复是幂等的、
- * 有界的，且 unknown 解析仍走 tracker lease（多实例下不会重复解析）。
+ * This class plugs the same `RecoveryCoordinator.run` into periodic scheduling. Safety is unchanged: recovery is idempotent,
+ * bounded, and unknown resolution still goes through the tracker lease (no duplicate resolution across instances).
  *
- * 默认间隔 10 分钟：比重组巡检更宽松——它是维护性回收，不是安全关键路径。
- * 生命周期语义由共用原语 `PeriodicSweep` 提供。
+ * Default interval 10 minutes: more relaxed than the reorg sweep — it is maintenance reclamation, not a safety-critical path.
+ * Lifecycle semantics come from the shared `PeriodicSweep` primitive.
  */
 
 import { PeriodicSweep } from './periodic-sweep.js';
 
 export interface RecoverySchedulerDeps {
-  /** 执行一轮有界恢复，返回本轮恢复数（即 `RecoveryCoordinator.run`）。 */
+   /** Run one bounded recovery round, returning this round's recovery count (i.e. `RecoveryCoordinator.run`). */
   readonly recover: (input: { readonly limit: number }) => Promise<number>;
   readonly intervalMs?: number;
   readonly batchLimit?: number;

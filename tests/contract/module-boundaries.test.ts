@@ -1,15 +1,15 @@
 /**
- * 模块依赖边界契约测试（DFR-M1-A04 起）。
+ * Module dependency-boundary contract test (since DFR-M1-A04).
  *
- * 目的：把 AGENTS.md 第 3 节与 docs/development/module-catalog.md 的
- * "禁止出现的依赖" 从人工纪律变成可回归断言。
+ * Purpose: turn the "forbidden dependencies" in AGENTS.md §3 and docs/development/module-catalog.md from human
+ * discipline into regressable assertions.
  *
- * 为什么需要它：依赖方向一旦被破坏，往往不会让任何功能测试失败，
- * 却会让 Adapter 绑定到具体 Provider、让 Storage 反向依赖 Core，
- * 之后只能靠大规模重构挽回。这类退化必须在 CI 就被拦住。
+ * Why it is needed: once a dependency direction breaks, often no functional test fails, yet Adapters get bound
+ * to a concrete Provider and Storage ends up depending on Core, and only a large refactor can recover afterwards.
+ * This kind of regression must be caught in CI.
  *
- * 注意：本测试只读取 package.json 的声明依赖，不解析源码 import。
- * 声明依赖是"能否 import"的唯一许可来源，因此足够守住边界。
+ * Note: this test only reads declared dependencies in package.json; it does not parse source imports.
+ * Declared dependencies are the only licence source for "may import", so that is enough to hold the boundary.
  */
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -25,7 +25,7 @@ interface PackageManifest {
 }
 
 interface WorkspacePackage {
-  /** 仓库相对目录，例如 `packages/core`、`adapters/evm`。 */
+  /** Repo-relative directory, e.g. `packages/core`, `adapters/evm`. */
   readonly dir: string;
   readonly manifest: PackageManifest;
 }
@@ -55,7 +55,7 @@ function workspacePackages(): readonly WorkspacePackage[] {
 
 const packages = workspacePackages();
 
-/** 取运行时依赖名（不含 devDependencies）。 */
+/** Takes runtime dependency names (excluding devDependencies). */
 function runtimeDeps(pkg: WorkspacePackage): readonly string[] {
   return Object.keys(pkg.manifest.dependencies ?? {});
 }
@@ -64,35 +64,35 @@ function find(dir: string): WorkspacePackage | undefined {
   return packages.find((p) => p.dir === dir);
 }
 
-describe('模块依赖边界（AGENTS.md 第 3 节 / module-catalog）', () => {
-  it('workspace 发现全部已声明包', () => {
-    // 基线：这些包在 M0 已完成或 M1 计划中，缺失说明扫描逻辑或目录被破坏。
+describe('Module dependency boundaries (AGENTS.md §3 / module-catalog)', () => {
+  it('workspace discovery finds all declared packages', () => {
+    // Baseline: these packages were done in M0 or planned in M1; a missing one means the scan logic or directory is broken.
     const dirs = packages.map((p) => p.dir);
     expect(dirs).toEqual(expect.arrayContaining(['packages/types', 'adapters/evm', 'apps/gateway']));
   });
 
-  it('packages/types 不依赖任何工作区包（纯契约，叶子节点）', () => {
+  it('packages/types depends on no workspace package (pure contract, a leaf node)', () => {
     const types = find('packages/types');
-    expect(types, '缺少 packages/types').toBeTruthy();
+    expect(types, 'missing packages/types').toBeTruthy();
     const workspaceDeps = runtimeDeps(types!).filter((d) => d.startsWith('@dfr/'));
-    expect(workspaceDeps, 'Types 必须是依赖图的叶子').toEqual([]);
+    expect(workspaceDeps, 'Types must be a leaf of the dependency graph').toEqual([]);
   });
 
-  it('Core 不依赖任何 Adapter（Core 不得出现链特定分支）', () => {
+  it('Core depends on no Adapter (Core must have no chain-specific branches)', () => {
     const core = find('packages/core');
-    expect(core, '缺少 packages/core').toBeTruthy();
+    expect(core, 'missing packages/core').toBeTruthy();
     const adapters = runtimeDeps(core!).filter((d) => d.startsWith('@dfr/adapter-'));
-    expect(adapters, 'Core 直接依赖 Adapter 会让链语义渗入编排层').toEqual([]);
+    expect(adapters, 'Core depending directly on an Adapter would let chain semantics seep into the orchestration layer').toEqual([]);
   });
 
-  it('Provider 不依赖任何 Adapter（Provider 不理解链业务语义）', () => {
+  it('Provider depends on no Adapter (Provider does not understand chain business semantics)', () => {
     const provider = find('packages/provider');
-    expect(provider, '缺少 packages/provider').toBeTruthy();
+    expect(provider, 'missing packages/provider').toBeTruthy();
     const adapters = runtimeDeps(provider!).filter((d) => d.startsWith('@dfr/adapter-'));
     expect(adapters).toEqual([]);
   });
 
-  it('Adapter 不依赖 Gateway 或 Storage（链语义层不得反向依赖）', () => {
+  it('Adapters do not depend on Gateway or Storage (the chain-semantics layer must not depend backwards)', () => {
     const violations: string[] = [];
     for (const pkg of packages.filter((p) => p.dir.startsWith('adapters/'))) {
       for (const dep of runtimeDeps(pkg)) {
@@ -105,49 +105,51 @@ describe('模块依赖边界（AGENTS.md 第 3 节 / module-catalog）', () => {
   });
 });
 
-describe('@dfr/transaction 包边界（DFR-M1-A04）', () => {
-  it('包存在且使用 monorepo 约定的入口形状', () => {
+describe('@dfr/transaction package boundary (DFR-M1-A04)', () => {
+  it('the package exists and uses the monorepo-agreed entry shape', () => {
     const tx = find('packages/transaction');
-    expect(tx, '缺少 packages/transaction').toBeTruthy();
+    expect(tx, 'missing packages/transaction').toBeTruthy();
     expect(tx!.manifest.name).toBe('@dfr/transaction');
     expect(existsSync(resolve(repoRoot, 'packages/transaction/src/index.ts'))).toBe(true);
     expect(existsSync(resolve(repoRoot, 'packages/transaction/tsconfig.json'))).toBe(true);
   });
 
-  it('运行时依赖只允许"叶子工具包"（types / errors / metrics）', () => {
+  it('runtime dependencies allow only "leaf utility packages" (types / errors / metrics)', () => {
     const tx = find('packages/transaction');
-    expect(tx, '缺少 packages/transaction').toBeTruthy();
-    // ADR-001 的模块化单体下，允许 Transaction 依赖**零领域知识的叶子工具包**。
-    // 关键不在于"只有两个"，而在于这些包本身不得再依赖任何业务层——
-    // 下面的循环把这条性质也断言掉，因此加入新工具包不会削弱约束。
+    expect(tx, 'missing packages/transaction').toBeTruthy();
+    // Under ADR-001's modular monolith, Transaction may depend on **leaf utility packages with zero domain
+    // knowledge**. The point is not "only two", but that these packages themselves must not depend on any
+    // business layer — the loop below asserts that property too, so adding a new utility package does not
+    // weaken the constraint.
     const allowed = new Set(['@dfr/types', '@dfr/errors', '@dfr/metrics']);
     const unexpected = runtimeDeps(tx!).filter((d) => !allowed.has(d));
-    expect(unexpected, 'Transaction 不得依赖 Core/Adapter/Provider/Registry/Storage/数据库驱动').toEqual(
+    expect(unexpected, 'Transaction must not depend on Core/Adapter/Provider/Registry/Storage/database drivers').toEqual(
       [],
     );
 
-    // 被允许的"叶子工具包"必须是真正的叶子：它们的依赖也只能是这些工具包。
-    // 否则"工具包"会变成绕过边界的后门（例如 metrics 依赖 Provider 就会把链语义带进来）。
+    // The allowed "leaf utility packages" must be real leaves: their dependencies may only be these utility
+    // packages. Otherwise a "utility package" becomes a back door around the boundary (e.g. metrics depending
+    // on Provider would bring chain semantics in).
     for (const dep of allowed) {
       const dir = { '@dfr/types': 'packages/types', '@dfr/errors': 'packages/errors', '@dfr/metrics': 'packages/metrics' }[dep]!;
       const pkg = find(dir);
-      expect(pkg, `缺少 ${dir}`).toBeTruthy();
+      expect(pkg, `missing ${dir}`).toBeTruthy();
       const transitive = runtimeDeps(pkg!).filter((d) => !allowed.has(d));
-      expect(transitive, `${dep} 必须只依赖叶子工具包`).toEqual([]);
+      expect(transitive, `${dep} must depend only on leaf utility packages`).toEqual([]);
     }
   });
 
-  it('声明 typecheck 脚本以便 pnpm -r 门禁覆盖该包', () => {
+  it('declares a typecheck script so the pnpm -r gate covers this package', () => {
     const manifest = readManifest('packages/transaction/package.json') as
       | (PackageManifest & { scripts?: Record<string, string> })
       | null;
-    expect(manifest?.scripts?.typecheck, '缺少 typecheck 脚本，会被 pnpm -r 静默跳过').toBeTruthy();
+    expect(manifest?.scripts?.typecheck, 'missing typecheck script; pnpm -r would silently skip it').toBeTruthy();
   });
 
-  it('Store 端口不泄漏数据库驱动类型（pg / SQL / 连接池）', () => {
-    // m1-storage-model 第 8 节：端口表达行为，不表达表。实现方负责把驱动细节
-    // 留在 packages/storage-postgres；一旦 Store 接口出现 pg 类型，
-    // Core 与全部单元测试都会被绑到具体数据库上。
+  it('the Store port does not leak database driver types (pg / SQL / connection pool)', () => {
+    // m1-storage-model §8: ports express behaviour, not tables. The implementer keeps driver details
+    // in packages/storage-postgres; once a pg type appears in the Store interface,
+    // Core and all unit tests get bound to a concrete database.
     const srcDir = resolve(repoRoot, 'packages/transaction/src');
     const forbidden = [
       /from\s+['"]pg['"]/,
@@ -165,38 +167,38 @@ describe('@dfr/transaction 包边界（DFR-M1-A04）', () => {
       if (!file.endsWith('.ts')) continue;
       const source = readFileSync(resolve(srcDir, file), 'utf8');
       for (const pattern of forbidden) {
-        if (pattern.test(source)) offenders.push(`${file} 命中 ${pattern}`);
+        if (pattern.test(source)) offenders.push(`${file} matched ${pattern}`);
       }
     }
     expect(offenders).toEqual([]);
   });
 
-  it('Core 只做 Store 的兼容 re-export，不重新定义端口', () => {
+  it('Core only does a compatibility re-export of Store, not redefining the port', () => {
     const source = readFileSync(resolve(repoRoot, 'packages/core/src/stores.ts'), 'utf8');
-    // 不允许出现 interface / class 定义；只允许 export ... from '...'。
+    // interface / class definitions are not allowed; only export ... from '...' is.
     expect(source).not.toMatch(/^\s*(export\s+)?(interface|class)\s/m);
     expect(source).toMatch(/from '@dfr\/transaction'/);
   });
 });
 
-describe('@dfr/storage-postgres 包边界（DFR-M1-A07）', () => {
-  it('包存在（A07 起引入）', () => {
+describe('@dfr/storage-postgres package boundary (DFR-M1-A07)', () => {
+  it('the package exists (introduced in A07)', () => {
     const storage = find('packages/storage-postgres');
-    expect(storage, '缺少 packages/storage-postgres').toBeTruthy();
+    expect(storage, 'missing packages/storage-postgres').toBeTruthy();
     expect(storage!.manifest.name).toBe('@dfr/storage-postgres');
   });
 
-  it('只实现 Store 端口：依赖限定为 transaction / types / errors / pg', () => {
+  it('only implements the Store port: dependencies limited to transaction / types / errors / pg', () => {
     const storage = find('packages/storage-postgres');
-    expect(storage, '缺少 packages/storage-postgres').toBeTruthy();
+    expect(storage, 'missing packages/storage-postgres').toBeTruthy();
     const allowed = new Set(['@dfr/transaction', '@dfr/types', '@dfr/errors', 'pg']);
     const unexpected = runtimeDeps(storage!).filter((d) => !allowed.has(d));
-    expect(unexpected, 'Storage 不得依赖 Core/Adapter/Provider/Registry/Gateway').toEqual([]);
-    // 端口所有权在 transaction：Storage 必须依赖它，否则无法实现接口。
+    expect(unexpected, 'Storage must not depend on Core/Adapter/Provider/Registry/Gateway').toEqual([]);
+    // Port ownership is in transaction: Storage must depend on it, otherwise it cannot implement the interface.
     expect(runtimeDeps(storage!)).toContain('@dfr/transaction');
   });
 
-  it('只有 Gateway composition root 所在包可依赖 Storage', () => {
+  it('only the package holding the Gateway composition root may depend on Storage', () => {
     const offenders: string[] = [];
     for (const pkg of packages) {
       if (pkg.dir === 'packages/storage-postgres' || pkg.dir === 'apps/gateway') continue;
@@ -204,11 +206,11 @@ describe('@dfr/storage-postgres 包边界（DFR-M1-A07）', () => {
         if (dep.startsWith('@dfr/storage-')) offenders.push(`${pkg.dir} → ${dep}`);
       }
     }
-    expect(offenders, 'Core/Transaction 不得依赖具体数据库驱动').toEqual([]);
+    expect(offenders, 'Core/Transaction must not depend on a concrete database driver').toEqual([]);
     expect(runtimeDeps(find('apps/gateway')!)).toContain('@dfr/storage-postgres');
   });
 
-  it('Gateway 只有 main composition root 可 import 具体 Storage', () => {
+  it('only the Gateway main composition root may import concrete Storage', () => {
     const srcDir = resolve(repoRoot, 'apps/gateway/src');
     const offenders: string[] = [];
     for (const file of readdirSync(srcDir)) {
@@ -216,36 +218,36 @@ describe('@dfr/storage-postgres 包边界（DFR-M1-A07）', () => {
       const source = readFileSync(resolve(srcDir, file), 'utf8');
       if (source.includes('@dfr/storage-')) offenders.push(file);
     }
-    expect(offenders, 'Storage 不得渗入 Gateway 路由/auth/server').toEqual([]);
+    expect(offenders, 'Storage must not seep into Gateway routes/auth/server').toEqual([]);
   });
 
-  it('只有 storage-postgres 可以依赖 pg', () => {
+  it('only storage-postgres may depend on pg', () => {
     const offenders: string[] = [];
     for (const pkg of packages) {
       if (pkg.dir === 'packages/storage-postgres') continue;
       if (runtimeDeps(pkg).includes('pg')) offenders.push(pkg.dir);
     }
-    expect(offenders, '除 Storage 外任何包都不得引入 pg').toEqual([]);
+    expect(offenders, 'no package other than Storage may bring in pg').toEqual([]);
   });
 });
 
-describe('Viem 依赖边界（ADR-016）', () => {
-  it('只有 adapters/evm 可以依赖 viem', () => {
-    // ADR-016 §2：Viem 只能存在于 EVM Adapter；Types / Transaction / Gateway
-    // 一旦依赖它，就会把第三方交易库类型泄漏进领域契约。
+describe('Viem dependency boundary (ADR-016)', () => {
+  it('only adapters/evm may depend on viem', () => {
+    // ADR-016 §2: Viem may only live in the EVM Adapter; once Types / Transaction / Gateway depend on it,
+    // third-party transaction-library types leak into the domain contract.
     const offenders: string[] = [];
     for (const pkg of packages) {
       if (pkg.dir === 'adapters/evm') continue;
       if (runtimeDeps(pkg).includes('viem')) offenders.push(pkg.dir);
     }
-    expect(offenders, 'Viem 不得泄漏到 EVM Adapter 之外').toEqual([]);
+    expect(offenders, 'Viem must not leak outside the EVM Adapter').toEqual([]);
     expect(runtimeDeps(find('adapters/evm')!)).toContain('viem');
   });
 
-  it('adapters/evm 使用精确 Viem 版本（ADR-016 §6）', () => {
+  it('adapters/evm uses an exact Viem version (ADR-016 §6)', () => {
     const evm = find('adapters/evm');
-    expect(evm, '缺少 adapters/evm').toBeTruthy();
-    // 精确版本而非 ^ / ~ / latest：升级必须显式改 lockfile 并重跑 golden vectors。
+    expect(evm, 'missing adapters/evm').toBeTruthy();
+    // An exact version, not ^ / ~ / latest: an upgrade must explicitly change the lockfile and re-run the golden vectors.
     expect(evm!.manifest.dependencies?.['viem']).toMatch(/^\d+\.\d+\.\d+$/);
   });
 });

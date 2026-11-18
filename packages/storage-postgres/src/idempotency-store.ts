@@ -1,20 +1,20 @@
 /**
- * PostgresIdempotencyStore（DFR-M1-A10）。
+ * PostgresIdempotencyStore (DFR-M1-A10).
  *
- * 权威来源：docs/architecture/m1-storage-model.md 第 3.3 节、ADR-015。
+ * Authoritative sources: docs/architecture/m1-storage-model.md section 3.3, ADR-015.
  *
- * 语义要点：
- *   - scope 为 `(project_id, chain_id, key)`，由表上的复合主键保证唯一；
- *   - `begin` 用 `INSERT ... ON CONFLICT DO NOTHING` 抢占，冲突后再判定四种结果；
- *   - **不同 fingerprint 永不覆盖原记录**（永久冲突，不是"最后写入者获胜"）；
- *   - 租约使用 `lease_expires_at`，过期后允许换 owner 接管；
- *     接管通过带条件的 UPDATE 完成，因此并发接管也只有一个赢家；
- *   - **所有时间判断使用数据库 `clock_timestamp()`**，不用进程时钟
- *     （ADR-015 §7：避免多进程主机时钟漂移导致双 owner）。
+ * Key semantics:
+ *   - scope is `(project_id, chain_id, key)`, kept unique by the table's composite primary key;
+ *   - `begin` claims with `INSERT ... ON CONFLICT DO NOTHING`, then decides among four outcomes on conflict;
+ *   - **A different fingerprint never overwrites the original record** (a permanent conflict, not "last writer wins");
+ *   - Leases use `lease_expires_at`; once expired, another owner may take over;
+ *     takeovers happen via a conditional UPDATE, so concurrent takeovers still have exactly one winner;
+ *   - **All time checks use the database `clock_timestamp()`**, not the process clock
+ *     (ADR-015 §7: avoids two owners caused by clock drift across multi-process hosts).
  *
- * 边界：本 Store 只维护幂等记录状态。它**不**决定"接管后能否再次广播"——
- * 那是 Transaction Engine 的职责（过期接管 broadcast 前必须按 expectedHash 查链，
- * 见 m1-storage-model §3.3 与 C 系列任务）。
+ * Boundary: this Store only maintains idempotency-record state. It does **not** decide "whether a rebroadcast is allowed after a takeover" —
+ * that is the Transaction Engine's job (before broadcasting after an expired takeover, it must check the chain by expectedHash;
+ * see m1-storage-model §3.3 and the C-series tasks).
  */
 
 import type {
@@ -50,7 +50,7 @@ interface IdempotencyRow extends QueryResultRow {
   status_code: number | null;
   response_body: unknown;
   expires_at: Date | string;
-  /** 仅在需要时由 SQL 计算（毫秒，字符串以防精度问题）。 */
+  /** Computed by SQL only when needed (milliseconds, as a string to avoid precision issues). */
   retry_after_ms?: string | null;
 }
 
@@ -78,11 +78,11 @@ function rowToRecord(row: IdempotencyRow): IdempotencyRecord {
   };
 }
 
-/** 记录整体 TTL：默认创建后 24h（m1-storage-model §3.3）。 */
+/** Whole-record TTL: 24h after creation by default (m1-storage-model §3.3). */
 const DEFAULT_RECORD_TTL_MS = 24 * 60 * 60 * 1000;
 
 export interface PostgresIdempotencyStoreOptions {
-  /** 记录整体保留时长；默认 24h。 */
+  /** Whole-record retention period; 24h by default. */
   readonly recordTtlMs?: number;
 }
 
@@ -145,7 +145,7 @@ export class PostgresIdempotencyStore implements IdempotencyStore {
       throw new RangeError('leaseTtlMs must be a positive safe integer');
     }
 
-    // 第一步：尝试抢占。失败（已存在）不报错，交给下一步判定。
+    // Step 1: try to claim. Failing (already exists) is not an error; the next step decides.
     const inserted = await this.pool.query<IdempotencyRow>(
       `INSERT INTO ${TABLE}
          (project_id, chain_id, key, fingerprint, state, owner_token,
@@ -162,8 +162,8 @@ export class PostgresIdempotencyStore implements IdempotencyStore {
       return { kind: 'acquired', record: rowToRecord(inserted.rows[0]) };
     }
 
-    // 第二步：已有记录，按 fingerprint / state / 租约判定。
-    // 用一条语句同时取回记录与剩余租约毫秒数，避免两次往返产生竞态。
+    // Step 2: a record exists; decide by fingerprint / state / lease.
+    // Fetch the record and the remaining lease milliseconds in one statement, avoiding a race from two round trips.
     const { rows } = await this.pool.query<IdempotencyRow>(
       `SELECT ${SELECT_COLUMNS},
               GREATEST(0, CEIL(EXTRACT(EPOCH FROM (lease_expires_at - clock_timestamp())) * 1000))::bigint::text
@@ -175,8 +175,8 @@ export class PostgresIdempotencyStore implements IdempotencyStore {
 
     const existing = rows[0];
     if (existing === undefined) {
-      // 记录在冲突与读取之间被清理（例如 pruneExpired）；这是合法竞态，
-      // 递归一次重新抢占，而不是返回一个语义不明的结果。
+      // The record was cleaned up between the conflict and the read (e.g. by pruneExpired); this is a legitimate race,
+      // so retry the claim once recursively instead of returning a semantically unclear result.
       return this.begin(input);
     }
 
@@ -191,14 +191,14 @@ export class PostgresIdempotencyStore implements IdempotencyStore {
       return this.recoverCommitted(scope, fingerprint);
     }
 
-    // in_flight：判断租约是否已过期。
+    // in_flight: check whether the lease has expired.
     const retryAfterMs = Number(existing.retry_after_ms ?? '0');
     if (retryAfterMs > 0) {
       return { kind: 'in_flight', record: rowToRecord(existing), retryAfterMs };
     }
 
-    // 租约已过期 → 尝试接管。条件 UPDATE 保证并发接管只有一个赢家：
-    // owner_token 必须是读到的旧值，且租约仍是过期状态（由 DB 时钟判定）。
+    // The lease has expired → try a takeover. The conditional UPDATE guarantees exactly one winner among concurrent takeovers:
+    // owner_token must be the old value just read, and the lease must still be expired (judged by the DB clock).
     const takenOver = await this.pool.query<IdempotencyRow>(
       `UPDATE ${TABLE}
           SET owner_token = $4,
@@ -224,7 +224,7 @@ export class PostgresIdempotencyStore implements IdempotencyStore {
       return { kind: 'acquired', record: rowToRecord(takenOver.rows[0]) };
     }
 
-    // 被别人抢先接管：重新读取最新状态并回报 in_flight。
+    // Someone else took over first: re-read the latest state and report in_flight.
     const latest = await this.pool.query<IdempotencyRow>(
       `SELECT ${SELECT_COLUMNS},
               GREATEST(0, CEIL(EXTRACT(EPOCH FROM (lease_expires_at - clock_timestamp())) * 1000))::bigint::text
@@ -257,7 +257,7 @@ export class PostgresIdempotencyStore implements IdempotencyStore {
   async complete(input: CompleteIdempotencyInput): Promise<CompleteIdempotencyResult> {
     const { scope, ownerToken } = input;
 
-    // 带 owner_token 条件的 UPDATE：失去所有权时影响 0 行，结果必须丢弃。
+    // UPDATE with an owner_token condition: when ownership is lost it affects 0 rows, and the result must be discarded.
     const { rows } = await this.pool.query<IdempotencyRow>(
       `UPDATE ${TABLE}
           SET state = 'completed',
@@ -285,7 +285,7 @@ export class PostgresIdempotencyStore implements IdempotencyStore {
       return { kind: 'completed', record: rowToRecord(rows[0]) };
     }
 
-    // 影响 0 行：区分"不存在"与"所有权已丢失"。
+    // 0 rows affected: distinguish "does not exist" from "ownership lost".
     const existing = await this.get(scope);
     if (existing === null) return { kind: 'not_found' };
     return { kind: 'lost_ownership' };

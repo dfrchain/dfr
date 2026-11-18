@@ -1,7 +1,7 @@
 /**
- * @dfr/provider —— DFR Provider 层（DFR-006 / DFR-007）。
+ * @dfr/provider — the DFR Provider layer (DFR-006 / DFR-007).
  *
- * 规范来源：docs/architecture/provider-spec-v0.1.md
+ * Spec source: docs/architecture/provider-spec-v0.1.md
  */
 export {
   JsonRpcHttpProvider,

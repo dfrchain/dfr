@@ -1,23 +1,23 @@
 /**
- * 账户模型（见 docs/architecture/domain-model.md 第 4.2 节）。
+ * Account model (see docs/architecture/domain-model.md section 4.2).
  *
- * Alpha 阶段 AccountRef 仅表示地址引用，不涉及账户抽象、Session Key、智能账户。
- * 本模型中不存在也不允许出现私钥、助记词或任何签名凭证字段。
+ * In the Alpha phase, AccountRef only denotes an address reference; no account abstraction, session keys, or smart accounts are involved.
+ * No private keys, mnemonics, or any signing credential fields exist or are allowed in this model.
  */
 import type { ChainId, DecimalUint } from './primitives.js';
 
 /**
- * 账户引用。
+ * Account reference.
  *
- * 审计修正 A-08：删除了 `network` 字段。网络由 `chain` 唯一决定
- * （`ethereum-sepolia` 必然是 testnet），同时携带两者会让调用方传入矛盾组合，
- * 而旧规范没有定义冲突时的裁决规则。
+ * Audit fix A-08: the `network` field was removed. The network is uniquely determined by `chain`
+ * (`ethereum-sepolia` is necessarily testnet), and carrying both would let callers pass contradictory combinations,
+ * while the old spec defined no tie-breaking rule for conflicts.
  */
 export interface AccountRef {
   chain: ChainId;
-  /** 链原生编码地址；合法性由 Adapter 校验，Core 不做格式假设。 */
+  /** Chain-native encoded address; validity is checked by the Adapter, Core makes no format assumptions. */
   address: string;
-  /** 仅部分链使用（如 Cosmos memo/tag）。 */
+  /** Only used by some chains (e.g. Cosmos memo/tag). */
   memo?: string;
 }
 
@@ -26,12 +26,12 @@ export type AccountKind = 'externally-owned' | 'contract' | 'program' | 'unknown
 export interface Account {
   ref: AccountRef;
   kind: AccountKind;
-  /** EVM nonce。 */
+  /** EVM nonce. */
   nonce?: DecimalUint;
-  /** Solana 无 nonce，使用账户数据长度等作为存在性参考。 */
+  /** Solana has no nonce; account data length and similar are used as existence references. */
   dataLength?: DecimalUint;
-  /** 账户是否已存在（用于识别未初始化账户）。 */
+  /** Whether the account already exists (used to identify uninitialized accounts). */
   exists: boolean;
-  /** 人类可读标签，仅由调用方/控制面维护，不来自链。 */
+  /** Human-readable label, maintained only by the caller/control plane, never from the chain. */
   label?: string;
 }

@@ -1,32 +1,32 @@
--- DFR M3-B03：交易记录承载链无关的排序前提（ADR-033，方案 A）
+-- DFR M3-B03: transaction records carry a chain-agnostic ordering prerequisite (ADR-033, option A)
 --
--- 背景：`transactions.nonce` 只能表达 EVM 的序号语义；Solana 的排序前提是 recent
--- blockhash（ADR-032）。把 blockhash 塞进 numeric(78,0) 的 nonce 列违反 ADR-032 红线，
--- 因此新增一列链无关的判别联合引用。
+-- Background: `transactions.nonce` can only express EVM sequence semantics; Solana's ordering prerequisite is a recent
+-- blockhash (ADR-032). Stuffing a blockhash into the numeric(78,0) nonce column violates the ADR-032 red line,
+-- so a new chain-agnostic discriminated-union reference column is added.
 --
--- 为什么用 jsonb 而不是加列：排序前提的形状随链而异（nonce 是标量；blockhash 附带
--- lastValidBlockHeight）。判别联合的合法形状由 CHECK 约束固定，避免无 schema 的 blob。
+-- Why jsonb instead of adding columns: the ordering prerequisite's shape varies by chain (a nonce is a scalar; a blockhash carries
+-- lastValidBlockHeight). The discriminated union's legal shapes are pinned by a CHECK constraint, avoiding schema-less blobs.
 --
--- 前向迁移：只 ADD COLUMN，可空，不动历史行；`nonce` 列保留（EVM 现有代码与索引不动）。
--- 对 EVM 记录，应用层要求 sequencing_ref->>'value' = nonce（写入路径校验，见
--- transaction-store.ts 的 assertSequencingRefMatchesNonce）。
+-- Forward migration: only ADD COLUMN, nullable, no change to historical rows; the `nonce` column stays (existing EVM code and indexes are untouched).
+-- For EVM records, the application layer requires sequencing_ref->>'value' = nonce (write-path validation, see
+-- assertSequencingRefMatchesNonce in transaction-store.ts).
 
 ALTER TABLE transaction_data.transactions
   ADD COLUMN IF NOT EXISTS sequencing_ref jsonb;
 
--- 形状约束（历史行 NULL 不受影响）：
---   nonce     → { kind:"nonce", value:"<十进制>" }，且不得带 lastValidBlockHeight
---   blockhash → { kind:"blockhash", value:"<base58>", lastValidBlockHeight:"<十进制>" }
+-- Shape constraints (historical NULL rows are unaffected):
+--   nonce     → { kind:"nonce", value:"<decimal>" }, and must not carry lastValidBlockHeight
+--   blockhash → { kind:"blockhash", value:"<base58>", lastValidBlockHeight:"<decimal>" }
 ALTER TABLE transaction_data.transactions
   ADD CONSTRAINT transactions_sequencing_ref_shape
   CHECK (
     sequencing_ref IS NULL
     OR COALESCE(
       jsonb_typeof(sequencing_ref) = 'object'
-      -- value 必须是字符串（缺 key / 非字符串都判失败，不能靠 NULL 通过）。
+      -- value must be a string (a missing key / non-string fails; it cannot pass via NULL).
       AND COALESCE(jsonb_typeof(sequencing_ref->'value') = 'string', false)
       AND COALESCE(
-        -- 用 jsonb_exists() 而不是 `?`：后者与 NOT 的优先级易出错。
+        -- Use jsonb_exists() instead of `?`: the latter's precedence with NOT is error-prone.
         (sequencing_ref->>'kind' = 'nonce'
           AND NOT jsonb_exists(sequencing_ref, 'lastValidBlockHeight'))
         OR (

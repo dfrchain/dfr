@@ -1,16 +1,16 @@
 /**
- * DFR-014：Ethereum Sepolia 真实只读联调。
+ * DFR-014: Ethereum Sepolia real read-only integration test.
  *
- * 默认**跳过**：CI 与本地默认运行不应依赖公网 RPC（不确定、有配额、会 flake）。
- * 显式开启：
+ * **Skipped** by default: CI and default local runs must not depend on public RPC (nondeterministic, quota-limited, flaky).
+ * Enable explicitly:
  *
  *   DFR_RUN_TESTNET=1 \
- *   DFR_PROVIDER_ETHEREUM_SEPOLIA_PRIMARY_URL=https://<你的 Sepolia RPC> \
+ *   DFR_PROVIDER_ETHEREUM_SEPOLIA_PRIMARY_URL=https://<your Sepolia RPC> \
  *   pnpm vitest run tests/integration/ethereum-sepolia.test.ts
  *
- * 可选：DFR_TESTNET_TX_HASH=0x… 用于验证交易查询路径。
+ * Optional: DFR_TESTNET_TX_HASH=0x... verifies the transaction query path.
  *
- * 本测试只做只读调用：不签名、不广播、不接触私钥（ADR-010）。
+ * This test only makes read-only calls: no signing, no broadcasting, no touching private keys (ADR-010).
  */
 import { describe, expect, it } from 'vitest';
 import { ChainRegistry, projectChain } from '@dfr/registry';
@@ -34,11 +34,11 @@ function makeCore(): DfrCore {
   });
 }
 
-describe.skipIf(!ENABLED)('Ethereum Sepolia 只读联调（DFR-014）', () => {
+describe.skipIf(!ENABLED)('Ethereum Sepolia read-only integration test (DFR-014)', () => {
   const core = makeCore();
   const ctx = { requestId: newRequestId() };
 
-  it('getInfo 返回真实高度与最新区块哈希，且 chainId 校验通过', async () => {
+  it('getInfo returns the real height and latest block hash, and chainId validation passes', async () => {
     const info = await core.getChainInfo(CHAIN, ctx);
     expect(info.chain).toBe(CHAIN);
     expect(info.network).toBe('testnet');
@@ -46,11 +46,11 @@ describe.skipIf(!ENABLED)('Ethereum Sepolia 只读联调（DFR-014）', () => {
     expect(info.latestBlockHash).toMatch(/^0x[0-9a-f]{64}$/i);
   }, 30_000);
 
-  it('getBalance 返回十进制最小单位余额', async () => {
+  it('getBalance returns a balance in the smallest decimal unit', async () => {
     const balance = await core.getBalance(
       {
         chain: CHAIN,
-        // 零地址余额可预期地存在（通常为 0），用于验证管路而不依赖某个账户的余额。
+        // The zero address predictably has a balance (usually 0), used to verify the pipeline without depending on any account's balance.
         account: { chain: CHAIN, address: '0x0000000000000000000000000000000000000000' },
       },
       ctx,
@@ -59,46 +59,46 @@ describe.skipIf(!ENABLED)('Ethereum Sepolia 只读联调（DFR-014）', () => {
     expect(balance.decimals).toBe(18);
   }, 30_000);
 
-  it('getBlock(tag:finalized) 返回已最终化区块', async () => {
+  it('getBlock(tag:finalized) returns a finalized block', async () => {
     const block = await core.getBlock(CHAIN, { kind: 'tag', tag: 'finalized' }, ctx);
     expect(block).not.toBeNull();
     expect(block?.hash).toMatch(/^0x[0-9a-f]{64}$/i);
     expect(block?.finality).toBe('finalized');
   }, 30_000);
 
-  it('getBlock 对不存在的未来高度返回 null', async () => {
+  it('getBlock returns null for a nonexistent future height', async () => {
     const block = await core.getBlock(CHAIN, { kind: 'number', number: '999999999999' as never }, ctx);
     expect(block).toBeNull();
   }, 30_000);
 
   const txHash = process.env['DFR_TESTNET_TX_HASH'];
-  it.skipIf(txHash === undefined)('getTransaction 使用 DFR_TESTNET_TX_HASH 验证交易查询', async () => {
+  it.skipIf(txHash === undefined)('getTransaction uses DFR_TESTNET_TX_HASH to verify transaction queries', async () => {
     const tx = await core.getTransaction(CHAIN, { kind: 'hash', hash: txHash as string }, ctx);
     expect(tx?.chain).toBe(CHAIN);
     expect(typeof tx?.status).toBe('string');
   }, 30_000);
 });
 
-describe.skipIf(ENABLED)('Ethereum Sepolia 联调（未启用）', () => {
-  it('默认跳过：设置 DFR_RUN_TESTNET=1 与 RPC 端点后运行', () => {
+describe.skipIf(ENABLED)('Ethereum Sepolia integration test (not enabled)', () => {
+  it('skipped by default: set DFR_RUN_TESTNET=1 and an RPC endpoint, then run', () => {
     expect(ENABLED).toBe(false);
   });
 });
 
 /**
- * DFR-M1-B02：真实 Sepolia 上构造（build）一笔未签名交易。
+ * DFR-M1-B02: build an unsigned transaction on real Sepolia.
  *
- * 只读 + 只构造：不签名、不广播、不接触私钥。默认跳过，与其他真实网络测试同一开关。
- * 用 Sepolia 存款合约地址作为 `from`（该地址长期持有余额），使 `eth_estimateGas`
- * 不会因"发送方无余额支付 gas"而失败；转账金额为 0，不产生任何链上影响。
+ * Read-only + build-only: no signing, no broadcasting, no touching private keys. Skipped by default, same switch as the other real-network tests.
+ * Use the Sepolia deposit contract address as `from` (that address has held a balance long-term), so `eth_estimateGas`
+ * does not fail with "sender has no balance to pay for gas"; the transfer amount is 0, with no on-chain effect.
  */
-describe.skipIf(!ENABLED)('Ethereum Sepolia build 联调（DFR-M1-B02，只构造）', () => {
+describe.skipIf(!ENABLED)('Ethereum Sepolia build integration test (DFR-M1-B02, build-only)', () => {
   const FUNDED_FROM = '0x00000000219ab540356cBB839Cbe05303d7705Fa';
 
-  it('build 在真实 RPC 上产出可解码的 eip1559 未签名载荷', async () => {
+  it('build produces a decodable eip1559 unsigned payload on the real RPC', async () => {
     const registry = ChainRegistry.load();
     const entry = registry.listEntries().find((e) => e.id === CHAIN);
-    if (entry === undefined) throw new Error(`registry 缺少链 ${CHAIN}`);
+    if (entry === undefined) throw new Error(`registry is missing chain ${CHAIN}`);
     const chain = projectChain(entry);
     const adapter = new EvmAdapter({ chain });
     const providers = new ProviderManager({

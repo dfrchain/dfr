@@ -1,21 +1,27 @@
-# DFR OpenAPI 语义门禁配置（DFR-M1-A03）
+# DFR OpenAPI semantic gate config (DFR-M1-A03)
 #
-# 规范来源：docs/architecture/m1-api-contract.md 第 7 节。
-# 入口脚本：scripts/lint-openapi.sh（由 pnpm verify 与 CI 调用）。
+# Spec source: docs/architecture/m1-api-contract.md, section 7.
+# Entry script: scripts/lint-openapi.sh (called by pnpm verify and CI).
 #
-# 设计原则：
-#   1. 规则强度在此**显式声明**，不依赖工具的隐式默认值。@redocly/cli 已在
-#      package.json 固定为精确版本，但显式列出可让"门禁强度变化"在评审中可见，
-#      而不是随工具升级静默漂移。
-#   2. error 级规则是门禁的实质强度：语义无效即阻断。
-#   3. 已知、已记录的告警保持 `warn`，不静默关闭，避免"看不见的问题"。
-#      当前告警清单与处置见 docs/development/deliveries/DFR-M1-A03.md。
+# Design principles:
+#   1. Rule severity is declared **explicitly** here, not left to the tool's
+#      implicit defaults. @redocly/cli is already pinned to an exact version
+#      in package.json, but listing severity explicitly makes any
+#      "gate-strength change" visible in review instead of drifting silently
+#      with a tool upgrade.
+#   2. `error`-level rules are the substantive strength of the gate:
+#      a semantic violation blocks.
+#   3. Known, recorded warnings stay `warn` — never silently closed — so
+#      there are no "invisible problems".
+#      The current warning list and their dispositions are in
+#      docs/development/deliveries/DFR-M1-A03.md.
 extends:
   - recommended
 
 rules:
   # ---------------------------------------------------------------------------
-  # 语义正确性：error —— 这些一旦违反，HTTP 契约即不可实现或不可路由
+  # Semantic correctness: error — if any of these is violated, the HTTP
+  # contract is unimplementable or unroutable
   # ---------------------------------------------------------------------------
   struct: error
   no-unresolved-refs: error
@@ -30,15 +36,21 @@ rules:
   no-invalid-media-type-examples: error
 
   # ---------------------------------------------------------------------------
-  # 已知告警（保持 warn，不关闭）
+  # Known warnings (stay warn, do not close)
   # ---------------------------------------------------------------------------
-  # DFR 是专有内部 API，没有可填写的 license URL / SPDX 标识。
-  # 保留 warn 而不是 off：如果将来 license 字段被删除，本规则仍会提示。
+  # DFR is a proprietary internal API with no license URL / SPDX identifier
+  # to fill in.
+  # Keep warn rather than off: if the license field is ever removed, this
+  # rule will still flag it.
   info-license-strict: warn
 
-  # 内联 oneOf + discriminator 的互操作提示：**已修复**（TODO-005，2026-10-05）。
-  # 12 个分支（AssetRef×2 / BlockRef×4 / TransactionRef×2 / FinalityPolicy×4）已提为
-  # 命名 schema，联合统一用 $ref 引用。
-  # 规则保持 warn 而不是 off：若将来有人把分支重新内联，仍会提示；
-  # 同时 `tests/contract/spec-consistency.test.ts` 有一条断言把它升级为**强制**。
+  # Interop hint for inline oneOf + discriminator: **fixed** (TODO-005,
+  # 2026-10-05).
+  # The 12 branches (AssetRef x2 / BlockRef x4 / TransactionRef x2 /
+  # FinalityPolicy x4) have been promoted to named schemas, and unions
+  # reference them uniformly via $ref.
+  # Keep the rule warn rather than off: if someone inlines a branch again,
+  # it will still flag it;
+  # and `tests/contract/spec-consistency.test.ts` has an assertion that
+  # upgrades it to **mandatory**.
   no-illogical-composition-keywords: warn

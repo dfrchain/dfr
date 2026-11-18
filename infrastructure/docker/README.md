@@ -1,108 +1,128 @@
-# Docker 交付范围
+# Docker delivery scope
 
-M1-A 提供本地 PostgreSQL 测试依赖；M1-E02 提供 Gateway 运行镜像与 M1 一体化样例。
+M1-A provides the local PostgreSQL test dependency; M1-E02 provides the
+Gateway runtime image and the M1 all-in-one sample.
 
-要求：固定镜像主版本、健康检查、资源上限、持久卷、非 root 应用容器、migration/runtime 身份分离。
-禁止在镜像或 compose 中写真实凭证。
+Requirements: pinned image major versions, health checks, resource limits,
+persistent volumes, a non-root application container, and
+migration/runtime identity separation. Never write real credentials into
+an image or compose file.
 
-## 文件
+## Files
 
-| 文件 | 用途 |
+| File | Purpose |
 |---|---|
-| `docker-compose.test.yml` | **测试**用 PostgreSQL（固定 `container_name`、暴露 55432）。供 `pnpm test:db` |
-| `gateway.Dockerfile` | Gateway 运行镜像：非 root、只读根文件系统、`HEALTHCHECK` → `/healthz` |
-| `docker-compose.m1.yml` | M1 一体化**样例**（PostgreSQL + 迁移任务 + Gateway），**非生产部署文件** |
-| `initdb/01-roles.sh` | 角色与口令初始化的唯一来源（两个 compose 共用） |
-| `.env.example` | 变量形状（含样例 compose 额外需要的变量）；`.env` 不入库 |
+| `docker-compose.test.yml` | PostgreSQL for **testing** (pinned `container_name`, exposes 55432). Used by `pnpm test:db` |
+| `gateway.Dockerfile` | Gateway runtime image: non-root, read-only root filesystem, `HEALTHCHECK` → `/healthz` |
+| `docker-compose.m1.yml` | M1 all-in-one **sample** (PostgreSQL + migration task + Gateway), **not a production deployment file** |
+| `initdb/01-roles.sh` | The single source for role and password initialization (shared by both compose files) |
+| `.env.example` | Variable shapes (including the variables the sample compose additionally needs); `.env` is not committed |
 
-## 实测属性（2026-10-05，M1-E02）
+## Verified properties (2026-10-05, M1-E02)
 
 ```text
-镜像运行用户        uid=1000(node)          —— 非 root
-根文件系统          read_only: true
-提权                no-new-privileges:true
-容器内 .env         不存在（.dockerignore 排除）
+Image run user       uid=1000(node)          — non-root
+Root filesystem      read_only: true
+Privilege escalation no-new-privileges:true
+.env inside container absent (.dockerignore excludes it)
 /healthz            200
-/readyz             200（stores=ok，chains 明细）／503（依赖不可达时）
-SIGTERM             优雅退出，退出码 0
+/readyz             200 (stores=ok, chain details) / 503 (when a dependency is unreachable)
+SIGTERM             graceful exit, exit code 0
 ```
 
-注意：`docker-compose.m1.yml` 默认把主机端口映射到 **18787**（容器内固定 8787），
-避免与本机既有服务冲突；可用 `DFR_GATEWAY_HOST_PORT` 覆盖。
+Note: `docker-compose.m1.yml` maps the host port to **18787** by default
+(fixed 8787 inside the container), to avoid clashing with services already
+on the host; override with `DFR_GATEWAY_HOST_PORT`.
 
-### 备份 / 恢复客户端（E5，2026-10-08）
+### Backup / restore client (E5, 2026-10-08)
 
-运行镜像内置 **PostgreSQL 17 客户端**（`postgresql17-client`），因此生产备份可用
-同一镜像执行 `pg_dump` / `pg_restore` / `psql`，不依赖宿主机碰巧安装同主版本客户端。
+The runtime image has a built-in **PostgreSQL 17 client**
+(`postgresql17-client`), so production backups can run `pg_dump` /
+`pg_restore` / `psql` from the same image instead of relying on the host
+happening to have a client of the same major version installed.
 
-实测（`dfr-gateway:e5-backup`）：
+Verified (`dfr-gateway:e5-backup`):
 
 ```text
-运行用户       uid=1000(node)
-pg_dump        PostgreSQL 17.11
-pg_restore     PostgreSQL 17.11
-psql           PostgreSQL 17.11
-镜像大小       238,564,072 bytes（约 238 MB）
+Run user         uid=1000(node)
+pg_dump          PostgreSQL 17.11
+pg_restore       PostgreSQL 17.11
+psql             PostgreSQL 17.11
+Image size       238,564,072 bytes (about 238 MB)
 ```
 
-本地恢复演练入口：`pnpm test:db-backup-restore`（只使用隔离库，验证完成即删除）。
-供应链扫描仍用 `pnpm supply-chain`。2026-10-09 对同一镜像（`dfr-gateway:e5-backup`）
-完整复跑结果：**0 条 HIGH/CRITICAL**；Node 依赖许可证检查通过，无 copyleft；
-CycloneDX SBOM 已写入 `infrastructure/docker/sbom/dfr-gateway.cdx.json`。
+Local restore-drill entry: `pnpm test:db-backup-restore` (uses isolated
+databases only, deleted when verification completes). Supply-chain scanning
+still uses `pnpm supply-chain`. A full re-run on 2026-10-09 against the same
+image (`dfr-gateway:e5-backup`) found: **0 HIGH/CRITICAL**; the Node
+dependency license check passed with no copyleft; the CycloneDX SBOM was
+written to `infrastructure/docker/sbom/dfr-gateway.cdx.json`.
 
-## 镜像供应链（2026-10-05 实测）
+## Image supply chain (verified 2026-10-05)
 
-门禁命令：`pnpm supply-chain`（= `scripts/image-supply-chain.sh`）。
-它构建镜像、生成 CycloneDX SBOM、并对 HIGH/CRITICAL 漏洞以非零退出码失败。
-扫描需要 trivy 漏洞库与 Docker 守护进程，因此**不**进离线的 `pnpm verify`。
+Gate command: `pnpm supply-chain` (= `scripts/image-supply-chain.sh`). It
+builds the image, generates a CycloneDX SBOM, and fails with a non-zero exit
+code on HIGH/CRITICAL vulnerabilities. Scanning needs the trivy
+vulnerability database and a Docker daemon, so it is **not** part of the
+offline `pnpm verify`.
 
-**它在 CI 里怎么跑**（`.github/workflows/security-scan.yml`）：
+**How it runs in CI** (`.github/workflows/security-scan.yml`):
 
-| 维度 | 取值 | 理由 |
+| Dimension | Value | Reason |
 |---|---|---|
-| 触发 | **每周一定时** + 手动 `workflow_dispatch` | **刻意不挂到每次 push**：漏洞库每天更新，挂上去会让无关提交因上游新 CVE 变红——那是噪声不是信号，会训练团队忽略红灯 |
-| trivy 安装 | 官方 release + **校验和验证**，固定版本 | 不引入第三方 action，也不执行"下载即运行"的脚本 |
-| 入口 | `pnpm supply-chain` | 与本地**同一脚本**，避免 CI 与本地两套判定口径 |
-| 产物 | SBOM 作为 artifact 保留 30 天 | 发布审计时可追溯"当时镜像里有什么" |
+| Trigger | **Weekly Monday schedule** + manual `workflow_dispatch` | **Deliberately not on every push**: the vulnerability database updates daily, and attaching it would turn unrelated commits red on upstream CVE news — that is noise, not signal, and it trains the team to ignore red lights |
+| trivy install | Official release + **checksum verification**, pinned version | No third-party action, and no "download and run" script is executed |
+| Entry | `pnpm supply-chain` | The **same script** as local, so CI and local do not use two different verdicts |
+| Artifacts | SBOM kept as an artifact for 30 days | Traceable at release-audit time: "what was in the image then" |
 
-### 三步瘦身（每一步都由扫描驱动，而不是凭感觉）
+### Three-step slimming (each step driven by scan results, not by feel)
 
-| 步骤 | 变更 | 镜像体积 | HIGH/CRITICAL |
+| Step | Change | Image size | HIGH/CRITICAL |
 |---|---|---|---|
-| 0 | 初始（`--prod=false`） | 316MB | 未扫描 |
-| 1 | 只装生产依赖（`--prod`） | 253MB | 44 |
-| 2 | 多阶段构建，移除 pnpm/corepack | 232MB | 11 |
-| 3 | 移除基础镜像自带的 npm/npx/corepack | **232MB** | **0** |
+| 0 | Initial (`--prod=false`) | 316MB | Not scanned |
+| 1 | Production dependencies only (`--prod`) | 253MB | 44 |
+| 2 | Multi-stage build, pnpm/corepack removed | 232MB | 11 |
+| 3 | npm/npx/corepack removed from the base image | **232MB** | **0** |
 
-关键发现：**44 条 HIGH/CRITICAL 全部来自构建/打包工具**（pnpm、npm 自带的
-`tar` / `minimatch` / `pacote` / `sigstore` / `glob` / `brace-expansion` / `ip-address`
-/ `http-cache-semantics` / `picomatch`），与运行时依赖（`viem` / `pg`）**零重叠**。
-运行时入口是 `node --experimental-strip-types`，从不调用任何包管理器。
+Key finding: **all 44 HIGH/CRITICAL findings came from build/packaging
+tools** (pnpm, npm's bundled `tar` / `minimatch` / `pacote` / `sigstore` /
+`glob` / `brace-expansion` / `ip-address` / `http-cache-semantics` /
+`picomatch`), with **zero overlap** with the runtime dependencies
+(`viem` / `pg`). The runtime entry is `node --experimental-strip-types`,
+which never invokes any package manager.
 
-因此正确处置是**移除工具**，而不是加漏洞豁免。处置后全部严重级扫描为 0 条。
+So the correct remediation is to **remove the tools**, not to add
+vulnerability exemptions. After remediation, all severity scans report 0.
 
-### 许可证检查
+### License check
 
-门禁同时扫描许可证（`--scanners license`），策略是**只对 Node 依赖拦截**：
+The gate also scans licenses (`--scanners license`), with a policy of
+**blocking only Node dependencies**:
 
-| 范围 | 处置 | 理由 |
+| Scope | Handling | Reason |
 |---|---|---|
-| Node 依赖（`node-pkg`） | 拦截 GPL / AGPL / SSPL / BUSL / Commons-Clause / Elastic / CC-BY-NC | 本项目是私有闭源产品，JS 依赖的 copyleft 会构成真实分发义务 |
-| Alpine OS 包 | 仅报告，不拦截 | 基础镜像自带 GPL/LGPL（musl/busybox）是所有 Linux 镜像常态，不是本项目的分发决策 |
-| 本项目自己的包 | 允许 `UNLICENSED` | 私有包属预期 |
+| Node dependencies (`node-pkg`) | Block GPL / AGPL / SSPL / BUSL / Commons-Clause / Elastic / CC-BY-NC | This project is a private closed-source product; copyleft in JS dependencies would create a real distribution obligation |
+| Alpine OS packages | Report only, do not block | GPL/LGPL shipped with the base image (musl/busybox) is normal for all Linux images, not a distribution decision of this project |
+| This project's own packages | Allow `UNLICENSED` | Private packages, as expected |
 
-当前实测：Node 依赖全部为宽松许可（MIT / ISC / Apache-2.0 / BSD / MPL-2.0 / Zlib）；
-GPL/LGPL 命中全部来自 Alpine OS 包。反向对照已验证：注入 GPL-3.0 / AGPL-3.0 的
-Node 依赖会让门禁以非零码失败。
+Current verification: all Node dependencies are permissively licensed
+(MIT / ISC / Apache-2.0 / BSD / MPL-2.0 / Zlib); GPL/LGPL hits all come from
+Alpine OS packages. The negative control has been verified: injecting a
+GPL-3.0 / AGPL-3.0 Node dependency makes the gate fail with a non-zero code.
 
-### 已知保留项
+### Known retained items
 
-- `/opt/yarn-v1.22.22/` 仍存在于基础镜像中。它**没有任何漏洞发现**，
-  因此未移除（无安全依据的删除属于范围外改动）。若将来它出现发现，处置方式同上：移除。
-- 移除 npm/npx/corepack 的代价：容器内不再能临时安装东西。生产网关镜像本就不该
-  依赖在容器内安装；需要交互式调试时用构建阶段 `deps` 或本地复现。
+- `/opt/yarn-v1.22.22/` still exists in the base image. It has **no
+  vulnerability findings**, so it was not removed (deleting it without a
+  security basis would be an out-of-scope change). If it gains a finding in
+  the future, handle it the same way: remove it.
+- Cost of removing npm/npx/corepack: nothing can be temporarily installed
+  inside the container any more. A production gateway image should not rely
+  on installing things inside the container anyway; use the build stage
+  `deps` or reproduce locally for interactive debugging.
 
 ### SBOM
 
-`infrastructure/docker/sbom/dfr-gateway.cdx.json`（CycloneDX 1.7，约 367 个组件）。
-属生成物，已被 `.gitignore` 排除；随时可用 `pnpm supply-chain` 复现。
+`infrastructure/docker/sbom/dfr-gateway.cdx.json` (CycloneDX 1.7, about 367
+components). It is generated output, excluded by `.gitignore`; reproducible
+at any time with `pnpm supply-chain`.
