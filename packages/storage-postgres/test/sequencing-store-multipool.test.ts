@@ -195,7 +195,7 @@ describe.skipIf(!ENABLED)('PostgresSequencingStore dual-Pool contention (TX-07 /
     expect(await statusOf(txn)).toBe('consumed');
   });
 
-  it('TX-07 dual-pool: one pool's sweep reclaims only expired reserved rows and never touches consumed rows from either pool', async () => {
+  it('TX-07 dual-pool: one pool\'s sweep reclaims only expired reserved rows and never touches consumed rows from either pool', async () => {
     await reset();
     // Pool A reserves, pool B consumes (cross-pool advancement itself must work).
     await reserveOn(storeA, 'txn_mp_sweep_consumed_a', { ttlMs: 250 });

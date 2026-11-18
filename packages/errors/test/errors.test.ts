@@ -52,7 +52,7 @@ const requestId = 'req_01J8Z6W3Q2K9M4ABCDEFGHJK' as RequestId;
 });
 
   describe('Error HTTP range checks (error-spec chapter 4, spec requires 100% coverage)', () => {
-    it('each error code's isClientError / isServerError agrees with its httpStatus', () => {
+    it('each error code\'s isClientError / isServerError agrees with its httpStatus', () => {
     // These two methods previously had no cases (testing-strategy §8 lists "error mapping" as a 100% threshold).
     // Per-code assertions have a second value: any metadata change that mislabels a 4xx as 5xx (or vice versa) gets caught.
     for (const code of DFR_ERROR_CODES) {

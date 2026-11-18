@@ -236,7 +236,7 @@ describe('GET /v1/events/subscribe (M2-C03)', () => {
     }
   });
 
-  it('a restricted-chain Key's authorized chains can still establish event streams via header and ticket', async () => {
+  it('a restricted-chain Key\'s authorized chains can still establish event streams via header and ticket', async () => {
     const tickets = new SseTicketStore();
     const base = await start({ tickets, chains: ['solana-devnet' as never] });
     const headerStream = await fetch(`${base}/v1/events/subscribe?chain=solana-devnet`, {
@@ -372,7 +372,7 @@ describe('GET /v1/events/subscribe (M2-C03)', () => {
     expect(body.dfr_code).toBe('DFR_INVALID_TICKET');
   }, 15_000);
 
-  it('a ticket's filter is bound: widening the filter in the URL cannot establish a stream', async () => {
+  it('a ticket\'s filter is bound: widening the filter in the URL cannot establish a stream', async () => {
     const tickets = new SseTicketStore();
     const base = await start({ tickets });
     const issued = tickets.issue({

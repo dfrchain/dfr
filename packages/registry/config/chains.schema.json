@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://dfr.local/schemas/chains.schema.json",
   "title": "DFR Chain & Provider Registry",
-  "description": "Machine-readable schema for chains.yaml. Startup validation (DFR-005) and CI validation share this file, so rules cannot drift with the implementation (review fix R-13)."
+  "description": "Machine-readable schema for chains.yaml. Startup validation (DFR-005) and CI validation share this file, so rules cannot drift with the implementation (review fix R-13).",
   "type": "object",
   "additionalProperties": false,
   "required": ["schemaVersion", "updatedAt", "chains", "providers"],

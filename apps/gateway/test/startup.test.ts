@@ -299,7 +299,7 @@ describe('M1 Gateway composition root fail-closed (DFR-M1-A13)', () => {
   });
 });
 
-describe('Core's M1 Store port set', () => {
+describe('Core\'s M1 Store port set', () => {
   it('M0 allows no M1 Store to be configured', () => {
     expect(
       () => new DfrCore({ registry: m0Registry, adapters, milestone: 'M0' }),

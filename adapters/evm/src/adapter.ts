@@ -1212,7 +1212,7 @@ export class EvmAdapter
     if (asset.kind !== 'native' || asset.chain !== this.chain.id) {
       throw createDfrError('DFR_INVALID_ASSET', {
         requestId: ctx.requestId,
-        message: 'build native amounts must use this chain's native asset',
+        message: 'build native amounts must use this chain\'s native asset',
         chain: this.chain.id,
       });
     }

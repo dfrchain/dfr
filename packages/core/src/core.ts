@@ -1033,7 +1033,7 @@ export class DfrCore {
       this.emitCapabilityUnsupported(runtime.chain.id as ChainId, capability, 'capability_not_declared');
       throw createDfrError('DFR_UNSUPPORTED_CAPABILITY', {
         requestId: ctx.requestId,
-        message: `Chain ${runtime.chain.id} does not support capability ${capability}`
+        message: `Chain ${runtime.chain.id} does not support capability ${capability}`,
         chain: runtime.chain.id,
         details: { capability },
       });
@@ -1050,7 +1050,7 @@ export class DfrCore {
     this.emitCapabilityUnsupported(runtime.chain.id as ChainId, capability, 'method_missing');
     return createDfrError('DFR_UNSUPPORTED_CAPABILITY', {
       requestId: ctx.requestId,
-      message: `Chain ${runtime.chain.id} declares ${capability} but has no matching method`
+      message: `Chain ${runtime.chain.id} declares ${capability} but has no matching method`,
       chain: runtime.chain.id,
       details: { capability },
     });
@@ -1076,7 +1076,7 @@ export class DfrCore {
     if (descriptors.length === 0) {
       throw createDfrError('DFR_CHAIN_UNAVAILABLE', {
         requestId: ctx.requestId,
-        message: `Chain ${runtime.chain.id} has no Providers configured`
+        message: `Chain ${runtime.chain.id} has no Providers configured`,
         chain: runtime.chain.id,
       });
     }

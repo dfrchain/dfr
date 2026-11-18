@@ -1,0 +1,213 @@
+# DFR Chain & Provider Registry
+# Normative sources: docs/adr/ADR-003-chain-registry.md, docs/architecture/provider-spec-v0.1.md
+# Schema: chains.schema.json (startup validation and CI share this same file)
+#
+# Security constraints (mandatory):
+#   1. This file must never contain any private key, mnemonic, API key, or token.
+#   2. endpointRef / credentialRef may only use references: "env:VAR" | "file:/path" | "vault:path".
+#   3. Public endpoints must explicitly set credentialRef: "none".
+#   4. Private keys never enter this file; DFR does not custody private keys by default (ADR-007).
+#
+#
+# NOTE (public snapshot): the operator quota figures from the internal
+# config are redacted here (the `quota:` block is omitted). Operators
+# should set their own per-provider quota values for their deployment.
+# 2026-10-03 review fixes:
+#   R-01 Removed the redundant chain.info (getInfo is a mandatory ChainAdapter method)
+#   R-02 Removed transaction.confirm (confirmation is derived from transaction.read + finality)
+#   R-14 priority normalized to 0..10, same scale as the priorityBonus(0..10) scoring formula
+#   R-22 Unverified chain facts are marked finalityStatus: unverified, pending real-RPC verification in DFR-014
+#
+# 2026-10-03 second-round audit fixes:
+#   A-01 finalityStatus / milestone are now part of the type contract (Chain / ChainRegistryEntry)
+#   A-07 Removed networkKind: it is always identical to network, a purely redundant field
+
+schemaVersion: "1"
+updatedAt: "2026-10-03T00:00:00Z"
+
+chains:
+  ethereum-sepolia:
+    displayName: "Ethereum Sepolia"
+    family: evm
+    network: testnet
+    externalChainId: "11155111"
+    adapter:
+      id: evm
+      version: "^0.1.0"
+    finality:
+      kind: checkpoint
+      finalizedTag: true
+    # DFR-014 verified with two independent RPCs on real Sepolia that the finalized tag is usable and monotone
+    # Evidence: docs/reviews/2026-10-03-dfr-014-testnet-evidence.md
+    finalityStatus: verified
+    # M0 is a read-only milestone (ADR-010). M1-B delivered build / simulate, so those two are enabled here;
+    # broadcast is enabled ahead of M1-E03: the Adapter already implements a single eth_sendRawTransaction,
+    # C03's state flow and C07's write-permission/redaction negative controls are both DONE, and the Gateway broadcast endpoint and SDK have landed.
+    # event.subscribe is still unimplemented and must only be added back after it is implemented, otherwise the registry-subset-of-adapter check fails at startup.
+    capabilities:
+      - account.balance
+      - block.read
+      - transaction.read
+      - transaction.build
+      - transaction.simulate
+      - transaction.broadcast
+    milestone: M1
+
+  base-sepolia:
+    displayName: "Base Sepolia"
+    family: evm
+    network: testnet
+    externalChainId: "84532"
+    adapter:
+      id: evm
+      version: "^0.1.0"
+    finality:
+      # Calibrated with real data after M3 (M3-D02/DFR-014 method): `eth_getBlockByNumber('finalized')`
+      # works on base-sepolia; two independent endpoints return consistent finalized heights and hashes, with no rollback.
+      # Evidence: docs/reviews/2026-10-06-base-sepolia-finality-evidence.md.
+      kind: checkpoint
+      finalizedTag: true
+    # An L2's finalized depends on L1 DA; the testnet has no economic security budget, so this only proves the **tag semantics** hold,
+    # upgraded to verified on the same basis as ethereum-sepolia (not an assertion of "economically irreversible").
+    finalityStatus: verified
+    capabilities:
+      - account.balance
+      - block.read
+      - transaction.read
+      - transaction.build
+      - transaction.simulate
+      # M3-D06: finality has been calibrated with real data as checkpoint/verified, and the EVM Adapter already implements a single
+      # eth_sendRawTransaction, so write capability is added back (the reason M1-B10 removed it no longer applies).
+      - transaction.broadcast
+      # ADR-034 (M4): event log queries (BEX payment reconciliation).
+      - contract.logs
+      # ADR-035/036 (M4): read-only contract calls, account existence / contract determination.
+      - contract.read
+      - account.code
+    milestone: M1
+
+  arbitrum-sepolia:
+    displayName: "Arbitrum Sepolia"
+    family: evm
+    network: testnet
+    externalChainId: "421614"
+    adapter:
+      id: evm
+      version: "^0.1.0"
+    finality:
+      # Same basis as base-sepolia, calibrated with real data: eth_getBlockByNumber('finalized')
+      # works; two independent endpoints return consistent finalized heights/hashes.
+      # Evidence: docs/reviews/2026-10-06-base-sepolia-finality-evidence.md §6.
+      kind: checkpoint
+      finalizedTag: true
+    finalityStatus: verified
+    capabilities:
+      - account.balance
+      - block.read
+      - transaction.read
+      - transaction.build
+      - transaction.simulate
+      - transaction.broadcast
+      # ADR-034 (M4): event log queries (BEX payment reconciliation).
+      - contract.logs
+      # ADR-035/036 (M4): read-only contract calls, account existence / contract determination.
+      - contract.read
+      - account.code
+    # M4: the other half of the chain pair prepared for BEX's Base Sepolia → Arbitrum Sepolia route.
+    # Declared as an M4 milestone, so current M0/M1/M2 deployments **do not** load it, and existing contracts (such as the /readyz
+    # chain list) stay unchanged; switching the runtime milestone to M4 enables it.
+    milestone: M4
+
+  solana-devnet:
+    displayName: "Solana Devnet"
+    family: solana
+    network: devnet
+    adapter:
+      id: solana
+      version: "^0.1.0"
+    finality:
+      kind: commitment
+      levels:
+        - processed
+        - confirmed
+    # M2-A01 (2026-10-06) real devnet sampling: the three levels are monotone, but finalized == confirmed
+    # (114/114 samples exactly equal; mainnet-beta differs by about 32 slots). So devnet's finalized
+    # provides no stronger guarantee than confirmed, therefore finalityStatus stays unverified,
+    # and levels only declares the two actually distinguishable levels.
+    finalityStatus: unverified
+    # ADR-025: `event.subscribe` is a **deployment-level** capability (provided by Core's event bus),
+    # not implemented by the Adapter; it must not be declared here before the subscribe endpoint (SSE) is implemented, otherwise startup
+    # validation (registry subset of adapter) fails closed.
+    # ADR-031: `levels` only lists the commitments actually distinguishable on devnet.
+    capabilities:
+      - account.balance
+      - block.read
+      - transaction.read
+      # M3-B01: native SOL transfer building (codec in transaction-codec.ts).
+      - transaction.build
+      # M3-B02: read-only on-chain simulation (simulateTransaction).
+      - transaction.simulate
+      # M3-C01: single broadcast (sendTransaction, maxRetries:0).
+      - transaction.broadcast
+    milestone: M2
+
+providers:
+  ethereum-sepolia-primary:
+    chain: ethereum-sepolia
+    kind: json-rpc-http
+    endpointRef: "env:DFR_PROVIDER_ETHEREUM_SEPOLIA_PRIMARY_URL"
+    credentialRef: "env:DFR_PROVIDER_ETHEREUM_SEPOLIA_PRIMARY_KEY"
+    priority: 10
+    weight: 3
+    timeoutMs: 10000
+    cost:
+      unit: request
+      priceUsd: "0"
+
+  ethereum-sepolia-secondary:
+    chain: ethereum-sepolia
+    kind: json-rpc-http
+    endpointRef: "env:DFR_PROVIDER_ETHEREUM_SEPOLIA_SECONDARY_URL"
+    credentialRef: "env:DFR_PROVIDER_ETHEREUM_SEPOLIA_SECONDARY_KEY"
+    priority: 9
+    weight: 1
+    timeoutMs: 10000
+    cost:
+      unit: request
+      priceUsd: "0"
+
+  base-sepolia-primary:
+    chain: base-sepolia
+    kind: json-rpc-http
+    endpointRef: "env:DFR_PROVIDER_BASE_SEPOLIA_PRIMARY_URL"
+    credentialRef: "none"
+    priority: 10
+    weight: 1
+    timeoutMs: 10000
+    cost:
+      unit: request
+      priceUsd: "0"
+
+  arbitrum-sepolia-primary:
+    chain: arbitrum-sepolia
+    kind: json-rpc-http
+    endpointRef: "env:DFR_PROVIDER_ARBITRUM_SEPOLIA_PRIMARY_URL"
+    credentialRef: "none"
+    priority: 10
+    weight: 1
+    timeoutMs: 10000
+    cost:
+      unit: request
+      priceUsd: "0"
+
+  solana-devnet-primary:
+    chain: solana-devnet
+    kind: json-rpc-http
+    endpointRef: "env:DFR_PROVIDER_SOLANA_DEVNET_PRIMARY_URL"
+    credentialRef: "none"
+    priority: 10
+    weight: 1
+    timeoutMs: 15000
+    cost:
+      unit: request
+      priceUsd: "0"

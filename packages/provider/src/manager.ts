@@ -154,14 +154,14 @@ export class ProviderManager implements ProviderRouter {
       if (quotaBlocked > 0 && quotaBlocked === this.providerCount) {
         throw createDfrError('DFR_QUOTA_EXCEEDED', {
           requestId: newRequestId(),
-          message: `All Providers for chain ${this.chain} have exhausted their daily quota`
+          message: `All Providers for chain ${this.chain} have exhausted their daily quota`,
           chain: this.chain,
           details: { quotaKind: 'provider_daily', blockedProviders: quotaBlocked },
         });
       }
       throw createDfrError('DFR_CHAIN_UNAVAILABLE', {
         requestId: newRequestId(),
-        message: `No available Provider for chain ${this.chain} meets the conditions`
+        message: `No available Provider for chain ${this.chain} meets the conditions`,
         chain: this.chain,
       });
     }
@@ -204,7 +204,7 @@ export class ProviderManager implements ProviderRouter {
         if (this.hasUntried(requirements, methodClass, tried)) continue;
         throw createDfrError('DFR_QUOTA_EXCEEDED', {
           requestId: ctx.requestId as RequestId,
-          message: `All Providers for chain ${this.chain} have exhausted their daily quota`
+          message: `All Providers for chain ${this.chain} have exhausted their daily quota`,
           chain: this.chain,
           details: { quotaKind: 'provider_daily' },
         });
@@ -264,7 +264,7 @@ export class ProviderManager implements ProviderRouter {
     if (quotaBlocked > 0 && quotaBlocked === this.providerCount) {
       throw createDfrError('DFR_QUOTA_EXCEEDED', {
         requestId: ctx.requestId as RequestId,
-        message: `All Providers for chain ${this.chain} have exhausted their daily quota`
+        message: `All Providers for chain ${this.chain} have exhausted their daily quota`,
         chain: this.chain,
         details: { quotaKind: 'provider_daily', blockedProviders: quotaBlocked },
       });
@@ -275,7 +275,7 @@ export class ProviderManager implements ProviderRouter {
     if (this.openCircuitCount(methodClass) > 0) {
       throw createDfrError('DFR_PROVIDER_CIRCUIT_OPEN', {
         requestId: ctx.requestId as RequestId,
-        message: `Providers for chain ${this.chain} are in circuit-breaker state`
+        message: `Providers for chain ${this.chain} are in circuit-breaker state`,
         chain: this.chain,
         details: { methodClass, openProviders: this.openCircuitCount(methodClass) },
       });
@@ -283,7 +283,7 @@ export class ProviderManager implements ProviderRouter {
 
     throw createDfrError('DFR_CHAIN_UNAVAILABLE', {
       requestId: ctx.requestId as RequestId,
-      message: `All Providers for chain ${this.chain} are unavailable`
+      message: `All Providers for chain ${this.chain} are unavailable`,
       chain: this.chain,
       cause: lastError,
     });

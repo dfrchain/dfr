@@ -29,7 +29,7 @@ describe('createSpanBridge', () => {
     expect(span.name).toBe('core.operation');
   });
 
-    it('the ALS-scope parent wins over the spanId in the record (a Provider record's spanId is its own identity)', () => {
+    it('the ALS-scope parent wins over the spanId in the record (a Provider record\'s spanId is its own identity)', () => {
     const exporter = new InMemorySpanExporter();
     const emit = bridge(exporter, 'provider.request');
     // Simulate: the request span is already established via ALS; the Provider record carries **its own** spanId.
@@ -86,7 +86,7 @@ describe('createSpanBridge', () => {
 });
 
 describe('runInRequestSpan', () => {
-    it('inside a root span, each layer's records share the same parent (the request span) but have independent spanIds', () => {
+    it('inside a root span, each layer\'s records share the same parent (the request span) but have independent spanIds', () => {
     const exporter = new InMemorySpanExporter();
     const emit = bridge(exporter, 'core.operation');
     runInRequestSpan('c'.repeat(32), (span) => {

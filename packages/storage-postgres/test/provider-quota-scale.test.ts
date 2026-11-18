@@ -74,7 +74,7 @@ describe.skipIf(!ENABLED)('ProviderQuotaStore scale and boundaries (E5)', () => 
     expect(await store.usage(input)).toBe(10);
   });
 
-  it('historical-date rows do not affect the current day's counts', async () => {
+  it('historical-date rows do not affect the current day\'s counts', async () => {
     await inspector.query('TRUNCATE transaction_data.provider_quota_daily');
     const base = { providerId: 'day-provider', chain: 'base-sepolia' as never, limit: 2 };
     await store.consume({ ...base, day: '2026-10-01' });

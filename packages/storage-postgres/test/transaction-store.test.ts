@@ -358,7 +358,7 @@ describe.skipIf(!ENABLED)('PostgresTransactionStore (DFR-M1-A09)', () => {
     expect((await store.get('txn_shared_blockhash_two' as TransactionId))?.sequencingRef).toEqual(token);
   });
 
-  it('ADR-033: an EVM record's sequencing_ref(nonce) must be consistent with its nonce column', async () => {
+  it('ADR-033: an EVM record\'s sequencing_ref(nonce) must be consistent with its nonce column', async () => {
     await resetRows();
     // Consistent and holding a valid lease: allowed. Since DB-01, field consistency alone is not enough.
     await seedNonceLease('txn_ref_ok', '5');

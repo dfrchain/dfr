@@ -96,7 +96,7 @@ export interface TransitionTransactionInput {
    /** A stable reason code, written to the transition audit row. */
   readonly reason: string;
   readonly requestId?: RequestId;
-   /** Fields allowed to be updated outside a state change.
+   /** Fields allowed to be updated outside a state change. */
   readonly patch?: TransitionPatch;
 }
 

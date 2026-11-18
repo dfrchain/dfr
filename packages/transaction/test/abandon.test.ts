@@ -126,7 +126,7 @@ describe('TransactionEngine.abandon (ADR-037, option A)', () => {
     expect((await h.transactions.get(built.transactionId))?.status).toBe('signed');
   });
 
-  it('AUTH-03: a restricted-chain API key cannot void another chain's record by transaction ID', async () => {
+  it('AUTH-03: a restricted-chain API key cannot void another chain\'s record by transaction ID', async () => {
     const h = harness();
     const built = await h.engine.build({ request: REQUEST, projectId: 'project-A' });
     await expect(h.engine.abandon({

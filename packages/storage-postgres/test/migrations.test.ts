@@ -210,14 +210,14 @@ describe.skipIf(!ENABLED)('migration runner (DFR-M1-A08)', () => {
     expect(await appliedNames()).toEqual([M1.name, M2.name]);
   });
 
-  it('refuses to run when an applied migration is missing from this run's list (prevents deleting migration files)', async () => {
+  it('refuses to run when an applied migration is missing from this run\'s list (prevents deleting migration files)', async () => {
     await expect(runMigrations({ client, migrations: [M1] })).rejects.toMatchObject({
       reason: 'applied_migration_missing',
       migrationName: M2.name,
     });
   });
 
-  it('migration DDL and version row are atomic: when the version-row write fails, the migration's DDL is also rolled back', async () => {
+  it('migration DDL and version row are atomic: when the version-row write fails, the migration\'s DDL is also rolled back', async () => {
     await resetSchemas();
     await expect(
       runMigrations({ client, migrations: [{ ...M1 }, M_COLLIDE] }),

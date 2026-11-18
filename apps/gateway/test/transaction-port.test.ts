@@ -162,7 +162,7 @@ describe('createCoreTransactionChainPort (DFR-M1-B07 assembly)', () => {
     expect(calls.filter((c) => c.method === 'eth_estimateGas')).toHaveLength(1);
   });
 
-  it('simulate uses the record's from (the payload itself carries no sender)', async () => {
+  it('simulate uses the record\'s from (the payload itself carries no sender)', async () => {
     const { port, calls } = harness();
     const unsigned = await port.build({
       request: {
@@ -219,7 +219,7 @@ describe('createCoreTransactionChainPort (DFR-M1-B07 assembly)', () => {
     expect(calls.some(c => c.method === 'eth_sendRawTransaction')).toBe(false);
   });
 
-  it('broadcast passes the record's true values (from + unsigned payload) to Core with options (M1-C03a)', async () => {
+  it('broadcast passes the record\'s true values (from + unsigned payload) to Core with options (M1-C03a)', async () => {
     // A stand-in Core is used here: this case only verifies the composition root's carrying, not repeating the Adapter's chain-semantics tests.
     const captured: { chainId?: string; options?: Record<string, unknown> } = {};
     const stubCore = {
@@ -279,7 +279,7 @@ describe('createCoreTransactionChainPort (DFR-M1-B07 assembly)', () => {
     expect(calls.some((call) => call.method === 'eth_sendRawTransaction')).toBe(false);
   });
 
-  it('non-EVM chain families fail closed (never silently degrade to another family's Adapter)', async () => {
+  it('non-EVM chain families fail closed (never silently degrade to another family\'s Adapter)', async () => {
     const { port } = harness();
     await expect(
       port.getPendingNonce!({

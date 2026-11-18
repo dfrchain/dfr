@@ -650,7 +650,7 @@ const ctx = { requestId: 'req_01J8Z6W3Q2K9M4ABCDEFGHJKMN', signal: new AbortCont
     expect(records).toHaveLength(0);
   });
 
-    it('the observability snapshot reads global usage from the persistent Store, not just this process's counter', async () => {
+    it('the observability snapshot reads global usage from the persistent Store, not just this process\'s counter', async () => {
     const quotaStore: ProviderQuotaStore = {
       consume: async () => ({ allowed: true, used: 7 }),
       usage: async () => 7,

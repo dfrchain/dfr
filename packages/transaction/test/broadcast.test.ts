@@ -388,7 +388,7 @@ describe('TransactionEngine broadcast (DFR-M1-C03a)', () => {
     expect(stores.transitionCalls[0]?.patch).toEqual({ expectedHash: TX_HASH });
   });
 
-  it('hands the record's from and unsigned payload to the port as ground truth (the client echo does not count)', async () => {
+  it('hands the record\'s from and unsigned payload to the port as ground truth (the client echo does not count)', async () => {
     const stores = new FakeTransactionStore();
     stores.seed('simulated');
     const port = new FakeChainPort();
@@ -533,7 +533,7 @@ describe('TransactionEngine broadcast (DFR-M1-C03a)', () => {
     expect(stores.records.get(TX_ID)!.status).toBe('simulated');
   });
 
-  it('broadcast timeout → indeterminate result: land on unknown, never judge failed / accepted (ADR-019 replaces C03a's "stay at signed")', async () => {
+  it('broadcast timeout → indeterminate result: land on unknown, never judge failed / accepted (ADR-019 replaces C03a\'s "stay at signed")', async () => {
     const stores = new FakeTransactionStore();
     stores.seed('simulated');
     const port = new FakeChainPort();

@@ -113,7 +113,7 @@ function bus(options: Partial<EventBusOptions> = {}): EventBus {
     expect(result.replayTruncated).toBe(false);
   });
 
-    it('single-chain replay uses that chain's cursor space', () => {
+    it('single-chain replay uses that chain\'s cursor space', () => {
     const b = bus();
     b.publish({ type: 'tx.included' as EventType, chain: A, payload: {} });
     b.publish({ type: 'block.new' as EventType, chain: B, payload: {} });

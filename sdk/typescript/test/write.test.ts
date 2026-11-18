@@ -251,7 +251,7 @@ describe('SDK error and cancellation semantics (DFR-M1-B09)', () => {
     expect(JSON.stringify(apiError.message)).not.toContain(KEY);
   });
 
-  it('timeout → DfrApiError DFR_PROVIDER_TIMEOUT(504), retryable and carrying the caller's requestId', async () => {
+  it('timeout → DfrApiError DFR_PROVIDER_TIMEOUT(504), retryable and carrying the caller\'s requestId', async () => {
     const dfr = client(neverResponds, 20);
 
     const err = await dfr
@@ -271,7 +271,7 @@ describe('SDK error and cancellation semantics (DFR-M1-B09)', () => {
     expect(isValidRequestId(apiError.requestId)).toBe(true);
   });
 
-  it('caller cancellation → the caller's abort reason is rethrown as-is, not disguised as a DfrApiError', async () => {
+  it('caller cancellation → the caller\'s abort reason is rethrown as-is, not disguised as a DfrApiError', async () => {
     const dfr = client(neverResponds, 10_000);
     const controller = new AbortController();
     const reason = new Error('caller-cancelled');

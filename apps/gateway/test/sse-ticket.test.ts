@@ -44,7 +44,7 @@ describe('SseTicketStore issuance (M2-C02)', () => {
     expect(ttl).toBe(SSE_TICKET_DEFAULT_TTL_MS);
   });
 
-  it('a ticket generation-value collision fails closed, and cannot overwrite another Key's unconsumed ticket', () => {
+  it('a ticket generation-value collision fails closed, and cannot overwrite another Key\'s unconsumed ticket', () => {
     const s = new SseTicketStore({ now: () => 1_000_000, newTicket: () => 'same_ticket' });
     const first = s.issue({ projectId: 'test-project', apiKeyId: KEY, ip: IP, filter: FILTER })!;
     expect(first.ticket).toBe('same_ticket');

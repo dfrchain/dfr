@@ -37,7 +37,7 @@ import {
     });
   });
 
-    it('a two-level nesting's parent is the direct parent, not the root', () => {
+    it('a two-level nesting\'s parent is the direct parent, not the root', () => {
     const root = { traceId: 'a'.repeat(32), spanId: 'b'.repeat(16) };
     runInSpan(root, () => {
       const mid = childSpanContext().context;

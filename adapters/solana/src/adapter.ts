@@ -555,7 +555,7 @@ export class SolanaAdapter
     if (asset.kind !== 'native' || asset.chain !== this.chain.id) {
       throw createDfrError('DFR_INVALID_ASSET', {
         requestId: ctx.requestId,
-        message: 'build native amounts must use this chain's native asset',
+        message: 'build native amounts must use this chain\'s native asset',
         chain: this.chain.id,
         details: { capability: 'transaction.build', field: 'value' },
       });
@@ -949,7 +949,7 @@ export class SolanaAdapter
   subscribe(ctx: AdapterContext, _filter: unknown): AsyncIterable<never> {
     const error = createDfrError('DFR_UNSUPPORTED_CAPABILITY', {
       requestId: ctx.requestId,
-      message: 'event.subscribe is a deployment-level capability, provided by Core's event bus',
+      message: 'event.subscribe is a deployment-level capability, provided by Core\'s event bus',
       chain: ctx.chain,
       details: { capability: 'event.subscribe' },
     });

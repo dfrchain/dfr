@@ -274,7 +274,7 @@ describe('On-chain observation → unknown resolution (ADR-019, section 2, pure 
     expect(resolveUnknownOutcome({ kind } as ChainBroadcastObservation)).toBe(event);
   });
 
-  it('an absent observation resolves to no event (stay unknown; wait for D03's dropTimeoutMs window)', () => {
+  it('an absent observation resolves to no event (stay unknown; wait for D03\'s dropTimeoutMs window)', () => {
     expect(resolveUnknownOutcome({ kind: 'absent' })).toBeNull();
   });
 });

@@ -178,7 +178,7 @@ function traceIdOf(traceparent: string): string | null {
 }
 
 describe('M1 Trace end-to-end propagation (DFR-M1-D06)', () => {
-  it('the client traceparent's trace-id travels all the way to the Provider egress, and the response headers write back the same trace-id', async () => {
+  it('the client traceparent\'s trace-id travels all the way to the Provider egress, and the response headers write back the same trace-id', async () => {
     seenTraceparents.length = 0;
     const response = await postBuild(`00-${TRACE_ID}-${'b'.repeat(16)}-01`);
     expect(response.status).toBe(200);
