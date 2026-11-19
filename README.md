@@ -5,11 +5,6 @@
 > models behind one interface, so applications do not have to maintain
 > separate RPC, retry, failover, and confirmation logic per chain.
 >
-> DFR is a multi-chain developer access layer: it converges multi-chain
-> access, RPC abstraction, transaction lifecycle, and event and error
-> models into a unified interface, so upstream applications no longer
-> maintain separate RPC, retry, failover, and confirmation logic per chain.
-
 DFR currently supports the Base Sepolia, Arbitrum Sepolia, and Ethereum
 Sepolia testnets, and Solana devnet.
 
@@ -47,10 +42,7 @@ docs/
   api/README.md      HTTP API guide (the public API document)
 ```
 
-The chain registry configuration (`packages/registry/config/chains.yaml`) is
-intentionally **not** included in this snapshot: it carries operator
-configuration. Supply your own registry config before running the gateway.
-See `packages/registry/config/chains.schema.json` for the schema.
+The public snapshot includes a **sanitized** `packages/registry/config/chains.yaml` with credential references and operator quota values omitted. Operators must configure their own endpoints, secrets, and quotas; never commit live values. See `packages/registry/config/chains.schema.json`.
 
 ## Quick start
 
@@ -63,9 +55,9 @@ pnpm install
 
 The following commands are the scripts defined in the repository's
 `package.json`. They were **not verified in this staging snapshot** — no build
-or test run was performed while preparing it, and the snapshot does not
-include the repository's root `tsconfig.base.json` / `vitest.config.ts`, so
-confirm them on first use:
+or test run was performed while preparing it, and they were not
+verified by executing them for this release. The root `tsconfig.base.json` and
+`vitest.config.ts` are present:
 
 ```bash
 pnpm test          # vitest run (not verified in this snapshot)
@@ -111,4 +103,7 @@ broadcasts once without automatic retry.
 
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE).
+Apache License 2.0 — see [LICENSE](LICENSE). For publication boundaries,
+pre-existing open-source grants and private commercial components, see
+[OPEN_SOURCE_BOUNDARY.md](OPEN_SOURCE_BOUNDARY.md). Report sensitive security
+issues using [SECURITY.md](SECURITY.md).
