@@ -16,6 +16,26 @@ DFR TypeScript client, depending only on the public HTTP contract and `@dfr/type
 - `safeToRetry` after a timeout: `true` for reads and simulate, `false` for build;
 - Broadcast is never retried automatically.
 
+## First-run façade (`DfrClient`)
+
+```ts
+import { DfrClient } from '@dfr/sdk-typescript';
+
+const client = new DfrClient({ apiKey, baseUrl });
+
+await client.chains.list();
+await client.balances.get({ chain: 'base-sepolia', account: '0x…' });
+const page = await client.logs.query({ chain: 'base-sepolia', fromBlock: '0', toBlock: '10', limit: 100 });
+for await (const log of client.logs.iterate({ chain: 'base-sepolia', fromBlock: '0', toBlock: '10' })) { /* … */ }
+await client.usage();
+```
+
+- Errors are `DfrApiError` with `code`/`requestId`/`attempts`.
+- Automatic retry applies **only to idempotent GETs** (chains/balances/usage), with exponential
+  backoff; the read-only POST `/v1/logs` is never retried automatically.
+- `DfrClient` is a façade over `DFR`; `client.raw()` exposes the full surface.
+- Preview tarball is self-contained (bundles `@dfr/types`), so `npm i <tarball>` needs no registry.
+
 ## Developer-product additions (task 03)
 
 - **Opt-in retry policy** (`new DFR({ retry })`): retries only when the server says
