@@ -36,9 +36,10 @@ pnpm test          # vitest run (not yet tested in this snapshot)
 pnpm test:coverage # suite with coverage (not yet tested in this snapshot)
 ```
 
-Before running the gateway, supply a chain registry configuration: this
-snapshot intentionally omits `packages/registry/config/chains.yaml` (operator
-configuration). The schema is at
+Before running the gateway, review the sanitized example at
+`packages/registry/config/chains.yaml`, which omits operator-specific quota
+settings and contains credential references rather than live credentials.
+Provide your own operator configuration; its schema is at
 `packages/registry/config/chains.schema.json`. Copy
 `infrastructure/docker/.env.example` to a `.env` file **outside** the
 repository and fill in real values there; never commit it.
@@ -83,9 +84,10 @@ Base Sepolia, Arbitrum Sepolia, and Ethereum Sepolia testnets, and Solana
 devnet.
 
 **Does DFR hold my private keys?**
-No. DFR never holds user private keys. Signing is done by an external signer;
-the gateway broadcasts once, without automatic retry. Signed payloads and
-credentials never enter logs, errors, or snapshots.
+DFR's documented design does not custody user private keys; signing is external,
+and broadcasts are not automatically retried. These are implementation claims,
+not an independent security certification. Do not include signing material or
+credentials in logs, errors, snapshots, or issue reports.
 
 **Where do I get an API key?**
 From the operator of the DFR deployment you connect to. Keys use the
@@ -96,9 +98,9 @@ Run `pnpm check:secrets` (read-only scan, `scripts/check-secrets.sh`) and
 contact the repository maintainers through the channels listed on
 https://dfrchain.com. Do not post the secret itself in a public issue.
 
-**Why is there no `packages/registry/config/chains.yaml` here?**
-It carries operator configuration and is intentionally left out of this
-snapshot. Supply your own file matching
+**Can I use the public `packages/registry/config/chains.yaml` as production configuration?**
+No. It is a sanitized example and omits operator-specific quotas and secrets.
+Supply your own settings matching
 `packages/registry/config/chains.schema.json`.
 
 **What are `services/indexer`, `services/monitor`, and `services/relayer`?**
