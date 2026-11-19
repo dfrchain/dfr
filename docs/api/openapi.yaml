@@ -15,7 +15,8 @@ info:
   contact:
     name: DFR
   license:
-    name: Proprietary
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
 
 servers:
   - url: https://api.dfr.local
