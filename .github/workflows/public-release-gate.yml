@@ -1,0 +1,39 @@
+name: Public source release guard
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  path-policy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Reject protected files in public snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          bad=0
+          while IFS= read -r -d '' path; do
+            lower="${path,,}"
+            case "/$lower" in
+              */.env|*/.env.*|*/.dev.vars|*/.dev.vars.*|*/id_rsa*|*/id_ed25519*|*/id_ecdsa*|*/secrets/*|*/.secrets/*|*/.aws/*|*/.ssh/*|*/.kube/config|*/terraform.tfstate*|*/.terraform/*|*/.wrangler/*|*/node_modules/*|*/multichain-master/*)
+                case "$lower" in */.env.example|*/.env.sample) continue ;; esac
+                echo "::error file=$path::Protected path must not be tracked in the public repository"
+                bad=1 ;;
+            esac
+            case "$lower" in
+              *.pem|*.p12|*.pfx|*.keystore|*.jks|*.key)
+                echo "::error file=$path::Potential private credential/key material tracked"
+                bad=1 ;;
+            esac
+          done < <(git ls-files -z)
+          exit "$bad"
+      - name: Warn about review limits
+        run: |
+          echo "Path guard passed. This is NOT a secret-content scan, Git-history audit, license review, build, or contract audit."
