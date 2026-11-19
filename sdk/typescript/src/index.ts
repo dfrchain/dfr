@@ -59,7 +59,7 @@ export interface RetryPolicy {
    * Extra predicate, called after the built-in `retryable && safe_to_retry` check.
    * Return false to stop retrying (e.g. to exclude 429 on a latency-sensitive path).
    */
-  retryOn?: (error: DfrApiError, completedAttempts: number) => boolean;
+  retryOn?: (error: DfrApiError, completedAttempts: number, method: 'GET' | 'POST') => boolean;
   /** Injectable delay, for deterministic tests/embedders. Defaults to a real timer. */
   sleep?: (ms: number) => Promise<void>;
 }
@@ -740,7 +740,7 @@ export class DFR {
         const allowed =
           error.retryable &&
           error.safeToRetry &&
-          (policy.retryOn === undefined || policy.retryOn(error, attempt + 1));
+          (policy.retryOn === undefined || policy.retryOn(error, attempt + 1, method));
         if (!allowed) throw error;
         const backoff = Math.min(policy.maxDelayMs, policy.baseDelayMs * 2 ** attempt);
         const jitter = policy.jitter ? Math.floor(Math.random() * policy.baseDelayMs) : 0;
@@ -877,6 +877,117 @@ export class DFR {
   /** Lets callers safely identify the instance in logs: contains no Key material. */
   describe(): string {
     return `DFR(baseUrl=${this.baseUrl})`;
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* DfrClient — first-run façade                                                */
+/* -------------------------------------------------------------------------- */
+
+/** Options for the first-run client; identical connection options plus an explicit retry policy. */
+export interface DfrClientSettings extends DfrClientOptions {
+  /**
+   * Retry policy override. The façade defaults to two retries of **idempotent GET** requests
+   * (chains, balances, usage) with exponential backoff and jitter. Read-only POST `/v1/logs`
+   * is never retried automatically, even though the server marks it safe.
+   */
+  retry?: RetryPolicy;
+}
+
+class DfrChainsResource {
+  constructor(private readonly dfr: DFR) {}
+  /** `GET /v1/chains` */
+  list(): Promise<readonly Chain[]> {
+    return this.dfr.listChains();
+  }
+  /** `GET /v1/chains/{chainId}` */
+  get(chainId: string): Promise<ChainInfo & { requestId: string }> {
+    return this.dfr.getChain(chainId);
+  }
+}
+
+class DfrBalancesResource {
+  constructor(private readonly dfr: DFR) {}
+  /** `GET /v1/balances` */
+  get(params: GetBalanceParams): Promise<Balance> {
+    return this.dfr.getBalance(params);
+  }
+}
+
+class DfrLogsResource {
+  constructor(private readonly dfr: DFR) {}
+  /**
+   * One page of `POST /v1/logs`. `limit` is a real page size; `hasMore`/`nextCursor` describe
+   * exactly what was returned. Continue with `{ chain, cursor, limit }`.
+   */
+  query(params: GetLogsPageParams): Promise<LogsPageResponse> {
+    return this.dfr.getLogsPage(params);
+  }
+
+  /**
+   * Iterate every log in the pinned range, following the server cursor automatically.
+   * Yields `ChainLog` values (not pages), so a consumer can `for await` over the whole range.
+   * The cursor pins the range and filters; changing them mid-iteration is rejected by the server.
+   */
+  async *iterate(params: GetLogsPageParams): AsyncGenerator<ChainLog, void, void> {
+    let page = await this.query(params);
+    for (;;) {
+      for (const log of page.logs) yield log;
+      if (!page.hasMore || page.nextCursor === undefined) return;
+      page = await this.query({
+        chain: params.chain,
+        cursor: page.nextCursor,
+        ...(params.limit !== undefined ? { limit: params.limit } : {}),
+      });
+    }
+  }
+}
+
+/**
+ * Three-line first call:
+ *
+ * ```ts
+ * const client = new DfrClient({ apiKey, baseUrl });
+ * const chains = await client.chains.list();
+ * const balance = await client.balances.get({ chain: 'base-sepolia', account: '0x…' });
+ * ```
+ *
+ * Every method throws `DfrApiError` with `code`, `requestId`, `retryable`, `safeToRetry`
+ * and `attempts`, so callers can branch without parsing messages.
+ */
+export class DfrClient {
+  private readonly dfr: DFR;
+  readonly chains: DfrChainsResource;
+  readonly balances: DfrBalancesResource;
+  readonly logs: DfrLogsResource;
+
+  constructor(settings: DfrClientSettings) {
+    // Only idempotent GETs are retried by default. Logs are POST and deliberately excluded;
+    // a caller-provided policy can tune delays/attempts but keeps the GET-only guard unless it
+    // explicitly supplies its own retryOn.
+    const getOnly = (_error: DfrApiError, _attempts: number, method: 'GET' | 'POST'): boolean => method === 'GET';
+    const retry =
+      settings.retry === undefined
+        ? { maxRetries: 2, retryOn: getOnly }
+        : { retryOn: getOnly, ...settings.retry };
+    this.dfr = new DFR({ ...settings, retry });
+    this.chains = new DfrChainsResource(this.dfr);
+    this.balances = new DfrBalancesResource(this.dfr);
+    this.logs = new DfrLogsResource(this.dfr);
+  }
+
+  /** `GET /v1/usage` — per-process request counts + effective limits. */
+  usage(): Promise<UsageResponse> {
+    return this.dfr.getUsage();
+  }
+
+  /** Escape hatch for the full surface (write path, events, receipts). */
+  raw(): DFR {
+    return this.dfr;
+  }
+
+  describe(): string {
+    return this.dfr.describe().replace('DFR(', 'DfrClient(');
   }
 }
 

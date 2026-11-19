@@ -18,6 +18,31 @@ normalizing chain responses.
 
 Never infer a production URL from a runbook default. Use the value the operator gave you.
 
+## Quick start: three copy-paste steps
+
+`@dfr/sdk-typescript` 0.1.0 preview is a single self-contained tarball (types bundled):
+
+```bash
+# 1) install (no registry needed)
+npm install ./dfr-sdk-typescript-0.1.0.tgz
+```
+
+```js
+// 2) first-call.mjs — three lines to a real chain read
+import { DfrClient } from '@dfr/sdk-typescript';
+const client = new DfrClient({ apiKey: process.env.DFR_API_KEY, baseUrl: process.env.DFR_BASE_URL });
+console.log((await client.balances.get({ chain: 'base-sepolia', account: '0x4200000000000000000000000000000000000006' })).amount);
+```
+
+```bash
+# 3) run it
+DFR_API_KEY='dfr_…' DFR_BASE_URL='https://dfr-developer-preview.fly.dev/auth/gateway' node first-call.mjs
+```
+
+`DfrClient` also exposes `chains.list()`, `logs.query({ cursor })`, `logs.iterate()`, and
+`usage()`; every failure is a `DfrApiError` with `code`/`requestId`, and idempotent GETs retry
+automatically with exponential backoff.
+
 ## 1. Get an API key
 
 If you operate the deployment, issue the key with the CLI (the plaintext key is printed
